@@ -1,0 +1,66 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scripts/world/world.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/player/fps_controller.gd" id="2"]
+
+[sub_resource type="ProceduralSkyMaterial" id="SkyMat"]
+sky_top_color = Color(0.10, 0.04, 0.22, 1)
+sky_horizon_color = Color(0.72, 0.32, 0.12, 1)
+sky_curve = 0.08
+ground_bottom_color = Color(0.05, 0.02, 0.08, 1)
+ground_horizon_color = Color(0.35, 0.14, 0.08, 1)
+ground_curve = 0.02
+sun_angle_max = 30.0
+sun_curve = 0.15
+
+[sub_resource type="Sky" id="Sky"]
+sky_material = SubResource("SkyMat")
+
+[sub_resource type="CapsuleShape3D" id="3"]
+radius = 0.4
+height = 1.8
+
+[sub_resource type="Environment" id="4"]
+background_mode = 2
+sky = SubResource("Sky")
+ambient_light_source = 2
+ambient_light_color = Color(0.20, 0.18, 0.28, 1)
+ambient_light_energy = 2.2
+ssao_enabled = true
+ssao_radius = 2.0
+ssao_intensity = 1.5
+ssao_power = 1.5
+fog_enabled = true
+fog_light_color = Color(0.50, 0.22, 0.12, 1)
+fog_density = 0.00025
+
+[node name="World" type="Node3D"]
+script = ExtResource("1")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.5, 0.866, 0, -0.866, 0.5, 256.0, 300.0, 256.0)
+light_color = Color(0.95, 0.78, 0.60, 1)
+light_energy = 1.2
+shadow_enabled = true
+shadow_blur = 1.5
+shadow_bias = 0.08
+shadow_normal_bias = 2.5
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("4")
+
+[node name="TerrainRoot" type="Node3D" parent="."]
+
+[node name="Player" type="CharacterBody3D" parent="."]
+script = ExtResource("2")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
+shape = SubResource("3")
+position = Vector3(0.0, 0.9, 0.0)
+
+[node name="Head" type="Node3D" parent="Player"]
+position = Vector3(0.0, 1.7, 0.0)
+
+[node name="Camera3D" type="Camera3D" parent="Player/Head"]
+fov = 85.0
+far = 2048.0

@@ -1,0 +1,14 @@
+[package]
+name = "mg_artifacts"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mg_noise = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+ron = { workspace = true }
+image = { workspace = true }
+
+[lints]
+workspace = true

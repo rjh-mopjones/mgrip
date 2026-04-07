@@ -1,0 +1,19 @@
+[package]
+name = "mg_noise"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mg_core = { workspace = true }
+noise = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+image = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+pollster = { workspace = true }
+rand = { workspace = true }
+rand_xorshift = { workspace = true }
+
+[lints]
+workspace = true

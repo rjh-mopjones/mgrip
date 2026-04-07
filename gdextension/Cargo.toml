@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "crates/mg_core",
+    "crates/mg_noise",
+    "crates/mg_artifacts",
+]
+
+[workspace.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+noise = "0.9"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+ron = "0.8"
+rayon = "1.10"
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+chrono = "0.4"
+godot = "0.2"
+wgpu = "27"
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.4"
+rand = "0.8"
+rand_xorshift = "0.3"
+
+mg_core = { path = "crates/mg_core" }
+mg_noise = { path = "crates/mg_noise" }
+mg_artifacts = { path = "crates/mg_artifacts" }
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+manual_range_contains = "allow"
+needless_range_loop = "allow"
+
+[workspace.lints.rust]
+unused_variables = "allow"
+unused_imports = "allow"
+unused_mut = "allow"
+dead_code = "allow"
+
+[package]
+name = "margins_grip"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+name = "margins_grip"
+
+[[bin]]
+name = "margins_grip"
+path = "src/bin/cli.rs"
+
+[dependencies]
+godot.workspace = true
+mg_core.workspace = true
+mg_noise.workspace = true
+mg_artifacts.workspace = true
+serde.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+chrono.workspace = true
+rayon.workspace = true
+
+[lints]
+workspace = true
