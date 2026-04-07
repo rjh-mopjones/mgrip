@@ -11,6 +11,9 @@ var _heights: PackedInt32Array
 var _ocean: PackedByteArray
 
 func _ready() -> void:
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	DisplayServer.window_set_size(Vector2i(1440, 860))
+	DisplayServer.window_set_position(Vector2i(80, 60))
 	print("Generating chunk at world (%.1f, %.1f)…" % [world_x, world_y])
 	var t0 := Time.get_ticks_msec()
 
@@ -37,6 +40,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			Input.MOUSE_MODE_VISIBLE if _map_overlay.visible
 			else Input.MOUSE_MODE_CAPTURED
 		)
+	elif _map_overlay and _map_overlay.visible and event is InputEventKey:
+		var key_event := event as InputEventKey
+		if key_event.pressed and not key_event.echo:
+			if key_event.keycode == KEY_TAB or event.is_action_pressed("map_toggle"):
+				_map_overlay.toggle_mode()
 
 func _process(_delta: float) -> void:
 	if _map_overlay:
