@@ -15,11 +15,11 @@ const CLEARANCE      := 8.0
 ## then places the camera at a nearby vantage so screenshots stay above ground and
 ## read the landscape instead of the underside of overhangs.
 const SHOT_SPECS: Array[Dictionary] = [
-	{"focus": Vector2(  0,   0), "camera": Vector2(-110,  -80), "height": 80.0},
-	{"focus": Vector2( 80,  40), "camera": Vector2( -95,   15), "height": 34.0},
-	{"focus": Vector2(-96,  72), "camera": Vector2( -28, -120), "height": 16.0},
-	{"focus": Vector2( 48, -96), "camera": Vector2(  18,  -18), "height": 110.0},
-	{"focus": Vector2(-64, -56), "camera": Vector2( 120,   42), "height": 22.0},
+	{"focus": Vector2(  8,  20), "camera": Vector2(-130,  -46), "height": 22.0},
+	{"focus": Vector2( 82,  40), "camera": Vector2( -86,   20), "height": 14.0},
+	{"focus": Vector2(-92,  70), "camera": Vector2( -24, -132), "height": 10.0},
+	{"focus": Vector2( 42, -86), "camera": Vector2(   2,  -24), "height": 24.0},
+	{"focus": Vector2(-52, -46), "camera": Vector2( 118,   36), "height": 12.0},
 ]
 
 var _active  := false

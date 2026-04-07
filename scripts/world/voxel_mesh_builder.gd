@@ -3,20 +3,22 @@ class_name VoxelMeshBuilder
 
 ## Builds Minecraft-style voxel terrain meshes from a BiomeMap chunk.
 ##
-## Land columns:  solid top + greedy-merged side faces with substrate blending.
+## Land terrain: smooth heightfield surface derived from block heights.
 ## Ocean columns: no solid geometry — a separate flat water quad at SEA_LEVEL_Y.
 ## Split into 64 sub-meshes (8×8 of 64×64 blocks) to keep draw calls sane.
 
 const CHUNK_SIZE   := 512
-const HEIGHT_SCALE := 256.0
+const HEIGHT_SCALE := 200.0
 const SUB_SIZE     := 64
 const GRID_COUNT: int = CHUNK_SIZE / SUB_SIZE  # 8
 
-## Sea-level in block-space: floor(-0.01 * 256) = -3
-const SEA_LEVEL_Y  := -3
+## Sea-level in block-space: floor(-0.01 * 200) = -2
+const SEA_LEVEL_Y  := -2
 
 ## Geological substrate color blended into cliff faces as depth increases.
-const SUBSTRATE := Color(0.45, 0.35, 0.28)
+const SUBSTRATE := Color(0.46, 0.34, 0.27)
+const HAZE_TINT := Color(0.75, 0.54, 0.37)
+const RIDGE_TINT := Color(0.63, 0.46, 0.39)
 
 ## Biome index → Color (matches mg_core TileType enum, Sea=0 … ScorchedRock=48).
 ## Palette stays in blue-violet, burgundy, umber, and ash tones only.
@@ -79,11 +81,8 @@ func build_terrain(biome_map: MgBiomeMap, parent: Node3D) -> Dictionary:
 	var biome_rgba := biome_map.export_layer_rgba("biome")
 	var ocean_mask := biome_map.is_ocean_grid()
 
-	var land_mat := StandardMaterial3D.new()
-	land_mat.vertex_color_use_as_albedo = true
-	land_mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	land_mat.roughness    = 0.95
-	land_mat.metallic     = 0.0
+	var land_mat := ShaderMaterial.new()
+	land_mat.shader = preload("res://assets/shaders/terrain.gdshader")
 
 	var water_mat := ShaderMaterial.new()
 	water_mat.shader = preload("res://assets/shaders/water.gdshader")
@@ -122,26 +121,16 @@ func _build_land_sub(
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var has_geo := false
 
-	# Pass 1: top faces (one quad per column)
-	for lz in SUB_SIZE:
-		for lx in SUB_SIZE:
-			var x   := ox + lx
-			var z   := oz + lz
-			var idx := z * CHUNK_SIZE + x
-			if ocean_mask[idx]:
-				continue
-			var y   := heights[idx]
-			var bi  := idx * 4
-			var col := Color(
-				biome_rgba[bi]     / 255.0,
-				biome_rgba[bi + 1] / 255.0,
-				biome_rgba[bi + 2] / 255.0,
-			)
-			_top_face(st, x, y, z, col)
-			has_geo = true
+	var max_x := mini(ox + SUB_SIZE - 1, CHUNK_SIZE - 2)
+	var max_z := mini(oz + SUB_SIZE - 1, CHUNK_SIZE - 2)
 
-	# Pass 2: greedy-merged side faces with geological substrate blending
-	_build_greedy_sides(st, heights, biome_rgba, ocean_mask, ox, oz)
+	for z in range(oz, max_z + 1):
+		for x in range(ox, max_x + 1):
+			if _cell_is_ocean(ocean_mask, x, z):
+				continue
+			_emit_terrain_triangle(st, heights, biome_rgba, x, z, x + 1, z, x, z + 1)
+			_emit_terrain_triangle(st, heights, biome_rgba, x + 1, z, x + 1, z + 1, x, z + 1)
+			has_geo = true
 
 	if not has_geo:
 		return null
@@ -179,126 +168,35 @@ func _build_water_sub(ocean_mask: PackedByteArray, ox: int, oz: int) -> ArrayMes
 		return null
 	return st.commit()
 
-# ── Greedy side meshing ───────────────────────────────────────────────────────
-#
-# For each of the 4 cardinal directions, scan all cells in the sub-chunk.
-# Adjacent cells with the same top_y, bottom_y, and surface color are merged
-# into a single wide quad. This cuts side face count by 60-80% on typical
-# terrain and eliminates per-block edge noise on cliff faces.
+# ── Terrain surface helpers ───────────────────────────────────────────────────
 
-func _build_greedy_sides(
+func _cell_is_ocean(ocean_mask: PackedByteArray, x: int, z: int) -> bool:
+	var i00 := z * CHUNK_SIZE + x
+	var i10 := z * CHUNK_SIZE + (x + 1)
+	var i01 := (z + 1) * CHUNK_SIZE + x
+	var i11 := (z + 1) * CHUNK_SIZE + (x + 1)
+	return ocean_mask[i00] and ocean_mask[i10] and ocean_mask[i01] and ocean_mask[i11]
+
+func _emit_terrain_triangle(
 		st: SurfaceTool,
 		heights: PackedInt32Array,
 		biome_rgba: PackedByteArray,
-		ocean_mask: PackedByteArray,
-		ox: int, oz: int) -> void:
-	# directions: [dx, dz] — 4 cardinal faces
-	var dirs := [[1, 0], [-1, 0], [0, 1], [0, -1]]
+		x0: int, z0: int,
+		x1: int, z1: int,
+		x2: int, z2: int) -> void:
+	_emit_terrain_vertex(st, heights, biome_rgba, x0, z0)
+	_emit_terrain_vertex(st, heights, biome_rgba, x1, z1)
+	_emit_terrain_vertex(st, heights, biome_rgba, x2, z2)
 
-	for dir in dirs:
-		var dx    : int = dir[0]
-		var dz    : int = dir[1]
-		# For dx faces, the quad spans the z axis → merge along z (lz).
-		# For dz faces, the quad spans the x axis → merge along x (lx).
-		var merge_z := dx != 0
-
-		var visited := PackedByteArray()
-		visited.resize(SUB_SIZE * SUB_SIZE)
-		visited.fill(0)
-
-		for lz in SUB_SIZE:
-			for lx in SUB_SIZE:
-				if visited[lz * SUB_SIZE + lx]:
-					continue
-
-				var x   := ox + lx
-				var z   := oz + lz
-				var idx := z * CHUNK_SIZE + x
-
-				if ocean_mask[idx]:
-					visited[lz * SUB_SIZE + lx] = 1
-					continue
-
-				var y   := heights[idx]
-				var nx  := x + dx
-				var nz  := z + dz
-				var ny  : int
-
-				if nx < 0 or nx >= CHUNK_SIZE or nz < 0 or nz >= CHUNK_SIZE:
-					ny = y - 1
-				else:
-					var nidx := nz * CHUNK_SIZE + nx
-					ny = SEA_LEVEL_Y - 1 if ocean_mask[nidx] else heights[nidx]
-
-				if ny >= y:
-					visited[lz * SUB_SIZE + lx] = 1
-					continue
-
-				var bi := idx * 4
-				var r0 : int = biome_rgba[bi]
-				var g0 : int = biome_rgba[bi + 1]
-				var b0 : int = biome_rgba[bi + 2]
-
-				# Extend run along the merge axis, requiring matching y, ny, color
-				var run := 1
-				if merge_z:
-					while lz + run < SUB_SIZE:
-						var nlz   := lz + run
-						var x2    := ox + lx
-						var z2    := oz + nlz
-						var idx2  := z2 * CHUNK_SIZE + x2
-						if visited[nlz * SUB_SIZE + lx]:
-							break
-						if ocean_mask[idx2] or heights[idx2] != y:
-							break
-						var nx2   := x2 + dx
-						var nny   : int
-						if nx2 < 0 or nx2 >= CHUNK_SIZE:
-							nny = y - 1
-						else:
-							var nidx2 := z2 * CHUNK_SIZE + nx2
-							nny = SEA_LEVEL_Y - 1 if ocean_mask[nidx2] else heights[nidx2]
-						if nny != ny:
-							break
-						var bi2 := idx2 * 4
-						if biome_rgba[bi2] != r0 or biome_rgba[bi2+1] != g0 or biome_rgba[bi2+2] != b0:
-							break
-						run += 1
-					for r in run:
-						visited[(lz + r) * SUB_SIZE + lx] = 1
-				else:
-					while lx + run < SUB_SIZE:
-						var nlx   := lx + run
-						var x2    := ox + nlx
-						var z2    := oz + lz
-						var idx2  := z2 * CHUNK_SIZE + x2
-						if visited[lz * SUB_SIZE + nlx]:
-							break
-						if ocean_mask[idx2] or heights[idx2] != y:
-							break
-						var nz2   := z2 + dz
-						var nny   : int
-						if nz2 < 0 or nz2 >= CHUNK_SIZE:
-							nny = y - 1
-						else:
-							var nidx2 := nz2 * CHUNK_SIZE + x2
-							nny = SEA_LEVEL_Y - 1 if ocean_mask[nidx2] else heights[nidx2]
-						if nny != ny:
-							break
-						var bi2 := idx2 * 4
-						if biome_rgba[bi2] != r0 or biome_rgba[bi2+1] != g0 or biome_rgba[bi2+2] != b0:
-							break
-						run += 1
-					for r in run:
-						visited[lz * SUB_SIZE + (lx + r)] = 1
-
-				# Blend surface color toward geological substrate as cliff depth increases
-				var surface_col := Color(r0 / 255.0, g0 / 255.0, b0 / 255.0)
-				var exposure    := float(y + 1) - float(ny + 1)
-				var t           := clampf((exposure - 2.0) / 4.0, 0.0, 1.0)
-				var face_col    := surface_col.lerp(SUBSTRATE, t * 0.7)
-
-				_emit_side_face(st, x, y, ny, z, dx, dz, run, face_col)
+func _emit_terrain_vertex(
+		st: SurfaceTool,
+		heights: PackedInt32Array,
+		biome_rgba: PackedByteArray,
+		x: int, z: int) -> void:
+	var y := _heightf(heights, x, z)
+	st.set_color(_vertex_color(heights, biome_rgba, x, z))
+	st.set_normal(_surface_normal(heights, x, z))
+	st.add_vertex(Vector3(float(x), y, float(z)))
 
 # ── Face helpers ──────────────────────────────────────────────────────────────
 
@@ -314,6 +212,57 @@ func _top_face(st: SurfaceTool, x: int, y: int, z: int, col: Color) -> void:
 	st.add_vertex(Vector3(x0, yf, z0))
 	st.add_vertex(Vector3(x1, yf, z1))
 	st.add_vertex(Vector3(x0, yf, z1))
+
+func _surface_color(base_col: Color, y: int) -> Color:
+	var ridge := clampf((float(y) - 18.0) / 64.0, 0.0, 1.0)
+	var haze := clampf((float(y) + 8.0) / 96.0, 0.0, 1.0)
+	var col := base_col.lerp(RIDGE_TINT, ridge * 0.10)
+	col = col.lerp(HAZE_TINT, 0.04 + haze * 0.06)
+	return Color(
+		clampf(col.r * 0.97, 0.0, 1.0),
+		clampf(col.g * 0.95, 0.0, 1.0),
+		clampf(col.b * 0.94, 0.0, 1.0),
+		1.0
+	)
+
+func _cliff_color(surface_col: Color, exposure: float) -> Color:
+	var depth := clampf((exposure - 1.0) / 6.0, 0.0, 1.0)
+	var col := surface_col.lerp(SUBSTRATE, 0.26 + depth * 0.34)
+	col = col.darkened(0.10 + depth * 0.10)
+	return col.lerp(HAZE_TINT, 0.04)
+
+func _vertex_color(
+		heights: PackedInt32Array,
+		biome_rgba: PackedByteArray,
+		x: int, z: int) -> Color:
+	var idx := z * CHUNK_SIZE + x
+	var bi := idx * 4
+	var base := Color(
+		biome_rgba[bi] / 255.0,
+		biome_rgba[bi + 1] / 255.0,
+		biome_rgba[bi + 2] / 255.0,
+		1.0
+	)
+	return _surface_color(base, heights[idx])
+
+func _surface_normal(heights: PackedInt32Array, x: int, z: int) -> Vector3:
+	var left := _heightf(heights, maxi(x - 1, 0), z)
+	var right := _heightf(heights, mini(x + 1, CHUNK_SIZE - 1), z)
+	var back := _heightf(heights, x, maxi(z - 1, 0))
+	var forward := _heightf(heights, x, mini(z + 1, CHUNK_SIZE - 1))
+	return Vector3(left - right, 2.0, back - forward).normalized()
+
+func _heightf(heights: PackedInt32Array, x: int, z: int) -> float:
+	var sum := 0.0
+	var weight_sum := 0.0
+	for dz in range(-1, 2):
+		for dx in range(-1, 2):
+			var sx := clampi(x + dx, 0, CHUNK_SIZE - 1)
+			var sz := clampi(z + dz, 0, CHUNK_SIZE - 1)
+			var weight := 2.0 if dx == 0 and dz == 0 else 1.0
+			sum += (float(heights[sz * CHUNK_SIZE + sx]) + 1.0) * weight
+			weight_sum += weight
+	return sum / weight_sum
 
 ## Emit a single (possibly multi-block-wide) side quad for one direction.
 ## `run` extends along z for dx faces, along x for dz faces.
