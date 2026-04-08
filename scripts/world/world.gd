@@ -29,6 +29,7 @@ func _ready() -> void:
 
 	_chunk_streamer.setup(_terrain_root, _chunk_metrics, _anchor_chunk)
 	var boot_chunk = _chunk_streamer.bootstrap_chunk(_anchor_chunk, true)
+	_chunk_streamer.update_streaming(_anchor_chunk)
 	_log_height_stats(boot_chunk.heights)
 	_place_player(boot_chunk)
 	if "--flythrough" not in OS.get_cmdline_args():
@@ -59,6 +60,7 @@ func _process(_delta: float) -> void:
 	if current_chunk != GameState.current_chunk:
 		GameState.current_chunk = current_chunk
 		print("Player entered chunk [%d, %d]" % [current_chunk.x, current_chunk.y])
+	_chunk_streamer.update_streaming(current_chunk)
 	if _map_overlay:
 		var loaded_chunk = _chunk_streamer.get_chunk(current_chunk)
 		if loaded_chunk and current_chunk != _last_map_chunk:
