@@ -4,38 +4,59 @@
 use wgpu::{BindGroupLayout, ComputePipeline, Device};
 
 pub struct NoisePipelines {
-    pub continentalness:       ComputePipeline,
+    pub continentalness: ComputePipeline,
     pub continentalness_layout: BindGroupLayout,
-    pub light_level:           ComputePipeline,
-    pub light_level_layout:    BindGroupLayout,
-    pub rock_hardness:         ComputePipeline,
-    pub rock_hardness_layout:  BindGroupLayout,
-    pub peaks_valleys:         ComputePipeline,
-    pub peaks_valleys_layout:  BindGroupLayout,
-    pub humidity:              ComputePipeline,
-    pub humidity_layout:       BindGroupLayout,
+    pub light_level: ComputePipeline,
+    pub light_level_layout: BindGroupLayout,
+    pub rock_hardness: ComputePipeline,
+    pub rock_hardness_layout: BindGroupLayout,
+    pub peaks_valleys: ComputePipeline,
+    pub peaks_valleys_layout: BindGroupLayout,
+    pub humidity: ComputePipeline,
+    pub humidity_layout: BindGroupLayout,
 }
 
 impl NoisePipelines {
     pub fn new(device: &Device) -> Self {
-        let cont_src   = format!("{}{}{}", INDEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, CONTINENTALNESS_MAIN);
-        let light_src  = format!("{}{}{}", INDEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, LIGHT_LEVEL_MAIN);
-        let rock_src   = format!("{}{}{}", INDEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, ROCK_HARDNESS_MAIN);
-        let peaks_src  = format!("{}{}{}", INDEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, PEAKS_VALLEYS_MAIN);
-        let humid_src  = format!("{}{}{}", DEPENDENT_BINDINGS,   OPEN_SIMPLEX_FUNCS, HUMIDITY_MAIN);
+        let cont_src = format!(
+            "{}{}{}",
+            INDEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, CONTINENTALNESS_MAIN
+        );
+        let light_src = format!(
+            "{}{}{}",
+            INDEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, LIGHT_LEVEL_MAIN
+        );
+        let rock_src = format!(
+            "{}{}{}",
+            INDEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, ROCK_HARDNESS_MAIN
+        );
+        let peaks_src = format!(
+            "{}{}{}",
+            INDEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, PEAKS_VALLEYS_MAIN
+        );
+        let humid_src = format!(
+            "{}{}{}",
+            DEPENDENT_BINDINGS, OPEN_SIMPLEX_FUNCS, HUMIDITY_MAIN
+        );
 
-        let (continentalness, continentalness_layout) = independent(device, "Continentalness", &cont_src);
-        let (light_level,     light_level_layout)     = independent(device, "LightLevel",      &light_src);
-        let (rock_hardness,   rock_hardness_layout)   = independent(device, "RockHardness",    &rock_src);
-        let (peaks_valleys,   peaks_valleys_layout)   = independent(device, "PeaksValleys",    &peaks_src);
-        let (humidity,        humidity_layout)        = dependent  (device, "Humidity",        &humid_src);
+        let (continentalness, continentalness_layout) =
+            independent(device, "Continentalness", &cont_src);
+        let (light_level, light_level_layout) = independent(device, "LightLevel", &light_src);
+        let (rock_hardness, rock_hardness_layout) = independent(device, "RockHardness", &rock_src);
+        let (peaks_valleys, peaks_valleys_layout) = independent(device, "PeaksValleys", &peaks_src);
+        let (humidity, humidity_layout) = dependent(device, "Humidity", &humid_src);
 
         Self {
-            continentalness, continentalness_layout,
-            light_level, light_level_layout,
-            rock_hardness, rock_hardness_layout,
-            peaks_valleys, peaks_valleys_layout,
-            humidity, humidity_layout,
+            continentalness,
+            continentalness_layout,
+            light_level,
+            light_level_layout,
+            rock_hardness,
+            rock_hardness_layout,
+            peaks_valleys,
+            peaks_valleys_layout,
+            humidity,
+            humidity_layout,
         }
     }
 }
@@ -43,27 +64,96 @@ impl NoisePipelines {
 // ─── Pipeline factory helpers ─────────────────────────────────────────────────
 
 fn independent(device: &Device, name: &str, src: &str) -> (ComputePipeline, BindGroupLayout) {
-    make_pipeline(device, name, src, &[
-        entry(0, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform,                      has_dynamic_offset: false, min_binding_size: None }),
-        entry(1, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true  }, has_dynamic_offset: false, min_binding_size: None }),
-        entry(2, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }),
-    ])
+    make_pipeline(
+        device,
+        name,
+        src,
+        &[
+            entry(
+                0,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            ),
+            entry(
+                1,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            ),
+            entry(
+                2,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            ),
+        ],
+    )
 }
 
 fn dependent(device: &Device, name: &str, src: &str) -> (ComputePipeline, BindGroupLayout) {
-    make_pipeline(device, name, src, &[
-        entry(0, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform,                      has_dynamic_offset: false, min_binding_size: None }),
-        entry(1, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true  }, has_dynamic_offset: false, min_binding_size: None }),
-        entry(2, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true  }, has_dynamic_offset: false, min_binding_size: None }),
-        entry(3, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }),
-    ])
+    make_pipeline(
+        device,
+        name,
+        src,
+        &[
+            entry(
+                0,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            ),
+            entry(
+                1,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            ),
+            entry(
+                2,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            ),
+            entry(
+                3,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            ),
+        ],
+    )
 }
 
 fn entry(binding: u32, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None }
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty,
+        count: None,
+    }
 }
 
-fn make_pipeline(device: &Device, name: &str, src: &str, entries: &[wgpu::BindGroupLayoutEntry]) -> (ComputePipeline, BindGroupLayout) {
+fn make_pipeline(
+    device: &Device,
+    name: &str,
+    src: &str,
+    entries: &[wgpu::BindGroupLayoutEntry],
+) -> (ComputePipeline, BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&format!("{name} shader")),
         source: wgpu::ShaderSource::Wgsl(src.into()),

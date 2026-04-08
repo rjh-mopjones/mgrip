@@ -1,17 +1,29 @@
 //! Two-tier river generation. Global D8 flow network computed once at macro scale.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 pub(crate) const D8_OFFSETS: [(i32, i32); 8] = [
-    (0, -1), (1, -1), (1, 0), (1, 1),
-    (0, 1), (-1, 1), (-1, 0), (-1, -1),
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
+    (-1, -1),
 ];
 
 pub(crate) const D8_DISTANCES: [f64; 8] = [
-    1.0, std::f64::consts::SQRT_2, 1.0, std::f64::consts::SQRT_2,
-    1.0, std::f64::consts::SQRT_2, 1.0, std::f64::consts::SQRT_2,
+    1.0,
+    std::f64::consts::SQRT_2,
+    1.0,
+    std::f64::consts::SQRT_2,
+    1.0,
+    std::f64::consts::SQRT_2,
+    1.0,
+    std::f64::consts::SQRT_2,
 ];
 
 pub(crate) const NO_FLOW: u8 = 255;
@@ -31,11 +43,17 @@ pub enum RiverCharacter {
 
 impl RiverCharacter {
     pub fn classify(light_level: f64, humidity: f64, temperature: f64) -> Self {
-        if light_level < 0.05 { RiverCharacter::BuriedIce }
-        else if light_level < 0.1 && temperature < 0.0 { RiverCharacter::Frozen }
-        else if light_level < 0.3 || humidity > 0.5 { RiverCharacter::Permanent }
-        else if light_level < 0.7 || humidity > 0.2 { RiverCharacter::SeasonalFlow }
-        else { RiverCharacter::DryWadi }
+        if light_level < 0.05 {
+            RiverCharacter::BuriedIce
+        } else if light_level < 0.1 && temperature < 0.0 {
+            RiverCharacter::Frozen
+        } else if light_level < 0.3 || humidity > 0.5 {
+            RiverCharacter::Permanent
+        } else if light_level < 0.7 || humidity > 0.2 {
+            RiverCharacter::SeasonalFlow
+        } else {
+            RiverCharacter::DryWadi
+        }
     }
 }
 
@@ -77,10 +95,17 @@ impl RiverNetwork {
 
 /// Rasterize river network into a flow-value grid.
 /// Each cell gets the drainage_area of the largest segment passing through it.
-pub fn rasterize_from_network(network: &RiverNetwork, width: usize, height: usize, threshold: f64) -> Vec<f64> {
+pub fn rasterize_from_network(
+    network: &RiverNetwork,
+    width: usize,
+    height: usize,
+    threshold: f64,
+) -> Vec<f64> {
     let mut grid = vec![0.0f64; width * height];
     for seg in &network.segments {
-        if seg.drainage_area < threshold { continue; }
+        if seg.drainage_area < threshold {
+            continue;
+        }
         for &(x, y) in &seg.path {
             if x < width && y < height {
                 let idx = y * width + x;
@@ -136,9 +161,13 @@ pub fn fill_depressions(elevation: &mut Vec<f64>, width: usize, height: usize) {
         for &(dx, dy) in &D8_OFFSETS {
             let nx = x as i32 + dx;
             let ny = y as i32 + dy;
-            if nx < 0 || nx >= width as i32 || ny < 0 || ny >= height as i32 { continue; }
+            if nx < 0 || nx >= width as i32 || ny < 0 || ny >= height as i32 {
+                continue;
+            }
             let nidx = ny as usize * width + nx as usize;
-            if closed[nidx] { continue; }
+            if closed[nidx] {
+                continue;
+            }
             closed[nidx] = true;
             if elevation[nidx] < elev + epsilon {
                 elevation[nidx] = elev + epsilon;
@@ -149,7 +178,11 @@ pub fn fill_depressions(elevation: &mut Vec<f64>, width: usize, height: usize) {
 }
 
 /// Compute D8 flow directions and accumulation.
-pub fn compute_flow_accumulation(elevation: &[f64], width: usize, height: usize) -> (Vec<u8>, Vec<u32>) {
+pub fn compute_flow_accumulation(
+    elevation: &[f64],
+    width: usize,
+    height: usize,
+) -> (Vec<u8>, Vec<u32>) {
     let total = width * height;
     let mut flow_dir = vec![NO_FLOW; total];
     let mut accumulation = vec![1u32; total];
@@ -165,10 +198,15 @@ pub fn compute_flow_accumulation(elevation: &[f64], width: usize, height: usize)
             for (d, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
                 let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
                 let ny = y as i32 + dy;
-                if ny < 0 || ny >= height as i32 { continue; }
+                if ny < 0 || ny >= height as i32 {
+                    continue;
+                }
                 let nidx = ny as usize * width + nx;
                 let slope = (h - elevation[nidx]) / D8_DISTANCES[d];
-                if slope > best_slope { best_slope = slope; best_dir = d as u8; }
+                if slope > best_slope {
+                    best_slope = slope;
+                    best_dir = d as u8;
+                }
             }
             flow_dir[idx] = best_dir;
         }
@@ -176,11 +214,17 @@ pub fn compute_flow_accumulation(elevation: &[f64], width: usize, height: usize)
 
     // Sort cells high-to-low, accumulate drainage
     let mut order: Vec<usize> = (0..total).collect();
-    order.sort_unstable_by(|&a, &b| elevation[b].partial_cmp(&elevation[a]).unwrap_or(Ordering::Equal));
+    order.sort_unstable_by(|&a, &b| {
+        elevation[b]
+            .partial_cmp(&elevation[a])
+            .unwrap_or(Ordering::Equal)
+    });
 
     for &idx in &order {
         let dir = flow_dir[idx];
-        if dir == NO_FLOW { continue; }
+        if dir == NO_FLOW {
+            continue;
+        }
         let x = (idx % width) as i32;
         let y = (idx / width) as i32;
         let (dx, dy) = D8_OFFSETS[dir as usize];
@@ -241,11 +285,25 @@ pub fn generate_river_network(
         for x in 0..width {
             let idx = y * width + x;
             let drain = accumulation[idx] as f64;
-            if drain < threshold { continue; }
+            if drain < threshold {
+                continue;
+            }
 
-            let light = if idx < light_level.len() { light_level[idx] } else { 0.5 };
-            let humid = if idx < humidity.len() { humidity[idx] } else { 0.5 };
-            let temp = if idx < temperature.len() { temperature[idx] } else { 15.0 };
+            let light = if idx < light_level.len() {
+                light_level[idx]
+            } else {
+                0.5
+            };
+            let humid = if idx < humidity.len() {
+                humidity[idx]
+            } else {
+                0.5
+            };
+            let temp = if idx < temperature.len() {
+                temperature[idx]
+            } else {
+                15.0
+            };
             let character = RiverCharacter::classify(light, humid, temp);
 
             // Find downstream cell
@@ -255,8 +313,12 @@ pub fn generate_river_network(
                 let ny = y as i32 + dy;
                 if ny >= 0 && (ny as usize) < height {
                     Some(ny as usize * width + nx)
-                } else { None }
-            } else { None };
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             let seg_id = network.segments.len();
             spatial_index.entry((x, y)).or_default().push(seg_id);
@@ -295,13 +357,15 @@ pub fn rasterize_to_tile(
 ) -> Vec<f64> {
     let macro_px_w = macro_world_w / network.width as f64;
     let macro_px_h = macro_world_h / network.height as f64;
-    let meso_ppw = tile_w as f64 / tile_world_w;   // meso pixels per world unit X
-    let meso_pph = tile_h as f64 / tile_world_h;   // meso pixels per world unit Y
+    let meso_ppw = tile_w as f64 / tile_world_w; // meso pixels per world unit X
+    let meso_pph = tile_h as f64 / tile_world_h; // meso pixels per world unit Y
 
     let mut grid = vec![0.0f64; tile_w * tile_h];
 
     for seg in &network.segments {
-        if seg.drainage_area < threshold { continue; }
+        if seg.drainage_area < threshold {
+            continue;
+        }
         for &(mx, my) in &seg.path {
             // World bounding box of this macro pixel
             let wx0 = mx as f64 * macro_px_w;
@@ -313,7 +377,9 @@ pub fn rasterize_to_tile(
             let ry0 = (wy0 - tile_world_y).max(0.0);
             let rx1 = (wx1 - tile_world_x).min(tile_world_w);
             let ry1 = (wy1 - tile_world_y).min(tile_world_h);
-            if rx0 >= rx1 || ry0 >= ry1 { continue; }
+            if rx0 >= rx1 || ry0 >= ry1 {
+                continue;
+            }
             // Convert to meso pixel ranges
             let px0 = (rx0 * meso_ppw) as usize;
             let py0 = (ry0 * meso_pph) as usize;

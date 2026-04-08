@@ -11,4 +11,4 @@ pub use light_level::LightLevelStrategy;
 pub use peaks_valleys::PeaksAndValleysStrategy;
 pub use rock_hardness::RockHardnessStrategy;
 pub use tectonic::TectonicPlatesStrategy;
-pub use tectonic::{BoundaryType, TectonicSample, PlateRegistry};
+pub use tectonic::{BoundaryType, PlateRegistry, TectonicSample};

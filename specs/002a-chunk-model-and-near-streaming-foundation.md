@@ -83,7 +83,7 @@ Rules:
   runtime model.
 - Favor explicit ownership over clever abstraction.
 - Keep initial streaming conservative.
-- No green in terrain, atmosphere, clutter, or materials.
+- Green should not dominate terrain, atmosphere, clutter, or materials. Sparse muted green vegetation is acceptable.
 
 ## Current Reality
 

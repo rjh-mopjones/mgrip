@@ -1,5 +1,5 @@
-use noise::{NoiseFn, OpenSimplex};
 use mg_core::NoiseStrategy;
+use noise::{NoiseFn, OpenSimplex};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,8 +62,10 @@ impl PlateRegistry {
                 .wrapping_add(s);
             let n1 = n.wrapping_mul(1103515245).wrapping_add(12345);
             let n2 = n1.wrapping_mul(1103515245).wrapping_add(12345);
-            ((n1 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
-             (n2 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64)
+            (
+                (n1 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
+                (n2 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
+            )
         };
 
         let mut all_cells: Vec<(i32, i32, f64, f64)> = Vec::new();
@@ -75,7 +77,10 @@ impl PlateRegistry {
         }
 
         let target_count = 25 + (next_f64() * 10.0) as usize;
-        let min_dist_sq = { let d = 1.0 / (target_count as f64).sqrt() * 0.5; d * d };
+        let min_dist_sq = {
+            let d = 1.0 / (target_count as f64).sqrt() * 0.5;
+            d * d
+        };
 
         let mut plates = Vec::new();
         let mut selected_centers: Vec<(f64, f64)> = Vec::new();
@@ -87,13 +92,18 @@ impl PlateRegistry {
         }
 
         for &cell_idx in &indices {
-            if plates.len() >= target_count { break; }
+            if plates.len() >= target_count {
+                break;
+            }
             let (_ix, _iy, cx, cy) = all_cells[cell_idx];
             let too_close = selected_centers.iter().any(|&(sx, sy)| {
-                let dx = cx - sx; let dy = cy - sy;
+                let dx = cx - sx;
+                let dy = cy - sy;
                 dx * dx + dy * dy < min_dist_sq
             });
-            if too_close { continue; }
+            if too_close {
+                continue;
+            }
 
             let vel_angle = next_f64() * std::f64::consts::TAU;
             let vel_mag = next_f64() * 0.8 + 0.2;
@@ -114,19 +124,28 @@ impl PlateRegistry {
                 let dx = cx - plate.center.0;
                 let dy = cy - plate.center.1;
                 let d = dx * dx + dy * dy;
-                if d < best_dist { best_dist = d; best_plate = pi; }
+                if d < best_dist {
+                    best_dist = d;
+                    best_plate = pi;
+                }
             }
             cell_to_plate.insert((ix, iy), best_plate);
         }
 
         let hotspot_count = 1 + (next_f64() * 3.0) as usize;
-        let hotspots = (0..hotspot_count).map(|_| Hotspot {
-            pos: (next_f64() * world_width, next_f64() * world_height),
-            intensity: 0.4 + next_f64() * 0.3,
-            radius: 10.0 + next_f64() * 20.0,
-        }).collect();
+        let hotspots = (0..hotspot_count)
+            .map(|_| Hotspot {
+                pos: (next_f64() * world_width, next_f64() * world_height),
+                intensity: 0.4 + next_f64() * 0.3,
+                radius: 10.0 + next_f64() * 20.0,
+            })
+            .collect();
 
-        Self { plates, hotspots, cell_to_plate }
+        Self {
+            plates,
+            hotspots,
+            cell_to_plate,
+        }
     }
 
     fn plate_for_cell(&self, ix: i32, iy: i32) -> usize {
@@ -135,7 +154,9 @@ impl PlateRegistry {
         }
         let cx = ix as f64 + 0.5;
         let cy = iy as f64 + 0.5;
-        self.plates.iter().enumerate()
+        self.plates
+            .iter()
+            .enumerate()
             .min_by(|(_, a), (_, b)| {
                 let da = (cx - a.center.0).powi(2) + (cy - a.center.1).powi(2);
                 let db = (cx - b.center.0).powi(2) + (cy - b.center.1).powi(2);
@@ -200,8 +221,10 @@ impl TectonicPlatesStrategy {
             .wrapping_add(self.seed);
         let n1 = n.wrapping_mul(1103515245).wrapping_add(12345);
         let n2 = n1.wrapping_mul(1103515245).wrapping_add(12345);
-        ((n1 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
-         (n2 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64)
+        (
+            (n1 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
+            (n2 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
+        )
     }
 
     fn plate_id_hash(&self, ix: i32, iy: i32) -> f64 {
@@ -270,22 +293,36 @@ impl TectonicPlatesStrategy {
 
                 let mut ddx = sx - cx;
                 if cp_f > 0.0 {
-                    if ddx > cp_f * 0.5 { ddx -= cp_f; }
-                    if ddx < -cp_f * 0.5 { ddx += cp_f; }
+                    if ddx > cp_f * 0.5 {
+                        ddx -= cp_f;
+                    }
+                    if ddx < -cp_f * 0.5 {
+                        ddx += cp_f;
+                    }
                 }
                 let dist = (ddx.powi(2) + (sy - cy).powi(2)).sqrt();
 
                 if dist < min_dist {
-                    second_dist = min_dist; second_cell = nearest_cell; second_center = nearest_center;
-                    min_dist = dist; nearest_cell = (cell_x, cell_y); nearest_center = (cx, cy);
+                    second_dist = min_dist;
+                    second_cell = nearest_cell;
+                    second_center = nearest_center;
+                    min_dist = dist;
+                    nearest_cell = (cell_x, cell_y);
+                    nearest_center = (cx, cy);
                 } else if dist < second_dist {
-                    second_dist = dist; second_cell = (cell_x, cell_y); second_center = (cx, cy);
+                    second_dist = dist;
+                    second_cell = (cell_x, cell_y);
+                    second_center = (cx, cy);
                 }
             }
         }
 
-        let plate_a_idx = self.registry.plate_for_cell(self.wrap_cell_ix(nearest_cell.0), nearest_cell.1);
-        let plate_b_idx = self.registry.plate_for_cell(self.wrap_cell_ix(second_cell.0), second_cell.1);
+        let plate_a_idx = self
+            .registry
+            .plate_for_cell(self.wrap_cell_ix(nearest_cell.0), nearest_cell.1);
+        let plate_b_idx = self
+            .registry
+            .plate_for_cell(self.wrap_cell_ix(second_cell.0), second_cell.1);
         let plate_id = self.plate_id_hash(nearest_cell.0, nearest_cell.1);
 
         let f2_minus_f1 = second_dist - min_dist;
@@ -316,7 +353,14 @@ impl TectonicPlatesStrategy {
 
         let boundary_stress = intensity * (-perturbed_dist.abs() * falloff).exp();
         let interior = self.interior_noise.get([sx * 1.5, sy * 1.5]).abs() * 0.25;
-        let age_damping = 1.0 - self.registry.plates.get(plate_a_idx).map(|p| p.age).unwrap_or(0.5) * 0.7;
+        let age_damping = 1.0
+            - self
+                .registry
+                .plates
+                .get(plate_a_idx)
+                .map(|p| p.age)
+                .unwrap_or(0.5)
+                * 0.7;
         let stress = (boundary_stress + interior * age_damping).clamp(0.0, 1.0);
 
         TectonicSample {

@@ -3,7 +3,7 @@
 //! h_new = (h_old + dt*U + F*h_new_receiver) / (1 + F)
 //! where F = dt * K * A^m / dx
 
-use crate::rivers::{D8_OFFSETS, D8_DISTANCES, NO_FLOW};
+use crate::rivers::{D8_DISTANCES, D8_OFFSETS, NO_FLOW};
 
 pub struct ErosionParams {
     pub k_base: f64,
@@ -53,10 +53,15 @@ fn compute_d8_flow(elevation: &[f64], width: usize, height: usize) -> Vec<u8> {
             for (d, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
                 let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width);
                 let ny = y as i32 + dy;
-                if ny < 0 || ny >= height as i32 { continue; }
+                if ny < 0 || ny >= height as i32 {
+                    continue;
+                }
                 let nidx = ny as usize * width + nx as usize;
                 let slope = (h - elevation[nidx]) / D8_DISTANCES[d];
-                if slope > best_slope { best_slope = slope; best_dir = d as u8; }
+                if slope > best_slope {
+                    best_slope = slope;
+                    best_dir = d as u8;
+                }
             }
             flow_dir[idx] = best_dir;
         }
@@ -65,24 +70,39 @@ fn compute_d8_flow(elevation: &[f64], width: usize, height: usize) -> Vec<u8> {
 }
 
 fn receiver_index(idx: usize, dir: u8, width: usize, height: usize) -> Option<usize> {
-    if dir == NO_FLOW { return None; }
+    if dir == NO_FLOW {
+        return None;
+    }
     let (dx, dy) = D8_OFFSETS[dir as usize];
     let x = (idx % width) as i32 + dx;
     let y = (idx / width) as i32 + dy;
-    if y < 0 || y >= height as i32 { return None; }
+    if y < 0 || y >= height as i32 {
+        return None;
+    }
     Some(y as usize * width + crate::wrap::wrap_grid_x(x, width) as usize)
 }
 
-fn compute_flow_accumulation(flow_dir: &[u8], elevation: &[f64], width: usize, height: usize) -> Vec<u32> {
+fn compute_flow_accumulation(
+    flow_dir: &[u8],
+    elevation: &[f64],
+    width: usize,
+    height: usize,
+) -> Vec<u32> {
     let total = width * height;
     let mut acc = vec![1u32; total];
 
     let mut order: Vec<usize> = (0..total).collect();
-    order.sort_unstable_by(|&a, &b| elevation[b].partial_cmp(&elevation[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_unstable_by(|&a, &b| {
+        elevation[b]
+            .partial_cmp(&elevation[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     for &idx in &order {
         let dir = flow_dir[idx];
-        if dir == NO_FLOW { continue; }
+        if dir == NO_FLOW {
+            continue;
+        }
         if let Some(recv) = receiver_index(idx, dir, width, height) {
             acc[recv] += acc[idx];
         }
@@ -90,7 +110,13 @@ fn compute_flow_accumulation(flow_dir: &[u8], elevation: &[f64], width: usize, h
     acc
 }
 
-fn fill_depressions(elevation: &[f64], width: usize, height: usize, sea_level: f64, _extra: Option<()>) -> Vec<f64> {
+fn fill_depressions(
+    elevation: &[f64],
+    width: usize,
+    height: usize,
+    sea_level: f64,
+    _extra: Option<()>,
+) -> Vec<f64> {
     let mut h = elevation.to_vec();
     crate::rivers::fill_depressions(&mut h, width, height);
     // Re-apply sea level floor
@@ -113,10 +139,12 @@ pub fn simulate_erosion(
     let mut h = heightmap.to_vec();
     let mut sediment = vec![0.0f64; total];
 
-    let erodibility: Vec<f64> = rock_hardness.iter()
+    let erodibility: Vec<f64> = rock_hardness
+        .iter()
         .map(|&r| params.k_base * (1.5 - r))
         .collect();
-    let uplift: Vec<f64> = tectonic_stress.iter()
+    let uplift: Vec<f64> = tectonic_stress
+        .iter()
         .map(|&s| params.u_base * s * s)
         .collect();
 
@@ -135,7 +163,9 @@ pub fn simulate_erosion(
         sorted.sort_by(|&a, &b| h[a].partial_cmp(&h[b]).unwrap_or(std::cmp::Ordering::Equal));
 
         for &idx in &sorted {
-            if continentalness[idx] < params.sea_level { continue; }
+            if continentalness[idx] < params.sea_level {
+                continue;
+            }
 
             let dir = flow_dir[idx];
             if dir == NO_FLOW {
@@ -165,7 +195,8 @@ pub fn simulate_erosion(
             let mut thermal_sorted: Vec<usize> = (0..total)
                 .filter(|&i| continentalness[i] >= params.sea_level)
                 .collect();
-            thermal_sorted.sort_by(|&a, &b| h[b].partial_cmp(&h[a]).unwrap_or(std::cmp::Ordering::Equal));
+            thermal_sorted
+                .sort_by(|&a, &b| h[b].partial_cmp(&h[a]).unwrap_or(std::cmp::Ordering::Equal));
 
             for &idx in &thermal_sorted {
                 let x = idx % width;
@@ -173,12 +204,17 @@ pub fn simulate_erosion(
                 for (d, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
                     let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width);
                     let ny = y as i32 + dy;
-                    if ny < 0 || ny >= height as i32 { continue; }
+                    if ny < 0 || ny >= height as i32 {
+                        continue;
+                    }
                     let nidx = ny as usize * width + nx as usize;
                     let slope = (h[idx] - h[nidx]) / (D8_DISTANCES[d] * params.dx);
                     if slope > params.talus_angle {
-                        let transfer = (slope - params.talus_angle) * D8_DISTANCES[d] * params.dx
-                            * params.thermal_rate * 0.5;
+                        let transfer = (slope - params.talus_angle)
+                            * D8_DISTANCES[d]
+                            * params.dx
+                            * params.thermal_rate
+                            * 0.5;
                         h[idx] -= transfer;
                         h[nidx] += transfer;
                         sediment[nidx] += transfer;
@@ -188,11 +224,17 @@ pub fn simulate_erosion(
         }
     }
 
-    for v in h.iter_mut() { *v = v.clamp(-1.0, 1.0); }
+    for v in h.iter_mut() {
+        *v = v.clamp(-1.0, 1.0);
+    }
 
     h = fill_depressions(&h, width, height, params.sea_level, None);
     flow_dir = compute_d8_flow(&h, width, height);
     accumulation = compute_flow_accumulation(&flow_dir, &h, width, height);
 
-    ErosionResult { heightmap: h, drainage_area: accumulation, sediment }
+    ErosionResult {
+        heightmap: h,
+        drainage_area: accumulation,
+        sediment,
+    }
 }

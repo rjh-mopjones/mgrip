@@ -732,6 +732,9 @@ func _ensure_bridge_dirs() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_bridge_responses_dir()))
 
 func _bridge_state_payload() -> Dictionary:
+	var current_runtime_presentation: Dictionary = {}
+	if has_runtime() and _world != null and _world.has_method("get_current_runtime_presentation"):
+		current_runtime_presentation = AgentSessionScript.sanitize_variant(_world.get_current_runtime_presentation())
 	return {
 		"schema_version": BRIDGE_SCHEMA_VERSION,
 		"transport": "file_runtime_bridge",
@@ -768,6 +771,15 @@ func _bridge_state_payload() -> Dictionary:
 		"runtime_constants": {
 			"blocks_per_chunk": GenerationManager.BLOCKS_PER_CHUNK,
 			"world_units_per_chunk": GenerationManager.WORLD_UNITS_PER_CHUNK,
+		},
+		"current_chunk_runtime_presentation": {
+			"planet_zone": current_runtime_presentation.get("planet_zone", {}),
+			"atmosphere_class": current_runtime_presentation.get("atmosphere_class", {}),
+			"water_state": current_runtime_presentation.get("water_state", {}),
+			"landform_class": current_runtime_presentation.get("landform_class", {}),
+			"surface_palette_class": current_runtime_presentation.get("surface_palette_class", {}),
+			"interestingness_score": current_runtime_presentation.get("interestingness_score", 0.0),
+			"reduced_grids": current_runtime_presentation.get("reduced_grids", {}),
 		},
 		"supported_commands": [
 			"ping",

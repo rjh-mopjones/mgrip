@@ -924,7 +924,9 @@ dependencies = [
  "mg_core",
  "mg_noise",
  "rayon",
+ "ron",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

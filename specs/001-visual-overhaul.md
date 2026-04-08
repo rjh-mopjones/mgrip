@@ -18,7 +18,7 @@ The 3D terrain renderer produces correct terrain shapes (coastlines, bays, eleva
 
 ## World Rules (must not violate)
 
-- **No green anywhere.** Red supergiant → photosynthesizers are black, dark purple, burgundy, maroon.
+- **Green is not dominant.** Red supergiant → photosynthesizers lean toward black, dark purple, burgundy, maroon. Sparse muted green vegetation is acceptable; lush Earth-green is not.
 - **Sub-stellar point at normalized (0.5, 1.0)** = world coords (512, 512). South = day, North = night.
 - **Three zones:** The Wash (dayside, scorching), Terminus (habitable crescent), The Black (frozen nightside).
 - **Temperature derived from light_level.** Never independent.
@@ -415,7 +415,7 @@ After all sections:
 
 ## Constraints
 
-- **Never add green to the palette.** If Godot's lighting tints anything green, check the sun color and ambient color.
+- **Green should not dominate the palette.** Sparse, muted green is fine. If Godot's lighting tints large surfaces green unexpectedly, check the sun and ambient color.
 - **Do not modify any Rust code in `gdextension/crates/mg_noise/`** except `src/lib.rs` (Section 2). The noise pipeline is correct.
 - **Rebuild GDExtension after Section 2:** `cd gdextension && cargo build --release`
 - **Test biome palette with shading:** PBR lighting can shift perceived color. The sun is warm amber `(0.95, 0.78, 0.60)` — this will warm up cool biome colors. If dark purple Forest starts looking brown under sunlight, that's physically correct. If anything looks green, the ambient light color `(0.20, 0.18, 0.28)` may need adjusting — shift it more toward purple `(0.22, 0.15, 0.30)`.

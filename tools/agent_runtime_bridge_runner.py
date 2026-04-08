@@ -188,7 +188,11 @@ def wait_for_state(bridge_root: Path, timeout_seconds: float, require_runtime: b
     last_state: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         if state_path.exists():
-            last_state = read_json(state_path)
+            try:
+                last_state = read_json(state_path)
+            except json.JSONDecodeError:
+                time.sleep(0.05)
+                continue
             if last_state.get("enabled") and (not require_runtime or last_state.get("runtime_available")):
                 return last_state
         time.sleep(0.1)
@@ -218,7 +222,11 @@ def request(bridge_root: Path, command: str, args: dict[str, Any] | None = None,
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if response_path.exists():
-            return read_json(response_path)
+            try:
+                return read_json(response_path)
+            except json.JSONDecodeError:
+                time.sleep(0.05)
+                continue
         time.sleep(0.1)
     raise BridgeError(f"Timed out waiting for response to {command} ({request_id})")
 
@@ -342,7 +350,10 @@ def read_json(path: Path) -> dict[str, Any]:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, indent=2))
+    temp_path.replace(path)
 
 
 if __name__ == "__main__":

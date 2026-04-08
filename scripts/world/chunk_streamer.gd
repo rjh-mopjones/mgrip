@@ -145,6 +145,7 @@ func chunk_state(chunk_coord: Vector2i) -> Dictionary:
 		"collision_enabled": chunk.has_collision(),
 		"has_height_data": not chunk.heights.is_empty(),
 		"position": chunk.position,
+		"runtime_presentation": chunk.runtime_presentation,
 	}
 
 func collision_enabled_chunk_coords(center_chunk: Vector2i = _current_center_chunk, radius: int = COLLISION_RADIUS) -> Array[Vector2i]:

@@ -1,8 +1,7 @@
 use godot::prelude::*;
-use mg_noise::{BiomeMap, NoiseLayer, SEA_LEVEL};
+use mg_noise::{tile_has_fluid_surface, BiomeMap, NoiseLayer, SEA_LEVEL};
 
 const NORMAL_Y_WEIGHT: f32 = 2.0;
-const SMOOTH_CENTER_WEIGHT: f32 = 2.0;
 const CHUNK_BLOCK_SPAN: f32 = 512.0;
 const SKIRT_DEPTH: f32 = 24.0;
 
@@ -16,7 +15,7 @@ pub struct ChunkSurfaceBuffers {
 pub struct ChunkMeshBuffers {
     pub heights: Vec<i32>,
     pub collision_heights: Vec<f32>,
-    pub ocean_mask: Vec<u8>,
+    pub fluid_surface_mask: Vec<u8>,
     pub land_surfaces: Vec<ChunkSurfaceBuffers>,
     pub water_surfaces: Vec<ChunkSurfaceBuffers>,
 }
@@ -45,7 +44,7 @@ pub fn build_chunk_mesh_buffers(
         return ChunkMeshBuffers {
             heights: Vec::new(),
             collision_heights: Vec::new(),
-            ocean_mask: Vec::new(),
+            fluid_surface_mask: Vec::new(),
             land_surfaces: Vec::new(),
             water_surfaces: Vec::new(),
         };
@@ -62,27 +61,26 @@ pub fn build_chunk_mesh_buffers(
         .iter()
         .map(|&sample| (sample * height_scale).floor() as i32)
         .collect();
-    let ocean_mask: Vec<u8> = map
-        .heightmap
+    let fluid_surface_mask: Vec<u8> = map
+        .biomes
         .iter()
-        .map(|&sample| u8::from(sample < SEA_LEVEL))
+        .map(|&biome| u8::from(tile_has_fluid_surface(biome)))
         .collect();
     let biome_rgba = map.layer_to_rgba(NoiseLayer::Biome);
 
-    let smoothed_heights = build_smoothed_heights(&heights, width, height);
-    let normals = build_normals(&smoothed_heights, width, height);
+    let render_heights = build_render_heights(&heights);
+    let normals = build_normals(&render_heights, width, height);
     let colors = build_colors(&heights, &biome_rgba, width, height);
     let sea_level_y = (SEA_LEVEL * height_scale).floor() as f32;
 
     ChunkMeshBuffers {
         heights,
-        collision_heights: smoothed_heights.clone(),
-        ocean_mask: ocean_mask.clone(),
+        collision_heights: render_heights.clone(),
+        fluid_surface_mask: fluid_surface_mask.clone(),
         land_surfaces: build_land_surfaces(
-            &smoothed_heights,
+            &render_heights,
             &normals,
             &colors,
-            &ocean_mask,
             width,
             height,
             sub_size,
@@ -91,7 +89,7 @@ pub fn build_chunk_mesh_buffers(
             use_edge_skirts,
         ),
         water_surfaces: build_water_surfaces(
-            &ocean_mask,
+            &fluid_surface_mask,
             width,
             height,
             sub_size,
@@ -109,7 +107,10 @@ pub fn chunk_mesh_buffers_into_dictionary(mesh_buffers: ChunkMeshBuffers) -> Dic
         "collision_heights",
         PackedFloat32Array::from(mesh_buffers.collision_heights),
     );
-    result.set("ocean_mask", PackedByteArray::from(mesh_buffers.ocean_mask));
+    result.set(
+        "fluid_surface_mask",
+        PackedByteArray::from(mesh_buffers.fluid_surface_mask),
+    );
     result.set(
         "land_surfaces",
         surface_buffers_vec_into_variant_array(mesh_buffers.land_surfaces),
@@ -121,35 +122,8 @@ pub fn chunk_mesh_buffers_into_dictionary(mesh_buffers: ChunkMeshBuffers) -> Dic
     result
 }
 
-fn build_smoothed_heights(heights: &[i32], width: usize, height: usize) -> Vec<f32> {
-    let mut smoothed = vec![0.0; width * height];
-    for z in 0..height {
-        for x in 0..width {
-            let idx = z * width + x;
-            if x == 0 || z == 0 || x + 1 == width || z + 1 == height {
-                smoothed[idx] = heights[idx] as f32 + 1.0;
-                continue;
-            }
-
-            let mut sum = 0.0_f32;
-            let mut weight_sum = 0.0_f32;
-            for dz in -1..=1 {
-                for dx in -1..=1 {
-                    let sx = clamp_index(x as isize + dx, width);
-                    let sz = clamp_index(z as isize + dz, height);
-                    let weight = if dx == 0 && dz == 0 {
-                        SMOOTH_CENTER_WEIGHT
-                    } else {
-                        1.0
-                    };
-                    sum += (heights[sz * width + sx] as f32 + 1.0) * weight;
-                    weight_sum += weight;
-                }
-            }
-            smoothed[idx] = sum / weight_sum;
-        }
-    }
-    smoothed
+fn build_render_heights(heights: &[i32]) -> Vec<f32> {
+    heights.iter().map(|&height| height as f32 + 1.0).collect()
 }
 
 fn build_normals(smoothed_heights: &[f32], width: usize, height: usize) -> Vec<Vector3> {
@@ -167,12 +141,7 @@ fn build_normals(smoothed_heights: &[f32], width: usize, height: usize) -> Vec<V
     normals
 }
 
-fn build_colors(
-    heights: &[i32],
-    biome_rgba: &[u8],
-    width: usize,
-    height: usize,
-) -> Vec<Color> {
+fn build_colors(heights: &[i32], biome_rgba: &[u8], width: usize, height: usize) -> Vec<Color> {
     let mut colors = Vec::with_capacity(width * height);
     for idx in 0..(width * height) {
         let rgba_index = idx * 4;
@@ -191,7 +160,6 @@ fn build_land_surfaces(
     smoothed_heights: &[f32],
     normals: &[Vector3],
     colors: &[Color],
-    ocean_mask: &[u8],
     width: usize,
     height: usize,
     sub_size: usize,
@@ -230,10 +198,6 @@ fn build_land_surfaces(
             let mut indices = Vec::with_capacity((max_x - ox + 1) * (max_z - oz + 1) * 6);
             for z in oz..=max_z {
                 for x in ox..=max_x {
-                    if cell_is_ocean(ocean_mask, width, x, z) {
-                        continue;
-                    }
-
                     let lx = x - ox;
                     let lz = z - oz;
                     let i00 = (lz * verts_w + lx) as i32;
@@ -302,7 +266,7 @@ fn build_land_surfaces(
 }
 
 fn build_water_surfaces(
-    ocean_mask: &[u8],
+    fluid_surface_mask: &[u8],
     width: usize,
     height: usize,
     sub_size: usize,
@@ -325,7 +289,7 @@ fn build_water_surfaces(
 
             for z in oz..=max_z {
                 for x in ox..=max_x {
-                    if !cell_is_ocean(ocean_mask, width, x, z) {
+                    if !cell_has_fluid_surface(fluid_surface_mask, width, x, z) {
                         continue;
                     }
 
@@ -373,12 +337,15 @@ fn build_water_surfaces(
     surfaces
 }
 
-fn cell_is_ocean(ocean_mask: &[u8], width: usize, x: usize, z: usize) -> bool {
+fn cell_has_fluid_surface(fluid_surface_mask: &[u8], width: usize, x: usize, z: usize) -> bool {
     let i00 = z * width + x;
     let i10 = z * width + (x + 1);
     let i01 = (z + 1) * width + x;
     let i11 = (z + 1) * width + (x + 1);
-    ocean_mask[i00] != 0 && ocean_mask[i10] != 0 && ocean_mask[i01] != 0 && ocean_mask[i11] != 0
+    fluid_surface_mask[i00] != 0
+        && fluid_surface_mask[i10] != 0
+        && fluid_surface_mask[i01] != 0
+        && fluid_surface_mask[i11] != 0
 }
 
 fn clamp_index(value: isize, upper_bound: usize) -> usize {
@@ -465,9 +432,7 @@ fn append_edge_skirt(
     }
 }
 
-fn surface_buffers_vec_into_variant_array(
-    surfaces: Vec<ChunkSurfaceBuffers>,
-) -> VariantArray {
+fn surface_buffers_vec_into_variant_array(surfaces: Vec<ChunkSurfaceBuffers>) -> VariantArray {
     let mut array = VariantArray::new();
     for surface in surfaces {
         let mut dict = Dictionary::new();
@@ -490,39 +455,104 @@ fn sample_axis_scale(sample_count: usize) -> f32 {
 }
 
 fn surface_color(base: Color, height: i32) -> Color {
+    let luma = (base.r * 0.299) + (base.g * 0.587) + (base.b * 0.114);
     let ridge = (((height as f32) - 18.0) / 64.0).clamp(0.0, 1.0);
     let haze = (((height as f32) + 8.0) / 96.0).clamp(0.0, 1.0);
-    let mut color = base.lerp(Color::from_rgb(0.63, 0.46, 0.39), f64::from(ridge * 0.10));
-    color = color.lerp(
-        Color::from_rgb(0.75, 0.54, 0.37),
-        f64::from(0.04 + haze * 0.06),
+    let mineral = 0.82 + ridge * 0.10 + haze * 0.05;
+    let cool_shift = (0.03 + (1.0 - ridge) * 0.02) * (0.40 + haze * 0.60);
+    let neutral = Color::from_rgba(
+        (luma * mineral).clamp(0.0, 1.0),
+        (luma * (mineral - cool_shift * 0.40)).clamp(0.0, 1.0),
+        (luma * (mineral + cool_shift * 0.85)).clamp(0.0, 1.0),
+        1.0,
+    );
+    let retain_base = 0.10;
+    let color = Color::from_rgba(
+        (neutral.r * (1.0 - retain_base) + base.r * retain_base).clamp(0.0, 1.0),
+        (neutral.g * (1.0 - retain_base) + base.g * retain_base).clamp(0.0, 1.0),
+        (neutral.b * (1.0 - retain_base) + base.b * retain_base).clamp(0.0, 1.0),
+        1.0,
     );
     Color::from_rgba(
-        (color.r * 0.97).clamp(0.0, 1.0),
-        (color.g * 0.95).clamp(0.0, 1.0),
-        (color.b * 0.94).clamp(0.0, 1.0),
+        (color.r * 0.99).clamp(0.0, 1.0),
+        (color.g * 0.98).clamp(0.0, 1.0),
+        (color.b * 1.01).clamp(0.0, 1.0),
         1.0,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::build_smoothed_heights;
+    use super::{build_chunk_mesh_buffers, build_render_heights};
+    use mg_core::TileType;
+    use mg_noise::BiomeMap;
 
     #[test]
-    fn border_vertices_stay_locked_to_raw_heights() {
-        let heights = vec![
-            0, 1, 2,
-            3, 4, 5,
-            6, 7, 8,
-        ];
+    fn render_heights_preserve_raw_steps() {
+        let heights = vec![0, 1, 2, 3, 4, 5, 6, 7, 8];
 
-        let smoothed = build_smoothed_heights(&heights, 3, 3);
+        let render_heights = build_render_heights(&heights);
 
-        assert_eq!(smoothed[0], 1.0);
-        assert_eq!(smoothed[2], 3.0);
-        assert_eq!(smoothed[6], 7.0);
-        assert_eq!(smoothed[8], 9.0);
-        assert!(smoothed[4] > 4.0);
+        assert_eq!(render_heights[0], 1.0);
+        assert_eq!(render_heights[2], 3.0);
+        assert_eq!(render_heights[6], 7.0);
+        assert_eq!(render_heights[8], 9.0);
+        assert_eq!(render_heights[4], 5.0);
+    }
+
+    #[test]
+    fn low_frozen_chunks_keep_land_and_do_not_emit_fluid_surface() {
+        let map = simple_map(TileType::IceSheet, -0.30);
+        let buffers = build_chunk_mesh_buffers(&map, 200.0, 2, false);
+
+        assert!(buffers.fluid_surface_mask.iter().all(|&value| value == 0));
+        assert!(!buffers.land_surfaces.is_empty());
+        assert!(buffers.water_surfaces.is_empty());
+    }
+
+    #[test]
+    fn fluid_chunks_keep_terrain_bed_under_surface_overlay() {
+        let map = simple_map(TileType::Sea, -0.30);
+        let buffers = build_chunk_mesh_buffers(&map, 200.0, 2, false);
+
+        assert!(buffers.fluid_surface_mask.iter().all(|&value| value == 1));
+        assert!(!buffers.land_surfaces.is_empty());
+        assert!(!buffers.water_surfaces.is_empty());
+    }
+
+    fn simple_map(tile: TileType, height: f64) -> BiomeMap {
+        let width = 3;
+        let height_samples = 3;
+        let len = width * height_samples;
+        BiomeMap {
+            width,
+            height: height_samples,
+            continentalness: vec![0.0; len],
+            tectonic: vec![0.0; len],
+            tectonic_plate_ids: vec![0.0; len],
+            humidity: vec![0.0; len],
+            rock_hardness: vec![0.0; len],
+            light_level: vec![0.0; len],
+            peaks_valleys: vec![0.0; len],
+            volcanism: vec![0.0; len],
+            heightmap: vec![height; len],
+            temperature: vec![0.0; len],
+            erosion: vec![0.0; len],
+            rivers: vec![0.0; len],
+            aridity: vec![0.0; len],
+            precipitation_type: vec![0.0; len],
+            water_table: vec![0.0; len],
+            wind_speed: vec![0.0; len],
+            resource_richness: vec![0.0; len],
+            snowpack: vec![0.0; len],
+            biomes: vec![tile; len],
+            vegetation_density: vec![0.0; len],
+            soil_type: vec![0.0; len],
+            drainage_area: vec![0; len],
+            sediment: vec![0.0; len],
+            river_network: None,
+            world_width: 1024.0,
+            world_height: 512.0,
+        }
     }
 }

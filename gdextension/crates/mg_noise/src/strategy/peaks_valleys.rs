@@ -1,5 +1,5 @@
-use noise::{NoiseFn, OpenSimplex};
 use mg_core::NoiseStrategy;
+use noise::{NoiseFn, OpenSimplex};
 
 /// Ridged multifractal noise for mountain relief.
 /// Amplitude is modulated by tectonic stress in derive_peaks_valleys — this
@@ -37,7 +37,8 @@ impl PeaksAndValleysStrategy {
 
         for _ in 0..(self.octaves + detail_level) {
             let sample = if self.world_width > 0.0 {
-                let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(x, y, freq, 0.007, self.world_width);
+                let [cx, cz, cy] =
+                    crate::wrap::cylindrical_noise_coords(x, y, freq, 0.007, self.world_width);
                 self.noise.get([cx, cz, cy])
             } else {
                 self.noise.get([x * freq * 0.007, y * freq * 0.007])

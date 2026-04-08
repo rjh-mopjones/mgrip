@@ -2,6 +2,7 @@ extends Node3D
 
 const ChunkMetricsScript = preload("res://scripts/world/chunk_metrics.gd")
 const ChunkStreamerScript = preload("res://scripts/world/chunk_streamer.gd")
+const WorldEnvironmentControllerScript = preload("res://scripts/world/world_environment_controller.gd")
 const DEFAULT_WORLD_X := 440.0
 const DEFAULT_WORLD_Y := 220.0
 
@@ -9,16 +10,20 @@ const DEFAULT_WORLD_Y := 220.0
 @export var world_y: float = DEFAULT_WORLD_Y
 
 @onready var _terrain_root: Node3D    = $TerrainRoot
+@onready var _sun: DirectionalLight3D = $Sun
+@onready var _world_environment: WorldEnvironment = $WorldEnvironment
 @onready var _player: CharacterBody3D = $Player
 @onready var _head: Node3D = $Player/Head
 @onready var _camera: Camera3D = $Player/Head/Camera3D
 
 var _map_overlay: MapOverlay
+var _world_environment_controller = null
 var _chunk_metrics = null
 var _chunk_streamer = null
 var _anchor_chunk: Vector2i = Vector2i.ZERO
 var _last_map_chunk: Vector2i = Vector2i(1 << 20, 1 << 20)
 var _last_prewarm_target: Vector2i = Vector2i(1 << 20, 1 << 20)
+var _last_environment_chunk: Vector2i = Vector2i(1 << 20, 1 << 20)
 
 func _ready() -> void:
 	var window := get_window()
@@ -41,6 +46,7 @@ func _ready() -> void:
 	_chunk_streamer.update_streaming(_anchor_chunk)
 	_log_height_stats(boot_chunk.heights)
 	_place_player(boot_chunk)
+	_setup_environment_controller(boot_chunk)
 	_last_prewarm_target = _chunk_streamer.prewarm_target_chunk()
 	if not _is_flythrough_run():
 		_setup_map(boot_chunk)
@@ -92,6 +98,8 @@ func _process(_delta: float) -> void:
 			]
 		)
 	_chunk_streamer.update_streaming(current_chunk, _player.position, _player.velocity, player_forward)
+	var loaded_chunk = _chunk_streamer.get_chunk(current_chunk)
+	_maybe_update_environment(current_chunk, loaded_chunk)
 	var prewarm_target: Vector2i = _chunk_streamer.prewarm_target_chunk()
 	if prewarm_target != _last_prewarm_target and prewarm_target != current_chunk:
 		print(
@@ -105,7 +113,6 @@ func _process(_delta: float) -> void:
 		)
 	_last_prewarm_target = prewarm_target
 	if _map_overlay:
-		var loaded_chunk = _chunk_streamer.get_chunk(current_chunk)
 		if loaded_chunk and current_chunk != _last_map_chunk:
 			_map_overlay.update_local_chunk(loaded_chunk.biome_map, current_chunk)
 			_last_map_chunk = current_chunk
@@ -159,10 +166,23 @@ func _setup_map(chunk) -> void:
 	_map_overlay.setup(chunk.biome_map, _anchor_chunk, chunk.chunk_coord)
 	_map_overlay.attach_hud.call_deferred(self)
 
+func _setup_environment_controller(chunk) -> void:
+	_world_environment_controller = WorldEnvironmentControllerScript.new()
+	_world_environment_controller.setup(_world_environment, _sun)
+	_maybe_update_environment(chunk.chunk_coord, chunk)
+
+func _maybe_update_environment(chunk_coord: Vector2i, chunk) -> void:
+	if _world_environment_controller == null or chunk == null:
+		return
+	if chunk_coord == _last_environment_chunk and not chunk.runtime_presentation.is_empty():
+		return
+	_world_environment_controller.apply_runtime_presentation(chunk.runtime_presentation)
+	_last_environment_chunk = chunk_coord
+
 func _place_player(chunk) -> void:
 	var cx: int = VoxelMeshBuilder.CHUNK_SIZE / 2
 	var cz: int = VoxelMeshBuilder.CHUNK_SIZE / 2
-	var land := _find_land_block(cx, cz, chunk.ocean_mask)
+	var land := _find_land_block(cx, cz, chunk.fluid_surface_mask)
 	var surface_y: int
 	var chunk_origin := GenerationManager.chunk_coord_to_scene_origin(chunk.chunk_coord, _anchor_chunk)
 	if land.x >= 0:
@@ -173,8 +193,8 @@ func _place_player(chunk) -> void:
 			chunk_origin.z + land.y + 0.5,
 		)
 	else:
-		# Entire chunk is ocean — float above sea level
-		push_warning("Entire chunk is ocean — spawning above water")
+		# Entire chunk is covered by non-standable fluid.
+		push_warning("Entire chunk is covered by fluid surface — spawning above center")
 		_player.position = Vector3(
 			chunk_origin.x + cx + 0.5,
 			VoxelMeshBuilder.SEA_LEVEL_Y + 8.0,
@@ -191,10 +211,10 @@ func sample_surface_height(block_x: int, block_z: int) -> float:
 func nearest_land_block(block_x: int, block_z: int) -> Vector2:
 	var chunk_coord := GenerationManager.scene_block_to_chunk_coord(_anchor_chunk, block_x, block_z)
 	var chunk = _chunk_streamer.get_chunk(chunk_coord)
-	if chunk == null or chunk.ocean_mask.is_empty():
+	if chunk == null or chunk.fluid_surface_mask.is_empty():
 		return Vector2(block_x, block_z)
 	var block := GenerationManager.scene_block_to_local_block(block_x, block_z)
-	var local_land := _find_land_block(block.x, block.y, chunk.ocean_mask)
+	var local_land := _find_land_block(block.x, block.y, chunk.fluid_surface_mask)
 	if local_land.x < 0:
 		return Vector2(block_x, block_z)
 	var chunk_origin := GenerationManager.chunk_coord_to_scene_origin(chunk_coord, _anchor_chunk)
@@ -233,11 +253,11 @@ func _log_height_stats(heights: PackedInt32Array) -> void:
 		print("    [%+.1f, %+.1f): %5.1f%%" % [lo, lo + 0.2, pct])
 	print("────────────────────────────────────────────")
 
-## Spiral search outward from (cx, cz) until a non-ocean block is found.
+## Spiral search outward from (cx, cz) until a standable block is found.
 ## Returns Vector2(block_x, block_z) or Vector2(-1, -1) if none found.
-func _find_land_block(cx: int, cz: int, ocean: PackedByteArray) -> Vector2:
+func _find_land_block(cx: int, cz: int, fluid_surface_mask: PackedByteArray) -> Vector2:
 	var size := VoxelMeshBuilder.CHUNK_SIZE
-	if not ocean[cz * size + cx]:
+	if not fluid_surface_mask[cz * size + cx]:
 		return Vector2(cx, cz)
 	var step := 1
 	while step < size:
@@ -246,14 +266,14 @@ func _find_land_block(cx: int, cz: int, ocean: PackedByteArray) -> Vector2:
 				var x: int = cx + dx
 				var z: int = cz + dz_off
 				if x >= 0 and x < size and z >= 0 and z < size:
-					if not ocean[z * size + x]:
+					if not fluid_surface_mask[z * size + x]:
 						return Vector2(x, z)
 		for dz in range(-step + 1, step):
 			for dx_off in [-step, step]:
 				var x: int = cx + dx_off
 				var z: int = cz + dz
 				if x >= 0 and x < size and z >= 0 and z < size:
-					if not ocean[z * size + x]:
+					if not fluid_surface_mask[z * size + x]:
 						return Vector2(x, z)
 		step += 4
 	return Vector2(-1, -1)
@@ -275,6 +295,13 @@ func get_chunk_state(chunk_coord: Vector2i) -> Dictionary:
 
 func get_current_chunk_state() -> Dictionary:
 	return get_chunk_state(GameState.current_chunk)
+
+func get_chunk_runtime_presentation(chunk_coord: Vector2i) -> Dictionary:
+	var chunk = _chunk_streamer.get_chunk(chunk_coord) if _chunk_streamer != null else null
+	return chunk.runtime_presentation if chunk != null else {}
+
+func get_current_runtime_presentation() -> Dictionary:
+	return get_chunk_runtime_presentation(GameState.current_chunk)
 
 func get_player_node() -> CharacterBody3D:
 	return _player

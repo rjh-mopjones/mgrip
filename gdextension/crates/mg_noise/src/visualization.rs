@@ -51,11 +51,24 @@ impl NoiseLayer {
 
     pub fn all() -> &'static [NoiseLayer] {
         &[
-            Self::Biome, Self::Heightmap, Self::Temperature, Self::Humidity,
-            Self::Continentalness, Self::Tectonic, Self::RockHardness, Self::LightLevel,
-            Self::PeaksValleys, Self::Erosion, Self::Rivers, Self::Aridity,
-            Self::PrecipitationType, Self::Snowpack, Self::WaterTable,
-            Self::VegetationDensity, Self::SoilType, Self::ResourceRichness,
+            Self::Biome,
+            Self::Heightmap,
+            Self::Temperature,
+            Self::Humidity,
+            Self::Continentalness,
+            Self::Tectonic,
+            Self::RockHardness,
+            Self::LightLevel,
+            Self::PeaksValleys,
+            Self::Erosion,
+            Self::Rivers,
+            Self::Aridity,
+            Self::PrecipitationType,
+            Self::Snowpack,
+            Self::WaterTable,
+            Self::VegetationDensity,
+            Self::SoilType,
+            Self::ResourceRichness,
         ]
     }
 }
@@ -85,7 +98,12 @@ pub fn temperature_to_rgba(temp: f64) -> [u8; 4] {
     let t = ((temp + 80.0) / 200.0).clamp(0.0, 1.0);
     if t < 0.5 {
         let s = t * 2.0;
-        [(s * 80.0) as u8, (s * 200.0) as u8, (255.0 * (1.0 - s)) as u8, 255]
+        [
+            (s * 80.0) as u8,
+            (s * 200.0) as u8,
+            (255.0 * (1.0 - s)) as u8,
+            255,
+        ]
     } else {
         let s = (t - 0.5) * 2.0;
         [(80.0 + s * 175.0) as u8, (200.0 * (1.0 - s)) as u8, 0, 255]
@@ -94,12 +112,22 @@ pub fn temperature_to_rgba(temp: f64) -> [u8; 4] {
 
 pub fn humidity_to_rgba(v: f64) -> [u8; 4] {
     let t = v.clamp(0.0, 1.0);
-    [(40.0 * (1.0 - t)) as u8, (100.0 * t) as u8, (200.0 * t + 55.0 * (1.0 - t)) as u8, 255]
+    [
+        (40.0 * (1.0 - t)) as u8,
+        (100.0 * t) as u8,
+        (200.0 * t + 55.0 * (1.0 - t)) as u8,
+        255,
+    ]
 }
 
 pub fn tectonic_to_rgba(v: f64) -> [u8; 4] {
     let t = v.clamp(0.0, 1.0);
-    [(200.0 * (1.0 - t)) as u8, (100.0 * t) as u8, (80.0 * t) as u8, 255]
+    [
+        (200.0 * (1.0 - t)) as u8,
+        (100.0 * t) as u8,
+        (80.0 * t) as u8,
+        255,
+    ]
 }
 
 pub fn light_level_to_rgba(v: f64) -> [u8; 4] {
@@ -128,16 +156,31 @@ pub fn river_to_rgba(v: f64) -> [u8; 4] {
 
 pub fn aridity_to_rgba(v: f64) -> [u8; 4] {
     let t = v.clamp(0.0, 1.0);
-    [(200.0 * t + 55.0 * (1.0 - t)) as u8, (180.0 * (1.0 - t)) as u8, (60.0 * (1.0 - t)) as u8, 255]
+    [
+        (200.0 * t + 55.0 * (1.0 - t)) as u8,
+        (180.0 * (1.0 - t)) as u8,
+        (60.0 * (1.0 - t)) as u8,
+        255,
+    ]
 }
 
 pub fn precipitation_type_to_rgba(v: f64) -> [u8; 4] {
     if v < 0.0 {
         let t = (-v).clamp(0.0, 1.0);
-        [(200.0 * (1.0 - t) + 55.0) as u8, (220.0 * (1.0 - t) + 35.0) as u8, 255, 255]
+        [
+            (200.0 * (1.0 - t) + 55.0) as u8,
+            (220.0 * (1.0 - t) + 35.0) as u8,
+            255,
+            255,
+        ]
     } else {
         let t = v.clamp(0.0, 1.0);
-        [(200.0 * t + 55.0 * (1.0 - t)) as u8, (80.0 * t) as u8, (20.0 * t) as u8, 255]
+        [
+            (200.0 * t + 55.0 * (1.0 - t)) as u8,
+            (80.0 * t) as u8,
+            (20.0 * t) as u8,
+            255,
+        ]
     }
 }
 
@@ -152,17 +195,32 @@ pub fn water_table_to_rgba(v: f64) -> [u8; 4] {
 
 pub fn rock_hardness_to_rgba(v: f64) -> [u8; 4] {
     let t = v.clamp(0.0, 1.0);
-    [(120.0 + 80.0 * t) as u8, (100.0 + 60.0 * t) as u8, (80.0 + 40.0 * t) as u8, 255]
+    [
+        (120.0 + 80.0 * t) as u8,
+        (100.0 + 60.0 * t) as u8,
+        (80.0 + 40.0 * t) as u8,
+        255,
+    ]
 }
 
 pub fn vegetation_to_rgba(v: f64) -> [u8; 4] {
     let t = v.clamp(0.0, 1.0);
-    [(20.0 * (1.0 - t)) as u8, (180.0 * t + 40.0) as u8, (20.0 * (1.0 - t)) as u8, 255]
+    [
+        (20.0 * (1.0 - t)) as u8,
+        (180.0 * t + 40.0) as u8,
+        (20.0 * (1.0 - t)) as u8,
+        255,
+    ]
 }
 
 pub fn soil_type_to_rgba(v: f64) -> [u8; 4] {
     let t = v.clamp(0.0, 1.0);
-    [(150.0 * t + 60.0) as u8, (100.0 * t + 40.0) as u8, (30.0 * t) as u8, 255]
+    [
+        (150.0 * t + 60.0) as u8,
+        (100.0 * t + 40.0) as u8,
+        (30.0 * t) as u8,
+        255,
+    ]
 }
 
 pub fn resources_to_rgba(v: f64) -> [u8; 4] {
@@ -176,5 +234,10 @@ pub fn wind_speed_to_rgba(v: f64) -> [u8; 4] {
 
 pub fn volcanism_to_rgba(v: f64) -> [u8; 4] {
     let t = v.clamp(0.0, 1.0);
-    [(200.0 * t + 55.0) as u8, (30.0 * t) as u8, (20.0 * t) as u8, 255]
+    [
+        (200.0 * t + 55.0) as u8,
+        (30.0 * t) as u8,
+        (20.0 * t) as u8,
+        255,
+    ]
 }

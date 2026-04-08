@@ -56,8 +56,13 @@ func build(
 	base["nearby_sampled_terrain_heights"] = _sample_nearby_heights(world, player.position)
 	base["nearest_land_results"] = _nearest_land_results(world, probe_points)
 	base["flythrough"] = _flythrough_state()
-	base["current_chunk_state"] = AgentSessionScript.sanitize_variant(
+	var current_chunk_state: Dictionary = AgentSessionScript.sanitize_variant(
 		world.get_current_chunk_state() if world.has_method("get_current_chunk_state") else {}
+	)
+	base["current_chunk_state"] = current_chunk_state
+	base["runtime_presentation"] = AgentSessionScript.sanitize_variant(
+		world.get_current_runtime_presentation() if world.has_method("get_current_runtime_presentation")
+		else current_chunk_state.get("runtime_presentation", {})
 	)
 	if bool(options.get("debug", false)):
 		base["debug"] = {

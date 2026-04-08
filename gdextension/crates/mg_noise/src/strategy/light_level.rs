@@ -1,5 +1,5 @@
-use noise::{NoiseFn, OpenSimplex};
 use mg_core::NoiseStrategy;
+use noise::{NoiseFn, OpenSimplex};
 
 pub struct LightLevelStrategy {
     noise: OpenSimplex,
@@ -10,8 +10,20 @@ pub struct LightLevelStrategy {
 }
 
 impl LightLevelStrategy {
-    pub fn new(seed: u32, sub_stellar_x: f64, sub_stellar_y: f64, map_width: f64, map_height: f64) -> Self {
-        Self { noise: OpenSimplex::new(seed), sub_stellar_x, sub_stellar_y, map_width, map_height }
+    pub fn new(
+        seed: u32,
+        sub_stellar_x: f64,
+        sub_stellar_y: f64,
+        map_width: f64,
+        map_height: f64,
+    ) -> Self {
+        Self {
+            noise: OpenSimplex::new(seed),
+            sub_stellar_x,
+            sub_stellar_y,
+            map_width,
+            map_height,
+        }
     }
 
     pub fn default_for_map(seed: u32) -> Self {
