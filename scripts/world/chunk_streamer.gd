@@ -3,8 +3,10 @@ class_name ChunkStreamer
 
 const ACTIVE_LOD := GenerationManager.LOD0_NAME
 const STREAM_RADIUS := 1
+const HORIZON_LOD := GenerationManager.LOD1_NAME
+const DEFAULT_HORIZON_RADIUS := 3
+const FLIGHT_HORIZON_RADIUS := 5
 const COLLISION_RADIUS := 1
-const RETAIN_RADIUS := 2
 const PREWARM_EDGE_MARGIN := 72.0
 const PREWARM_MIN_SPEED := 2.0
 const MAX_CONCURRENT_JOBS := 8
@@ -20,12 +22,16 @@ var _chunks: Dictionary = {}
 var _pending_requests: Array[Dictionary] = []
 var _inflight_jobs: Dictionary = {}
 var _prewarm_target_chunk: Vector2i = Vector2i.ZERO
+var _horizon_radius := DEFAULT_HORIZON_RADIUS
+var _retain_radius := DEFAULT_HORIZON_RADIUS + 1
 
 func setup(terrain_root: Node3D, metrics, anchor_chunk: Vector2i) -> void:
 	_terrain_root = terrain_root
 	_metrics = metrics
 	_anchor_chunk = anchor_chunk
 	_current_center_chunk = anchor_chunk
+	_horizon_radius = FLIGHT_HORIZON_RADIUS if _is_flight_mode() else DEFAULT_HORIZON_RADIUS
+	_retain_radius = _horizon_radius + 1
 
 func bootstrap_chunk(chunk_coord: Vector2i, collision_enabled: bool = true):
 	_current_center_chunk = chunk_coord
@@ -114,29 +120,51 @@ func _ensure_chunk_sync(chunk_coord: Vector2i, lod: String, collision_enabled: b
 
 func _rebuild_pending(center_chunk: Vector2i, prewarm_center_chunk: Vector2i) -> void:
 	var pending: Array[Dictionary] = []
-	var desired_centers: Array[Vector2i] = [center_chunk]
+	var desired_lods := _collect_desired_lods(center_chunk, prewarm_center_chunk)
+	for chunk_coord in _ordered_desired_chunks(center_chunk, prewarm_center_chunk):
+		var key := _chunk_key(chunk_coord)
+		var desired_lod := String(desired_lods.get(key, ""))
+		if desired_lod.is_empty():
+			continue
+		if _has_matching_chunk(chunk_coord, desired_lod):
+			continue
+		if _inflight_jobs.has(key):
+			continue
+		if chunk_coord == center_chunk:
+			continue
+		pending.append({
+			"chunk_coord": chunk_coord,
+			"lod": desired_lod,
+			"collision_enabled": false,
+		})
+	_pending_requests = pending
+
+func _collect_desired_lods(center_chunk: Vector2i, prewarm_center_chunk: Vector2i) -> Dictionary:
+	var desired: Dictionary = {}
+	for chunk_coord in _desired_chunk_order(center_chunk, _horizon_radius):
+		_set_desired_lod(desired, chunk_coord, _desired_lod_for_center(center_chunk, chunk_coord, false))
 	if prewarm_center_chunk != center_chunk:
-		desired_centers.append(prewarm_center_chunk)
+		for chunk_coord in _desired_chunk_order(prewarm_center_chunk, STREAM_RADIUS):
+			_set_desired_lod(desired, chunk_coord, _desired_lod_for_center(prewarm_center_chunk, chunk_coord, true))
+	return desired
+
+func _ordered_desired_chunks(center_chunk: Vector2i, prewarm_center_chunk: Vector2i) -> Array[Vector2i]:
+	var ordered: Array[Vector2i] = []
 	var seen: Dictionary = {}
-	for desired_center in desired_centers:
-		for chunk_coord in _desired_chunk_order(desired_center, STREAM_RADIUS):
+	if prewarm_center_chunk != center_chunk:
+		for chunk_coord in _desired_chunk_order(prewarm_center_chunk, STREAM_RADIUS):
 			var key := _chunk_key(chunk_coord)
 			if seen.has(key):
 				continue
 			seen[key] = true
-			var desired_lod := _desired_lod(center_chunk, chunk_coord)
-			if _has_matching_chunk(chunk_coord, desired_lod):
-				continue
-			if _inflight_jobs.has(key):
-				continue
-			if chunk_coord == center_chunk:
-				continue
-			pending.append({
-				"chunk_coord": chunk_coord,
-				"lod": desired_lod,
-				"collision_enabled": false,
-			})
-	_pending_requests = pending
+			ordered.append(chunk_coord)
+	for chunk_coord in _desired_chunk_order(center_chunk, _horizon_radius):
+		var key := _chunk_key(chunk_coord)
+		if seen.has(key):
+			continue
+		seen[key] = true
+		ordered.append(chunk_coord)
+	return ordered
 
 func _desired_chunk_order(center_chunk: Vector2i, radius: int) -> Array[Vector2i]:
 	var coords: Array[Vector2i] = [center_chunk]
@@ -148,8 +176,27 @@ func _desired_chunk_order(center_chunk: Vector2i, radius: int) -> Array[Vector2i
 				coords.append(center_chunk + Vector2i(dx, dz))
 	return coords
 
-func _desired_lod(_center_chunk: Vector2i, _chunk_coord: Vector2i) -> String:
-	return ACTIVE_LOD
+func _desired_lod_for_center(center_chunk: Vector2i, chunk_coord: Vector2i, near_only: bool) -> String:
+	var dx := absi(chunk_coord.x - center_chunk.x)
+	var dy := absi(chunk_coord.y - center_chunk.y)
+	var radius := maxi(dx, dy)
+	if radius <= STREAM_RADIUS:
+		return ACTIVE_LOD
+	if near_only:
+		return ""
+	if radius <= _horizon_radius:
+		return HORIZON_LOD
+	return ""
+
+func _set_desired_lod(desired: Dictionary, chunk_coord: Vector2i, lod: String) -> void:
+	if lod.is_empty():
+		return
+	var key := _chunk_key(chunk_coord)
+	var existing := String(desired.get(key, ""))
+	if existing == ACTIVE_LOD:
+		return
+	if lod == ACTIVE_LOD or existing.is_empty():
+		desired[key] = lod
 
 func _predict_next_center_chunk(center_chunk: Vector2i, player_position: Vector3, player_velocity: Vector3) -> Vector2i:
 	var chunk_origin := GenerationManager.chunk_coord_to_scene_origin(center_chunk, _anchor_chunk)
@@ -226,6 +273,11 @@ func _attach_ready_jobs(center_chunk: Vector2i) -> void:
 			continue
 		if _has_matching_chunk(chunk_coord, lod):
 			continue
+		if _chunks.has(key):
+			var existing = _chunks[key]
+			existing.begin_unload()
+			_chunks.erase(key)
+			existing.queue_free()
 
 		var result := job.take_result()
 		if result.is_empty():
@@ -282,7 +334,7 @@ func _has_matching_chunk(chunk_coord: Vector2i, lod: String) -> bool:
 func _is_within_retain_radius(chunk_coord: Vector2i, center_chunk: Vector2i) -> bool:
 	var dx := absi(chunk_coord.x - center_chunk.x)
 	var dy := absi(chunk_coord.y - center_chunk.y)
-	return maxi(dx, dy) <= RETAIN_RADIUS
+	return maxi(dx, dy) <= _retain_radius
 
 func _is_within_collision_radius(chunk_coord: Vector2i, center_chunk: Vector2i) -> bool:
 	var dx := absi(chunk_coord.x - center_chunk.x)
@@ -291,3 +343,10 @@ func _is_within_collision_radius(chunk_coord: Vector2i, center_chunk: Vector2i) 
 
 func _chunk_key(chunk_coord: Vector2i) -> String:
 	return "%d,%d" % [chunk_coord.x, chunk_coord.y]
+
+func _is_flight_mode() -> bool:
+	for arg in OS.get_cmdline_args():
+		var value := String(arg)
+		if value == "--flythrough-flight" or value == "--flythrough=flight":
+			return true
+	return false

@@ -5,20 +5,24 @@ extends Node
 ##   godot --flythrough            # scenic landscape shots
 ##   godot --flythrough-boundary   # seam / chunk-boundary shots
 ##   godot --flythrough-crossing   # physical seam crossing test
+##   godot --flythrough-flight     # high aerial horizon shots
 ## Screenshots saved to:
 ##   /tmp/mgrip_flythrough/scene/frame_001.png … frame_NNN.png
 ##   /tmp/mgrip_flythrough/boundary/frame_001.png … frame_NNN.png
 ##   /tmp/mgrip_flythrough/crossing/frame_001.png … frame_NNN.png
+##   /tmp/mgrip_flythrough/flight/frame_001.png … frame_NNN.png
 ## Exits automatically when done.
 
 const BASE_SCREENSHOT_DIR := "/tmp/mgrip_flythrough"
 const MODE_SCENE := "scene"
 const MODE_BOUNDARY := "boundary"
 const MODE_CROSSING := "crossing"
+const MODE_FLIGHT := "flight"
 const WARMUP_SECS    := 2.5   # time for terrain to generate + player to spawn
 const HOLD_SECS      := 1.2   # seconds at each waypoint before screenshot
 const EXIT_DELAY     := 1.5   # flush time after last screenshot
 const CLEARANCE      := 8.0
+const FLIGHT_CAMERA_FAR := 6144.0
 const CROSSING_SETTLE_SECS := 0.5
 const CROSSING_SPEED := 8.0
 const CROSSING_ARRIVE_DISTANCE := 0.9
@@ -35,6 +39,14 @@ const SCENE_SHOT_SPECS: Array[Dictionary] = [
 	{"focus": Vector2(-92,  70), "camera": Vector2( -24, -132), "height": 10.0},
 	{"focus": Vector2( 42, -86), "camera": Vector2(   2,  -24), "height": 24.0},
 	{"focus": Vector2(-52, -46), "camera": Vector2( 118,   36), "height": 12.0},
+]
+
+const FLIGHT_SHOT_SPECS: Array[Dictionary] = [
+	{"focus": Vector2(   0,    0), "camera": Vector2(-420, -220), "height": 180.0},
+	{"focus": Vector2( 320,  180), "camera": Vector2(-120,   40), "height": 140.0},
+	{"focus": Vector2(-280,  260), "camera": Vector2(  80, -140), "height": 160.0},
+	{"focus": Vector2( 180, -340), "camera": Vector2(-220, -120), "height": 170.0},
+	{"focus": Vector2(-360, -220), "camera": Vector2( 120,  180), "height": 150.0},
 ]
 
 ## Boundary-focused shots that intentionally straddle chunk seams and chunk corners.
@@ -55,6 +67,7 @@ const CROSSING_SEAM_SPECS: Array[Dictionary] = [
 var _active  := false
 var _player:  CharacterBody3D
 var _head:    Node3D
+var _camera:  Camera3D
 var _world:   Node3D
 var _spawn:   Vector3
 var _shots:   Array[Dictionary] = []
@@ -88,10 +101,13 @@ func _process(delta: float) -> void:
 			return
 		_player = p as CharacterBody3D
 		_head   = _player.get_node("Head") as Node3D
+		_camera = _head.get_node("Camera3D") as Camera3D
 		_world  = get_tree().root.find_child("World", true, false) as Node3D
 		_player.set_process_unhandled_input(false)
 		if _player.has_method("clear_scripted_motion"):
 			_player.call("clear_scripted_motion")
+		if _mode == MODE_FLIGHT and _camera:
+			_camera.far = FLIGHT_CAMERA_FAR
 		if _mode != MODE_CROSSING:
 			_player.set_physics_process(false)
 		return
@@ -180,11 +196,15 @@ func _build_shots() -> Array[Dictionary]:
 	return shots
 
 func _shot_specs_for_mode() -> Array[Dictionary]:
+	if _mode == MODE_FLIGHT:
+		return FLIGHT_SHOT_SPECS
 	if _mode == MODE_BOUNDARY:
 		return BOUNDARY_SHOT_SPECS
 	return SCENE_SHOT_SPECS
 
 func _detect_mode(args: PackedStringArray) -> String:
+	if "--flythrough-flight" in args or "--flythrough=flight" in args:
+		return MODE_FLIGHT
 	if "--flythrough-crossing" in args or "--flythrough=crossing" in args:
 		return MODE_CROSSING
 	if "--flythrough-boundary" in args or "--flythrough=boundary" in args:
