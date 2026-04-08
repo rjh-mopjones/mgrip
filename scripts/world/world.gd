@@ -59,6 +59,7 @@ func _process(_delta: float) -> void:
 		_player.position.x,
 		_player.position.z,
 	)
+	var player_forward := -_player.global_transform.basis.z
 	if current_chunk != GameState.current_chunk:
 		var had_prewarmed_ring: bool = _chunk_streamer.is_ring_ready(current_chunk)
 		GameState.current_chunk = current_chunk
@@ -71,7 +72,7 @@ func _process(_delta: float) -> void:
 				_chunk_streamer.pending_count(),
 			]
 		)
-	_chunk_streamer.update_streaming(current_chunk, _player.position, _player.velocity)
+	_chunk_streamer.update_streaming(current_chunk, _player.position, _player.velocity, player_forward)
 	var prewarm_target: Vector2i = _chunk_streamer.prewarm_target_chunk()
 	if prewarm_target != _last_prewarm_target and prewarm_target != current_chunk:
 		print(
@@ -98,6 +99,7 @@ func _process(_delta: float) -> void:
 		_chunk_streamer.active_counts_by_lod(),
 		_chunk_streamer.pending_count(),
 	)
+	_chunk_metrics.set_horizon_state(_chunk_streamer.horizon_runtime_state())
 	_chunk_metrics.maybe_print_summary()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

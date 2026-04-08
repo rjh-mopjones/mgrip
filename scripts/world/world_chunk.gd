@@ -57,7 +57,7 @@ func activate_from_chunk_data(
 	biome_map = new_biome_map
 	state = ChunkState.MESHING
 	var mesh_start := Time.get_ticks_usec()
-	var result := builder.build_terrain_from_mesh_data(mesh_data, self)
+	var result := builder.build_terrain_from_mesh_data(mesh_data, self, lod)
 	var mesh_ms := (Time.get_ticks_usec() - mesh_start) / 1000.0
 	heights = result["heights"]
 	collision_heights = result["collision_heights"]

@@ -19,9 +19,9 @@ func build_terrain(biome_map: MgBiomeMap, parent: Node3D, lod_name: String = Gen
 		int(config["sub_size"]),
 		bool(config["use_edge_skirts"]),
 	)
-	return build_terrain_from_mesh_data(mesh_data, parent)
+	return build_terrain_from_mesh_data(mesh_data, parent, lod_name)
 
-func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D) -> Dictionary:
+func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D, lod_name: String = GenerationManager.LOD0_NAME) -> Dictionary:
 	var heights: PackedInt32Array = mesh_data.get("heights", PackedInt32Array())
 	var collision_heights: PackedFloat32Array = mesh_data.get("collision_heights", PackedFloat32Array())
 	var ocean_mask: PackedByteArray = mesh_data.get("ocean_mask", PackedByteArray())
@@ -30,6 +30,7 @@ func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D) -> Dict
 
 	var land_mat := ShaderMaterial.new()
 	land_mat.shader = preload("res://assets/shaders/terrain.gdshader")
+	_configure_land_material(land_mat, lod_name)
 
 	var water_mat := ShaderMaterial.new()
 	water_mat.shader = preload("res://assets/shaders/water.gdshader")
@@ -57,6 +58,23 @@ func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D) -> Dict
 		"collision_heights": collision_heights,
 		"ocean_mask": ocean_mask,
 	}
+
+func _configure_land_material(material: ShaderMaterial, lod_name: String) -> void:
+	var haze_start := 700.0
+	var haze_end := 2400.0
+	var lod_blend_strength := 0.0
+	match lod_name:
+		GenerationManager.LOD1_NAME:
+			haze_start = 520.0
+			haze_end = 2200.0
+			lod_blend_strength = 0.38
+		GenerationManager.LOD2_NAME:
+			haze_start = 360.0
+			haze_end = 1800.0
+			lod_blend_strength = 0.72
+	material.set_shader_parameter("distance_haze_start", haze_start)
+	material.set_shader_parameter("distance_haze_end", haze_end)
+	material.set_shader_parameter("lod_blend_strength", lod_blend_strength)
 
 func _build_surface_mesh(surface: Dictionary, include_colors: bool) -> ArrayMesh:
 	var vertices: PackedVector3Array = surface.get("vertices", PackedVector3Array())

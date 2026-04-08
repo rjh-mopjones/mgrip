@@ -9,6 +9,7 @@ var _recent_total_ms: Array[float] = []
 var _window_peak_ms := 0.0
 var _active_by_lod: Dictionary = {}
 var _pending_chunks := 0
+var _horizon_state: Dictionary = {}
 
 func begin_activation(chunk_coord: Vector2i, lod: String) -> Dictionary:
 	return {
@@ -51,6 +52,9 @@ func update_runtime_state(active_by_lod: Dictionary, pending_chunks: int) -> voi
 	_active_by_lod = active_by_lod.duplicate(true)
 	_pending_chunks = pending_chunks
 
+func set_horizon_state(horizon_state: Dictionary) -> void:
+	_horizon_state = horizon_state.duplicate(true)
+
 func maybe_print_summary() -> void:
 	var now := Time.get_ticks_msec()
 	if _last_summary_msec == 0:
@@ -65,8 +69,8 @@ func maybe_print_summary() -> void:
 	if not _recent_total_ms.is_empty():
 		avg_ms /= float(_recent_total_ms.size())
 	print(
-		"Chunk runtime summary  active=%s  pending=%d  avg_total=%.1fms  peak_total=%.1fms"
-		% [_format_active_counts(), _pending_chunks, avg_ms, _window_peak_ms]
+		"Chunk runtime summary  active=%s  pending=%d  avg_total=%.1fms  peak_total=%.1fms%s"
+		% [_format_active_counts(), _pending_chunks, avg_ms, _window_peak_ms, _format_horizon_state()]
 	)
 	_window_peak_ms = 0.0
 
@@ -79,3 +83,21 @@ func _format_active_counts() -> String:
 	for key in keys:
 		parts.append("%s:%d" % [String(key), int(_active_by_lod[key])])
 	return "{%s}" % ", ".join(parts)
+
+func _format_horizon_state() -> String:
+	if _horizon_state.is_empty():
+		return ""
+	var focus: Vector2 = _horizon_state.get("focus", Vector2.ZERO)
+	return (
+		"  horizon={focus:(%.2f, %.2f) mid:%d/%d@r%d far:%d/%d@r%d}"
+		% [
+			focus.x,
+			focus.y,
+			int(_horizon_state.get("mid_loaded", 0)),
+			int(_horizon_state.get("mid_budget", 0)),
+			int(_horizon_state.get("mid_radius", 0)),
+			int(_horizon_state.get("far_loaded", 0)),
+			int(_horizon_state.get("far_budget", 0)),
+			int(_horizon_state.get("far_radius", 0)),
+		]
+	)

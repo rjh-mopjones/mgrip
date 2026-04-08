@@ -18,6 +18,12 @@ const LOD1_DETAIL_LEVEL := 1
 const LOD1_FREQ_SCALE := 8.0
 const LOD1_SUB_SIZE := 64
 const LOD1_USE_EDGE_SKIRTS := false
+const LOD2_NAME := "LOD2"
+const LOD2_RESOLUTION := 65
+const LOD2_DETAIL_LEVEL := 0
+const LOD2_FREQ_SCALE := 8.0
+const LOD2_SUB_SIZE := 64
+const LOD2_USE_EDGE_SKIRTS := true
 
 var _gen: MgTerrainGen
 
@@ -76,6 +82,14 @@ func generate_runtime_chunk_for_lod(chunk_coord: Vector2i, lod_name: String) -> 
 
 func runtime_chunk_config_for_lod(lod_name: String) -> Dictionary:
 	match lod_name:
+		LOD2_NAME:
+			return {
+				"resolution": LOD2_RESOLUTION,
+				"detail_level": LOD2_DETAIL_LEVEL,
+				"freq_scale": LOD2_FREQ_SCALE,
+				"sub_size": LOD2_SUB_SIZE,
+				"use_edge_skirts": LOD2_USE_EDGE_SKIRTS,
+			}
 		LOD1_NAME:
 			return {
 				"resolution": LOD1_RESOLUTION,

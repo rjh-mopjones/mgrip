@@ -1,6 +1,11 @@
 shader_type spatial;
 render_mode cull_back, depth_draw_opaque, diffuse_burley, specular_schlick_ggx;
 
+uniform float distance_haze_start = 700.0;
+uniform float distance_haze_end = 2400.0;
+uniform float lod_blend_strength = 0.0;
+uniform vec3 horizon_tint : source_color = vec3(0.66, 0.41, 0.33);
+
 varying vec3 world_pos;
 varying vec3 local_normal;
 
@@ -55,8 +60,15 @@ void fragment() {
 	albedo *= mix(0.72, 1.0, top_mask);
 	albedo = mix(albedo, albedo * 0.78, side_mask * 0.45);
 
+	float view_distance = distance(CAMERA_POSITION_WORLD, world_pos);
+	float haze = smoothstep(distance_haze_start, distance_haze_end, view_distance);
+	float lod_haze = clamp(haze * (0.45 + lod_blend_strength), 0.0, 1.0);
+	albedo = mix(albedo, horizon_tint, lod_haze * 0.34);
+	albedo = mix(albedo, albedo * 0.92 + horizon_tint * 0.08, lod_blend_strength * 0.16);
+
 	ALBEDO = clamp(albedo, vec3(0.0), vec3(1.0));
 	ROUGHNESS = mix(1.0, 0.86, top_breakup * 0.35 + top_mask * 0.20);
+	ROUGHNESS = mix(ROUGHNESS, 1.0, lod_haze * 0.18);
 	METALLIC = 0.0;
 	SPECULAR = 0.12;
 }
