@@ -6,8 +6,8 @@ const MACRO_WORLD_SIZE := Vector2(1024.0, 512.0)
 
 enum MapMode { LOCAL, MACRO }
 
-var _world_x: float
-var _world_y: float
+var _anchor_chunk: Vector2i = Vector2i.ZERO
+var _local_chunk: Vector2i = Vector2i.ZERO
 var _mode: MapMode = MapMode.LOCAL
 
 var _bg: ColorRect
@@ -56,21 +56,24 @@ func _ready() -> void:
 	_hint_label.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
 	add_child(_hint_label)
 
-func setup(biome_map: MgBiomeMap, world_x: float, world_y: float) -> void:
-	_world_x = world_x
-	_world_y = world_y
-	var rgba := biome_map.export_layer_rgba("biome")
-	var img  := Image.create_from_data(512, 512, false, Image.FORMAT_RGBA8, rgba)
-	_local_texture = ImageTexture.create_from_image(img)
+func setup(biome_map: MgBiomeMap, anchor_chunk: Vector2i, local_chunk: Vector2i) -> void:
+	_anchor_chunk = anchor_chunk
+	update_local_chunk(biome_map, local_chunk)
 	_macro_texture = _load_macro_texture()
 	_map_rect.texture = _local_texture
 
-func refresh(player_pos: Vector3) -> void:
+func update_local_chunk(biome_map: MgBiomeMap, local_chunk: Vector2i) -> void:
+	_local_chunk = local_chunk
+	var rgba := biome_map.export_layer_rgba("biome")
+	var img  := Image.create_from_data(512, 512, false, Image.FORMAT_RGBA8, rgba)
+	_local_texture = ImageTexture.create_from_image(img)
+
+func refresh(player_pos: Vector3, current_chunk: Vector2i, active_counts: Dictionary = {}) -> void:
 	if _hud:
-		_hud.text = _coord_text(player_pos)
+		_hud.text = _coord_text(player_pos, current_chunk, active_counts)
 	if not visible:
 		return
-	_layout(player_pos)
+	_layout(player_pos, current_chunk)
 
 func toggle() -> void:
 	visible = not visible
@@ -93,7 +96,7 @@ func attach_hud(root: Node) -> void:
 	cl.add_child(_hud)
 	root.add_child(cl)
 
-func _layout(player_pos: Vector3) -> void:
+func _layout(player_pos: Vector3, current_chunk: Vector2i) -> void:
 	var vp := get_viewport().get_visible_rect().size
 	var map_size := _active_map_size()
 	var orig := (vp - map_size) * 0.5
@@ -107,7 +110,7 @@ func _layout(player_pos: Vector3) -> void:
 		else TextureRect.STRETCH_SCALE
 	)
 
-	var marker_pos := _marker_position(player_pos, orig, map_size)
+	var marker_pos := _marker_position(player_pos, current_chunk, orig, map_size)
 	_marker.position = marker_pos - _marker.size * 0.5
 
 	_title.position = orig - Vector2(0.0, 28.0)
@@ -119,32 +122,62 @@ func _layout(player_pos: Vector3) -> void:
 		else "Macro map unavailable: generate world layers first."
 	)
 	_map_label.position = orig + Vector2(0.0, map_size.y + 30.0)
-	_map_label.text = _mode_text(player_pos)
+	_map_label.text = _mode_text(player_pos, current_chunk)
 
-func _coord_text(p: Vector3) -> String:
-	var bx := int(p.x)
-	var bz := int(p.z)
-	var wx := _world_x + p.x / 512.0
-	var wz := _world_y + p.z / 512.0
-	return "Block (%d, %d)   Y: %d   World (%.3f, %.3f)" % [bx, bz, int(p.y), wx, wz]
+func _coord_text(p: Vector3, current_chunk: Vector2i, active_counts: Dictionary) -> String:
+	var local_block := GenerationManager.scene_block_to_local_block(p.x, p.z)
+	var world_origin := GenerationManager.chunk_coord_to_world_origin(current_chunk)
+	var wx := world_origin.x + float(local_block.x) / float(GenerationManager.BLOCKS_PER_CHUNK)
+	var wz := world_origin.y + float(local_block.y) / float(GenerationManager.BLOCKS_PER_CHUNK)
+	return "Chunk (%d, %d)   Block (%d, %d)   Y: %d   Active %s   World (%.3f, %.3f)" % [
+		current_chunk.x,
+		current_chunk.y,
+		local_block.x,
+		local_block.y,
+		int(p.y),
+		_format_active_counts(active_counts),
+		wx,
+		wz,
+	]
 
-func _mode_text(player_pos: Vector3) -> String:
-	var bx := int(player_pos.x)
-	var bz := int(player_pos.z)
-	var wx := _world_x + player_pos.x / 512.0
-	var wz := _world_y + player_pos.z / 512.0
+func _mode_text(player_pos: Vector3, current_chunk: Vector2i) -> String:
+	var local_block := GenerationManager.scene_block_to_local_block(player_pos.x, player_pos.z)
+	var world_origin := GenerationManager.chunk_coord_to_world_origin(current_chunk)
+	var wx := world_origin.x + float(local_block.x) / float(GenerationManager.BLOCKS_PER_CHUNK)
+	var wz := world_origin.y + float(local_block.y) / float(GenerationManager.BLOCKS_PER_CHUNK)
 	if _mode == MapMode.LOCAL:
-		return "Local block (%d, %d)   chunk origin (%.1f, %.1f)" % [bx, bz, _world_x, _world_y]
-	return "Macro world (%.3f, %.3f)   block (%d, %d)" % [wx, wz, bx, bz]
+		return "Local block (%d, %d)   chunk (%d, %d)" % [
+			local_block.x,
+			local_block.y,
+			current_chunk.x,
+			current_chunk.y,
+		]
+	return "Macro world (%.3f, %.3f)   chunk (%d, %d)" % [wx, wz, current_chunk.x, current_chunk.y]
 
-func _marker_position(player_pos: Vector3, origin: Vector2, map_size: Vector2) -> Vector2:
+func _marker_position(
+		player_pos: Vector3,
+		current_chunk: Vector2i,
+		origin: Vector2,
+		map_size: Vector2) -> Vector2:
 	if _mode == MapMode.LOCAL:
-		var bx := clampf(player_pos.x, 0.0, 511.0)
-		var bz := clampf(player_pos.z, 0.0, 511.0)
-		return origin + Vector2(bx / 511.0, bz / 511.0) * map_size
+		var local_block := GenerationManager.scene_block_to_local_block(player_pos.x, player_pos.z)
+		return origin + Vector2(
+			float(local_block.x) / float(GenerationManager.BLOCKS_PER_CHUNK - 1),
+			float(local_block.y) / float(GenerationManager.BLOCKS_PER_CHUNK - 1)
+		) * map_size
 
-	var wx := clampf(_world_x + player_pos.x / 512.0, 0.0, MACRO_WORLD_SIZE.x)
-	var wz := clampf(_world_y + player_pos.z / 512.0, 0.0, MACRO_WORLD_SIZE.y)
+	var local_block := GenerationManager.scene_block_to_local_block(player_pos.x, player_pos.z)
+	var world_origin := GenerationManager.chunk_coord_to_world_origin(current_chunk)
+	var wx := clampf(
+		world_origin.x + float(local_block.x) / float(GenerationManager.BLOCKS_PER_CHUNK),
+		0.0,
+		MACRO_WORLD_SIZE.x
+	)
+	var wz := clampf(
+		world_origin.y + float(local_block.y) / float(GenerationManager.BLOCKS_PER_CHUNK),
+		0.0,
+		MACRO_WORLD_SIZE.y
+	)
 	return origin + Vector2(wx / MACRO_WORLD_SIZE.x, wz / MACRO_WORLD_SIZE.y) * map_size
 
 func _active_texture() -> Texture2D:
@@ -167,6 +200,16 @@ func _active_map_size() -> Vector2:
 
 func _mode_name() -> String:
 	return "LOCAL" if _mode == MapMode.LOCAL else "MACRO"
+
+func _format_active_counts(active_counts: Dictionary) -> String:
+	if active_counts.is_empty():
+		return "{}"
+	var keys := active_counts.keys()
+	keys.sort()
+	var parts: Array[String] = []
+	for key in keys:
+		parts.append("%s:%d" % [String(key), int(active_counts[key])])
+	return "{%s}" % ", ".join(parts)
 
 func _load_macro_texture() -> Texture2D:
 	var home := OS.get_environment("HOME")

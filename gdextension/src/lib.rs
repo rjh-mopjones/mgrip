@@ -4,6 +4,8 @@
 //! - `MgBiomeMap`     — result of terrain generation, queryable per pixel
 //! - `MgTerrainGen`   — entry point to generate MacroMap and chunk maps
 
+mod mesh;
+
 use godot::prelude::*;
 use mg_noise::{BiomeMap, SEA_LEVEL};
 use std::sync::Arc;
@@ -158,6 +160,12 @@ impl MgBiomeMap {
             .map(|&h| (h * height_scale).floor() as i32)
             .collect();
         PackedInt32Array::from(data.as_slice())
+    }
+
+    #[func]
+    pub fn build_chunk_mesh_data(&self, height_scale: f64, sub_size: i64) -> Dictionary {
+        let Some(map) = &self.inner else { return Dictionary::new(); };
+        mesh::build_chunk_mesh_data(map.as_ref(), height_scale, sub_size)
     }
 }
 
