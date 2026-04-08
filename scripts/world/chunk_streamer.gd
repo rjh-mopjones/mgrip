@@ -3,6 +3,7 @@ class_name ChunkStreamer
 
 const ACTIVE_LOD := GenerationManager.LOD0_NAME
 const STREAM_RADIUS := 1
+const COLLISION_RADIUS := 1
 const RETAIN_RADIUS := 2
 const MAX_CONCURRENT_JOBS := 8
 const MAX_READY_ATTACHES_PER_FRAME := 1
@@ -215,7 +216,7 @@ func _attach_ready_jobs(center_chunk: Vector2i) -> void:
 
 func _update_collision_focus(center_chunk: Vector2i) -> void:
 	for chunk in _chunks.values():
-		chunk.set_collision_enabled(chunk.chunk_coord == center_chunk)
+		chunk.set_collision_enabled(_is_within_collision_radius(chunk.chunk_coord, center_chunk))
 
 func _unload_distant_chunks(center_chunk: Vector2i) -> void:
 	var unload_keys: Array[String] = []
@@ -241,6 +242,11 @@ func _is_within_retain_radius(chunk_coord: Vector2i, center_chunk: Vector2i) -> 
 	var dx := absi(chunk_coord.x - center_chunk.x)
 	var dy := absi(chunk_coord.y - center_chunk.y)
 	return maxi(dx, dy) <= RETAIN_RADIUS
+
+func _is_within_collision_radius(chunk_coord: Vector2i, center_chunk: Vector2i) -> bool:
+	var dx := absi(chunk_coord.x - center_chunk.x)
+	var dy := absi(chunk_coord.y - center_chunk.y)
+	return maxi(dx, dy) <= COLLISION_RADIUS
 
 func _chunk_key(chunk_coord: Vector2i) -> String:
 	return "%d,%d" % [chunk_coord.x, chunk_coord.y]

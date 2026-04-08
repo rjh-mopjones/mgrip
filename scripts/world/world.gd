@@ -32,7 +32,7 @@ func _ready() -> void:
 	_chunk_streamer.update_streaming(_anchor_chunk)
 	_log_height_stats(boot_chunk.heights)
 	_place_player(boot_chunk)
-	if "--flythrough" not in OS.get_cmdline_args():
+	if not _is_flythrough_run():
 		_setup_map(boot_chunk)
 
 	_chunk_metrics.maybe_print_summary()
@@ -187,3 +187,9 @@ func _find_land_block(cx: int, cz: int, ocean: PackedByteArray) -> Vector2:
 func _loaded_chunk_for_scene_block(block_x: int, block_z: int):
 	var chunk_coord := GenerationManager.scene_block_to_chunk_coord(_anchor_chunk, block_x, block_z)
 	return _chunk_streamer.get_chunk(chunk_coord)
+
+func _is_flythrough_run() -> bool:
+	for arg in OS.get_cmdline_args():
+		if String(arg).begins_with("--flythrough"):
+			return true
+	return false

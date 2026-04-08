@@ -8,6 +8,10 @@ const MOUSE_SENSITIVITY := 0.002
 
 @onready var _head: Node3D = $Head
 
+var _scripted_motion_enabled := false
+var _scripted_direction := Vector3.ZERO
+var _scripted_speed := SPEED
+
 func _ready() -> void:
 	get_window().grab_focus()
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -22,6 +26,18 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.pressed:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
+func set_scripted_motion(direction: Vector3, speed: float = SPEED) -> void:
+	_scripted_direction = Vector3(direction.x, 0.0, direction.z).normalized()
+	_scripted_speed = speed
+	_scripted_motion_enabled = not _scripted_direction.is_zero_approx()
+
+func clear_scripted_motion() -> void:
+	_scripted_motion_enabled = false
+	_scripted_direction = Vector3.ZERO
+	_scripted_speed = SPEED
+	velocity.x = 0.0
+	velocity.z = 0.0
+
 func _physics_process(delta: float) -> void:
 	if not is_on_floor():
 		velocity.y -= GRAVITY * delta
@@ -29,12 +45,14 @@ func _physics_process(delta: float) -> void:
 	if Input.is_action_just_pressed("jump") and is_on_floor():
 		velocity.y = JUMP_VELOCITY
 
-	var speed := SPEED * (SPRINT_MULT if Input.is_action_pressed("sprint") else 1.0)
-	var raw := Vector2(
-		Input.get_axis("move_left", "move_right"),
-		Input.get_axis("move_forward", "move_back"),
-	)
-	var dir := (transform.basis * Vector3(raw.x, 0.0, raw.y)).normalized()
+	var speed := _scripted_speed if _scripted_motion_enabled else SPEED * (SPRINT_MULT if Input.is_action_pressed("sprint") else 1.0)
+	var dir := _scripted_direction if _scripted_motion_enabled else Vector3.ZERO
+	if not _scripted_motion_enabled:
+		var raw := Vector2(
+			Input.get_axis("move_left", "move_right"),
+			Input.get_axis("move_forward", "move_back"),
+		)
+		dir = (transform.basis * Vector3(raw.x, 0.0, raw.y)).normalized()
 	velocity.x = dir.x * speed if dir else move_toward(velocity.x, 0.0, speed)
 	velocity.z = dir.z * speed if dir else move_toward(velocity.z, 0.0, speed)
 

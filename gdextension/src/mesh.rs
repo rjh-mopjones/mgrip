@@ -15,6 +15,7 @@ pub struct ChunkSurfaceBuffers {
 
 pub struct ChunkMeshBuffers {
     pub heights: Vec<i32>,
+    pub collision_heights: Vec<f32>,
     pub ocean_mask: Vec<u8>,
     pub land_surfaces: Vec<ChunkSurfaceBuffers>,
     pub water_surfaces: Vec<ChunkSurfaceBuffers>,
@@ -43,6 +44,7 @@ pub fn build_chunk_mesh_buffers(
     if sub_size <= 0 || map.width == 0 || map.height == 0 {
         return ChunkMeshBuffers {
             heights: Vec::new(),
+            collision_heights: Vec::new(),
             ocean_mask: Vec::new(),
             land_surfaces: Vec::new(),
             water_surfaces: Vec::new(),
@@ -74,6 +76,7 @@ pub fn build_chunk_mesh_buffers(
 
     ChunkMeshBuffers {
         heights,
+        collision_heights: smoothed_heights.clone(),
         ocean_mask: ocean_mask.clone(),
         land_surfaces: build_land_surfaces(
             &smoothed_heights,
@@ -102,6 +105,10 @@ pub fn build_chunk_mesh_buffers(
 pub fn chunk_mesh_buffers_into_dictionary(mesh_buffers: ChunkMeshBuffers) -> Dictionary {
     let mut result = Dictionary::new();
     result.set("heights", PackedInt32Array::from(mesh_buffers.heights));
+    result.set(
+        "collision_heights",
+        PackedFloat32Array::from(mesh_buffers.collision_heights),
+    );
     result.set("ocean_mask", PackedByteArray::from(mesh_buffers.ocean_mask));
     result.set(
         "land_surfaces",

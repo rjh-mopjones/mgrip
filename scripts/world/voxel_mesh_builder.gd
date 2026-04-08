@@ -23,6 +23,7 @@ func build_terrain(biome_map: MgBiomeMap, parent: Node3D, lod_name: String = Gen
 
 func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D) -> Dictionary:
 	var heights: PackedInt32Array = mesh_data.get("heights", PackedInt32Array())
+	var collision_heights: PackedFloat32Array = mesh_data.get("collision_heights", PackedFloat32Array())
 	var ocean_mask: PackedByteArray = mesh_data.get("ocean_mask", PackedByteArray())
 	var land_surfaces: Array = mesh_data.get("land_surfaces", [])
 	var water_surfaces: Array = mesh_data.get("water_surfaces", [])
@@ -51,7 +52,11 @@ func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D) -> Dict
 		mi.material_override = water_mat
 		parent.add_child(mi)
 
-	return {"heights": heights, "ocean_mask": ocean_mask}
+	return {
+		"heights": heights,
+		"collision_heights": collision_heights,
+		"ocean_mask": ocean_mask,
+	}
 
 func _build_surface_mesh(surface: Dictionary, include_colors: bool) -> ArrayMesh:
 	var vertices: PackedVector3Array = surface.get("vertices", PackedVector3Array())

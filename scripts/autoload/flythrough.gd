@@ -4,18 +4,27 @@ extends Node
 ## Run with:
 ##   godot --flythrough            # scenic landscape shots
 ##   godot --flythrough-boundary   # seam / chunk-boundary shots
+##   godot --flythrough-crossing   # physical seam crossing test
 ## Screenshots saved to:
 ##   /tmp/mgrip_flythrough/scene/frame_001.png … frame_NNN.png
 ##   /tmp/mgrip_flythrough/boundary/frame_001.png … frame_NNN.png
+##   /tmp/mgrip_flythrough/crossing/frame_001.png … frame_NNN.png
 ## Exits automatically when done.
 
 const BASE_SCREENSHOT_DIR := "/tmp/mgrip_flythrough"
 const MODE_SCENE := "scene"
 const MODE_BOUNDARY := "boundary"
+const MODE_CROSSING := "crossing"
 const WARMUP_SECS    := 2.5   # time for terrain to generate + player to spawn
 const HOLD_SECS      := 1.2   # seconds at each waypoint before screenshot
 const EXIT_DELAY     := 1.5   # flush time after last screenshot
 const CLEARANCE      := 8.0
+const CROSSING_SETTLE_SECS := 0.5
+const CROSSING_SPEED := 8.0
+const CROSSING_ARRIVE_DISTANCE := 0.9
+const CROSSING_ROUTE_TIMEOUT := 5.0
+const CROSSING_FALL_MARGIN := 2.0
+const CROSSING_SEARCH_SENTINEL := 1000000.0
 
 ## Terrain-aware flythrough shots. Each shot samples a focus point on the surface,
 ## then places the camera at a nearby vantage so screenshots stay above ground and
@@ -38,17 +47,26 @@ const BOUNDARY_SHOT_SPECS: Array[Dictionary] = [
 	{"focus": Vector2( 252,-108), "camera": Vector2( 214, -82), "height":  8.0},
 ]
 
+const CROSSING_SEAM_SPECS: Array[Dictionary] = [
+	{"name": "east", "axis": "x", "seam_offset": 256.0, "search_min": -180, "search_max": 180, "search_step": 12, "runout": 12.0, "height": 2.8, "pitch": -7.0},
+	{"name": "south", "axis": "z", "seam_offset": 256.0, "search_min": -180, "search_max": 180, "search_step": 12, "runout": 12.0, "height": 2.8, "pitch": -9.0},
+]
+
 var _active  := false
 var _player:  CharacterBody3D
 var _head:    Node3D
 var _world:   Node3D
 var _spawn:   Vector3
 var _shots:   Array[Dictionary] = []
+var _routes:  Array[Dictionary] = []
 var _mode    := ""
 var _screenshot_dir := BASE_SCREENSHOT_DIR
 var _phase    := "warmup"
 var _timer    := 0.0
 var _current  := 0
+var _current_route := 0
+var _frame_count := 0
+var _crossing_failed := false
 
 func _ready() -> void:
 	_mode = _detect_mode(OS.get_cmdline_args())
@@ -71,11 +89,17 @@ func _process(delta: float) -> void:
 		_player = p as CharacterBody3D
 		_head   = _player.get_node("Head") as Node3D
 		_world  = get_tree().root.find_child("World", true, false) as Node3D
-		_player.set_physics_process(false)
 		_player.set_process_unhandled_input(false)
+		if _player.has_method("clear_scripted_motion"):
+			_player.call("clear_scripted_motion")
+		if _mode != MODE_CROSSING:
+			_player.set_physics_process(false)
 		return
 
 	_timer += delta
+	if _mode == MODE_CROSSING:
+		_process_crossing()
+		return
 
 	match _phase:
 		"warmup":
@@ -102,9 +126,35 @@ func _process(delta: float) -> void:
 
 		"exiting":
 			if _timer >= EXIT_DELAY:
-				print("=== FLYTHROUGH DONE: %d frames saved to %s ===" \
-					% [_shots.size(), _screenshot_dir])
-				get_tree().quit()
+				_finish_run()
+
+func _process_crossing() -> void:
+	match _phase:
+		"warmup":
+			if _timer >= WARMUP_SECS:
+				_spawn = _player.position
+				_routes = _build_crossing_routes()
+				if _routes.is_empty():
+					push_error("Flythrough: failed to build any crossing routes")
+					get_tree().quit()
+					return
+				_current_route = 0
+				_begin_crossing_route(_current_route)
+
+		"crossing_settle":
+			if _timer >= CROSSING_SETTLE_SECS:
+				_capture_frame_now()
+				var route: Dictionary = _routes[_current_route]
+				_player.call("set_scripted_motion", route["direction"], float(route["speed"]))
+				_phase = "crossing_run"
+				_timer = 0.0
+
+		"crossing_run":
+			_monitor_crossing_route()
+
+		"exiting":
+			if _timer >= EXIT_DELAY:
+				_finish_run()
 
 func _build_shots() -> Array[Dictionary]:
 	var shots: Array[Dictionary] = []
@@ -135,6 +185,8 @@ func _shot_specs_for_mode() -> Array[Dictionary]:
 	return SCENE_SHOT_SPECS
 
 func _detect_mode(args: PackedStringArray) -> String:
+	if "--flythrough-crossing" in args or "--flythrough=crossing" in args:
+		return MODE_CROSSING
 	if "--flythrough-boundary" in args or "--flythrough=boundary" in args:
 		return MODE_BOUNDARY
 	if "--flythrough-scene" in args or "--flythrough=scene" in args:
@@ -160,13 +212,14 @@ func _apply_shot(i: int) -> void:
 	_head.rotation_degrees.x      = shot["pitch"]
 
 func _capture(i: int) -> void:
-	var path := "%s/frame_%03d.png" % [_screenshot_dir, i + 1]
+	var path := _next_capture_path()
 	print("Flythrough: capturing %s" % path)
 	_save_screenshot.call_deferred(i, path)
 
 func _save_screenshot(i: int, path: String) -> void:
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(path)
+	_frame_count += 1
 	_current = i + 1
 	_timer = 0.0
 	if _current >= _shots.size():
@@ -174,3 +227,201 @@ func _save_screenshot(i: int, path: String) -> void:
 	else:
 		_phase = "holding"
 		_apply_shot(_current)
+
+func _capture_frame_now() -> void:
+	var path := _next_capture_path()
+	print("Flythrough: capturing %s" % path)
+	var img := get_viewport().get_texture().get_image()
+	img.save_png(path)
+	_frame_count += 1
+
+func _build_crossing_routes() -> Array[Dictionary]:
+	var routes: Array[Dictionary] = []
+	for spec in CROSSING_SEAM_SPECS:
+		var route := _best_crossing_route(spec)
+		if route.is_empty():
+			continue
+		routes.append(route)
+	return routes
+
+func _best_crossing_route(spec: Dictionary) -> Dictionary:
+	var best_score := CROSSING_SEARCH_SENTINEL
+	var best_route := {}
+	var axis := String(spec["axis"])
+	var seam_offset := float(spec["seam_offset"])
+	var runout := float(spec.get("runout", 12.0))
+	var search_min := int(spec.get("search_min", -180))
+	var search_max := int(spec.get("search_max", 180))
+	var search_step := int(spec.get("search_step", 12))
+	for lateral in range(search_min, search_max + 1, search_step):
+		var start_offset := Vector2.ZERO
+		var finish_offset := Vector2.ZERO
+		if axis == "x":
+			start_offset = Vector2(seam_offset - runout, float(lateral))
+			finish_offset = Vector2(seam_offset + runout, float(lateral))
+		else:
+			start_offset = Vector2(float(lateral), seam_offset - runout)
+			finish_offset = Vector2(float(lateral), seam_offset + runout)
+		var score := _route_roughness_for_offsets(start_offset, finish_offset)
+		if score >= best_score:
+			continue
+		var route := _build_crossing_route(
+			String(spec["name"]),
+			start_offset,
+			finish_offset,
+			float(spec.get("height", 2.8)),
+			float(spec.get("pitch", -8.0)),
+			float(spec.get("speed", CROSSING_SPEED)),
+		)
+		if route.is_empty():
+			continue
+		best_score = score
+		route["roughness"] = score
+		best_route = route
+	return best_route
+
+func _build_crossing_route(
+		name: String,
+		start_offset: Vector2,
+		finish_offset: Vector2,
+		height: float,
+		pitch: float,
+		speed: float) -> Dictionary:
+	var start := _surface_point_at_offset(start_offset)
+	var finish := _surface_point_at_offset(finish_offset)
+	if start == Vector3.ZERO or finish == Vector3.ZERO:
+		return {}
+	start.y += height
+	finish.y += height
+	var direction := finish - start
+	direction.y = 0.0
+	if direction.length() < 1.0:
+		return {}
+	var forward := direction.normalized()
+	return {
+		"name": name,
+		"start": start,
+		"end": finish,
+		"start_chunk": GenerationManager.scene_block_to_chunk_coord(
+			GameState.anchor_chunk,
+			start.x,
+			start.z
+		),
+		"target_chunk": GenerationManager.scene_block_to_chunk_coord(
+			GameState.anchor_chunk,
+			finish.x,
+			finish.z
+		),
+		"direction": forward,
+		"speed": speed,
+		"yaw": rad_to_deg(atan2(-forward.x, -forward.z)),
+		"pitch": pitch,
+		"midpoint_captured": false,
+	}
+
+func _route_roughness_for_offsets(start_offset: Vector2, finish_offset: Vector2) -> float:
+	var min_y := INF
+	var max_y := -INF
+	var max_step := 0.0
+	var previous_y := 0.0
+	var has_previous := false
+	for i in range(7):
+		var t := float(i) / 6.0
+		var point := _surface_point_at_offset(start_offset.lerp(finish_offset, t))
+		if point == Vector3.ZERO:
+			return CROSSING_SEARCH_SENTINEL
+		min_y = minf(min_y, point.y)
+		max_y = maxf(max_y, point.y)
+		if has_previous:
+			max_step = maxf(max_step, absf(point.y - previous_y))
+		previous_y = point.y
+		has_previous = true
+	return (max_y - min_y) + max_step * 2.0
+
+func _surface_point_at_offset(offset: Vector2) -> Vector3:
+	if not _world:
+		return Vector3.ZERO
+	var block_x := int(round(_spawn.x + offset.x))
+	var block_z := int(round(_spawn.z + offset.y))
+	var y := float(_world.call("sample_surface_height", block_x, block_z))
+	if y <= float(VoxelMeshBuilder.SEA_LEVEL_Y):
+		return Vector3.ZERO
+	return Vector3(block_x + 0.5, y, block_z + 0.5)
+
+func _begin_crossing_route(route_index: int) -> void:
+	var route: Dictionary = _routes[route_index]
+	print("Flythrough: crossing route %d/%d (%s, roughness %.2f)" % [route_index + 1, _routes.size(), route["name"], float(route.get("roughness", 0.0))])
+	_player.call("clear_scripted_motion")
+	_player.position = route["start"]
+	_player.velocity = Vector3.ZERO
+	_player.rotation_degrees.y = float(route["yaw"])
+	_head.rotation_degrees.x = float(route["pitch"])
+	_phase = "crossing_settle"
+	_timer = 0.0
+
+func _monitor_crossing_route() -> void:
+	var route: Dictionary = _routes[_current_route]
+	if _player.position.y < _surface_height_beneath_player() - CROSSING_FALL_MARGIN:
+		_crossing_failed = true
+		_player.call("clear_scripted_motion")
+		push_error("Flythrough crossing failed on route %s" % route["name"])
+		_capture_frame_now()
+		_phase = "exiting"
+		_timer = 0.0
+		return
+	if _timer >= CROSSING_ROUTE_TIMEOUT:
+		_crossing_failed = true
+		_player.call("clear_scripted_motion")
+		push_error("Flythrough crossing timed out on route %s" % route["name"])
+		_capture_frame_now()
+		_phase = "exiting"
+		_timer = 0.0
+		return
+
+	if not bool(route["midpoint_captured"]) and _route_progress(route) >= 0.5:
+		_capture_frame_now()
+		route["midpoint_captured"] = true
+		_routes[_current_route] = route
+
+	if _route_crossed_target_chunk(route):
+		_player.call("clear_scripted_motion")
+		_capture_frame_now()
+		_current_route += 1
+		if _current_route >= _routes.size():
+			_phase = "exiting"
+			_timer = 0.0
+			return
+		_begin_crossing_route(_current_route)
+
+func _route_progress(route: Dictionary) -> float:
+	var start: Vector3 = route["start"]
+	var finish: Vector3 = route["end"]
+	var total := Vector2(finish.x - start.x, finish.z - start.z)
+	var traveled := Vector2(_player.position.x - start.x, _player.position.z - start.z)
+	var length_sq := maxf(total.length_squared(), 0.001)
+	return clampf(traveled.dot(total) / length_sq, 0.0, 1.0)
+
+func _route_crossed_target_chunk(route: Dictionary) -> bool:
+	var current_chunk := GenerationManager.scene_block_to_chunk_coord(
+		GameState.anchor_chunk,
+		_player.position.x,
+		_player.position.z,
+	)
+	return current_chunk == route["target_chunk"] and _route_progress(route) >= 0.6
+
+func _surface_height_beneath_player() -> float:
+	var block_x := int(round(_player.position.x - 0.5))
+	var block_z := int(round(_player.position.z - 0.5))
+	return float(_world.call("sample_surface_height", block_x, block_z))
+
+func _next_capture_path() -> String:
+	return "%s/frame_%03d.png" % [_screenshot_dir, _frame_count + 1]
+
+func _finish_run() -> void:
+	if _player and _player.has_method("clear_scripted_motion"):
+		_player.call("clear_scripted_motion")
+	var status := ""
+	if _mode == MODE_CROSSING:
+		status = " (%s)" % ["FAIL" if _crossing_failed else "PASS"]
+	print("=== FLYTHROUGH DONE%s: %d frames saved to %s ===" % [status, _frame_count, _screenshot_dir])
+	get_tree().quit()

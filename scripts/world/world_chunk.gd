@@ -1,6 +1,8 @@
 extends Node3D
 class_name WorldChunk
 
+const COLLISION_HORIZONTAL_SCALE := float(VoxelMeshBuilder.CHUNK_SIZE) / float(VoxelMeshBuilder.CHUNK_SIZE - 1)
+
 enum ChunkState {
 	REQUESTED,
 	GENERATING,
@@ -14,6 +16,7 @@ var lod: String = "LOD0"
 var state: int = ChunkState.REQUESTED
 var biome_map: MgBiomeMap
 var heights: PackedInt32Array = PackedInt32Array()
+var collision_heights: PackedFloat32Array = PackedFloat32Array()
 var ocean_mask: PackedByteArray = PackedByteArray()
 var _collision_body: StaticBody3D
 
@@ -33,6 +36,7 @@ func activate_from_biome_map(
 	var result := builder.build_terrain(biome_map, self, lod)
 	var mesh_ms := (Time.get_ticks_usec() - mesh_start) / 1000.0
 	heights = result["heights"]
+	collision_heights = result["collision_heights"]
 	ocean_mask = result["ocean_mask"]
 	var collision_ms := 0.0
 	if collision_enabled:
@@ -56,6 +60,7 @@ func activate_from_chunk_data(
 	var result := builder.build_terrain_from_mesh_data(mesh_data, self)
 	var mesh_ms := (Time.get_ticks_usec() - mesh_start) / 1000.0
 	heights = result["heights"]
+	collision_heights = result["collision_heights"]
 	ocean_mask = result["ocean_mask"]
 	var collision_ms := 0.0
 	if collision_enabled:
@@ -70,9 +75,9 @@ func activate_from_chunk_data(
 
 func set_collision_enabled(enabled: bool) -> void:
 	if enabled:
-		if _collision_body or heights.is_empty():
+		if _collision_body or collision_heights.is_empty():
 			return
-		if heights.size() != VoxelMeshBuilder.CHUNK_SIZE * VoxelMeshBuilder.CHUNK_SIZE:
+		if collision_heights.size() != VoxelMeshBuilder.CHUNK_SIZE * VoxelMeshBuilder.CHUNK_SIZE:
 			return
 		_collision_body = _build_collision_body()
 		add_child(_collision_body)
@@ -91,7 +96,7 @@ func _build_collision_body() -> StaticBody3D:
 	var shape_data := PackedFloat32Array()
 	shape_data.resize(VoxelMeshBuilder.CHUNK_SIZE * VoxelMeshBuilder.CHUNK_SIZE)
 	for i in shape_data.size():
-		shape_data[i] = float(heights[i]) + 1.0
+		shape_data[i] = collision_heights[i] / COLLISION_HORIZONTAL_SCALE
 
 	var hms := HeightMapShape3D.new()
 	hms.map_width = VoxelMeshBuilder.CHUNK_SIZE
@@ -102,6 +107,7 @@ func _build_collision_body() -> StaticBody3D:
 	body.name = "CollisionBody"
 	var collision_shape := CollisionShape3D.new()
 	collision_shape.shape = hms
+	collision_shape.scale = Vector3.ONE * COLLISION_HORIZONTAL_SCALE
 	collision_shape.position = Vector3(
 		VoxelMeshBuilder.CHUNK_SIZE * 0.5,
 		0.0,
