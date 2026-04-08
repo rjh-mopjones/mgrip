@@ -21,6 +21,7 @@ var _hud: Label
 var _local_texture: Texture2D
 var _macro_texture: Texture2D
 var _macro_size := Vector2.ONE
+var _debug_lines: PackedStringArray = PackedStringArray()
 
 func _ready() -> void:
 	layer = 10
@@ -68,7 +69,12 @@ func update_local_chunk(biome_map: MgBiomeMap, local_chunk: Vector2i) -> void:
 	var img  := Image.create_from_data(512, 512, false, Image.FORMAT_RGBA8, rgba)
 	_local_texture = ImageTexture.create_from_image(img)
 
-func refresh(player_pos: Vector3, current_chunk: Vector2i, active_counts: Dictionary = {}) -> void:
+func refresh(
+		player_pos: Vector3,
+		current_chunk: Vector2i,
+		active_counts: Dictionary = {},
+		stream_debug: Dictionary = {}) -> void:
+	_debug_lines = _build_debug_lines(stream_debug)
 	if _hud:
 		_hud.text = _coord_text(player_pos, current_chunk, active_counts)
 	if not visible:
@@ -117,9 +123,10 @@ func _layout(player_pos: Vector3, current_chunk: Vector2i) -> void:
 	_title.text = "%s MAP   [M] close   [Tab] switch" % _mode_name()
 	_hint_label.position = orig + Vector2(0.0, map_size.y + 8.0)
 	_hint_label.text = (
-		"Tab switches Local/Macro map."
+		"Tab switches Local/Macro map.  %s"
+		% "\n".join(_debug_lines)
 		if _macro_texture
-		else "Macro map unavailable: generate world layers first."
+		else "Macro map unavailable: generate world layers first.\n%s" % "\n".join(_debug_lines)
 	)
 	_map_label.position = orig + Vector2(0.0, map_size.y + 30.0)
 	_map_label.text = _mode_text(player_pos, current_chunk)
@@ -139,6 +146,43 @@ func _coord_text(p: Vector3, current_chunk: Vector2i, active_counts: Dictionary)
 		wx,
 		wz,
 	]
+
+func _build_debug_lines(stream_debug: Dictionary) -> PackedStringArray:
+	if stream_debug.is_empty():
+		return PackedStringArray()
+	var lines := PackedStringArray()
+	var pending := int(stream_debug.get("pending", 0))
+	var prewarm: Vector2i = stream_debug.get("prewarm_target", Vector2i.ZERO)
+	var horizon: Dictionary = stream_debug.get("horizon", {})
+	var window: Dictionary = stream_debug.get("window", {})
+	lines.append("Pending: %d   Prewarm: (%d, %d)" % [pending, prewarm.x, prewarm.y])
+	if not horizon.is_empty():
+		var focus: Vector2 = horizon.get("focus", Vector2.ZERO)
+		lines.append(
+			"Horizon focus (%.2f, %.2f)   LOD1 %d/%d   LOD2 %d/%d"
+			% [
+				focus.x,
+				focus.y,
+				int(horizon.get("mid_loaded", 0)),
+				int(horizon.get("mid_budget", 0)),
+				int(horizon.get("far_loaded", 0)),
+				int(horizon.get("far_budget", 0)),
+			]
+		)
+	if not window.is_empty():
+		var min_chunk: Vector2i = window.get("min", Vector2i.ZERO)
+		var max_chunk: Vector2i = window.get("max", Vector2i.ZERO)
+		lines.append(
+			"Loaded window (%d, %d) -> (%d, %d)   radius %d"
+			% [
+				min_chunk.x,
+				min_chunk.y,
+				max_chunk.x,
+				max_chunk.y,
+				int(window.get("radius", 0)),
+			]
+		)
+	return lines
 
 func _mode_text(player_pos: Vector3, current_chunk: Vector2i) -> String:
 	var local_block := GenerationManager.scene_block_to_local_block(player_pos.x, player_pos.z)

@@ -101,6 +101,29 @@ func horizon_runtime_state() -> Dictionary:
 		"far_loaded": _loaded_count_for_lod(FAR_HORIZON_LOD),
 	}
 
+func loaded_chunk_window(center_chunk: Vector2i) -> Dictionary:
+	if _chunks.is_empty():
+		return {
+			"min": center_chunk,
+			"max": center_chunk,
+			"radius": 0,
+		}
+	var min_chunk := center_chunk
+	var max_chunk := center_chunk
+	var max_radius := 0
+	for chunk in _chunks.values():
+		var coord: Vector2i = chunk.chunk_coord
+		min_chunk.x = mini(min_chunk.x, coord.x)
+		min_chunk.y = mini(min_chunk.y, coord.y)
+		max_chunk.x = maxi(max_chunk.x, coord.x)
+		max_chunk.y = maxi(max_chunk.y, coord.y)
+		max_radius = maxi(max_radius, maxi(absi(coord.x - center_chunk.x), absi(coord.y - center_chunk.y)))
+	return {
+		"min": min_chunk,
+		"max": max_chunk,
+		"radius": max_radius,
+	}
+
 func is_ring_ready(center_chunk: Vector2i, radius: int = STREAM_RADIUS) -> bool:
 	for chunk_coord in _desired_chunk_order(center_chunk, radius):
 		if not _has_matching_chunk(chunk_coord, ACTIVE_LOD):

@@ -94,6 +94,12 @@ func _process(_delta: float) -> void:
 			_player.position,
 			current_chunk,
 			_chunk_streamer.active_counts_by_lod(),
+			{
+				"pending": _chunk_streamer.pending_count(),
+				"prewarm_target": _chunk_streamer.prewarm_target_chunk(),
+				"horizon": _chunk_streamer.horizon_runtime_state(),
+				"window": _chunk_streamer.loaded_chunk_window(current_chunk),
+			}
 		)
 	_chunk_metrics.update_runtime_state(
 		_chunk_streamer.active_counts_by_lod(),

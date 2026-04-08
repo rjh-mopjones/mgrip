@@ -1,8 +1,21 @@
 # Spec 002b - Horizon and LOD Expansion
 
-**Status:** Open
+**Status:** Complete
 **Priority:** High
 **Depends On:** Spec 002a complete
+
+## Completion
+
+`002b` is complete.
+
+Implemented results:
+
+- `LOD1` mid-distance chunk representation
+- `LOD2` super-far silhouette representation
+- real terrain horizon in shared chunk/world coordinates
+- directional activation prioritization and budgeted horizon loading
+- seam and crossing regression harnesses for visual and physical continuity
+- streamed-world debug visibility in overlay and runtime summaries
 
 ## Problem
 
