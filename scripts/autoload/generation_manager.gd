@@ -6,6 +6,18 @@ extends Node
 const BLOCKS_PER_CHUNK := 512
 const WORLD_UNITS_PER_CHUNK := 1.0
 const BLOCKS_PER_WORLD_UNIT := float(BLOCKS_PER_CHUNK) / WORLD_UNITS_PER_CHUNK
+const LOD0_NAME := "LOD0"
+const LOD0_RESOLUTION := 512
+const LOD0_DETAIL_LEVEL := 2
+const LOD0_FREQ_SCALE := 8.0
+const LOD0_SUB_SIZE := 64
+const LOD0_USE_EDGE_SKIRTS := false
+const LOD1_NAME := "LOD1"
+const LOD1_RESOLUTION := 129
+const LOD1_DETAIL_LEVEL := 1
+const LOD1_FREQ_SCALE := 8.0
+const LOD1_SUB_SIZE := 64
+const LOD1_USE_EDGE_SKIRTS := false
 
 var _gen: MgTerrainGen
 
@@ -49,6 +61,37 @@ func chunk_coord_to_scene_origin(chunk_coord: Vector2i, anchor_chunk: Vector2i) 
 func generate_runtime_chunk(chunk_coord: Vector2i) -> MgBiomeMap:
 	var world_origin := chunk_coord_to_world_origin(chunk_coord)
 	return _gen.generate_chunk(GameState.world_seed, world_origin.x, world_origin.y)
+
+func generate_runtime_chunk_for_lod(chunk_coord: Vector2i, lod_name: String) -> MgBiomeMap:
+	var world_origin := chunk_coord_to_world_origin(chunk_coord)
+	var config := runtime_chunk_config_for_lod(lod_name)
+	return _gen.generate_chunk_lod(
+		GameState.world_seed,
+		world_origin.x,
+		world_origin.y,
+		int(config["resolution"]),
+		int(config["detail_level"]),
+		float(config["freq_scale"]),
+	)
+
+func runtime_chunk_config_for_lod(lod_name: String) -> Dictionary:
+	match lod_name:
+		LOD1_NAME:
+			return {
+				"resolution": LOD1_RESOLUTION,
+				"detail_level": LOD1_DETAIL_LEVEL,
+				"freq_scale": LOD1_FREQ_SCALE,
+				"sub_size": LOD1_SUB_SIZE,
+				"use_edge_skirts": LOD1_USE_EDGE_SKIRTS,
+			}
+		_:
+			return {
+				"resolution": LOD0_RESOLUTION,
+				"detail_level": LOD0_DETAIL_LEVEL,
+				"freq_scale": LOD0_FREQ_SCALE,
+				"sub_size": LOD0_SUB_SIZE,
+				"use_edge_skirts": LOD0_USE_EDGE_SKIRTS,
+			}
 
 ## Region tile coord -> meso-scale region tile.
 func generate_region_tile(region_coord: Vector2i) -> MgBiomeMap:

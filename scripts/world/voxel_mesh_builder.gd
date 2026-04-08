@@ -8,13 +8,20 @@ class_name VoxelMeshBuilder
 
 const CHUNK_SIZE   := 512
 const HEIGHT_SCALE := 200.0
-const SUB_SIZE     := 64
 const SEA_LEVEL_Y  := -2
 
 ## Build terrain + water meshes and attach to parent.
 ## Returns heights and ocean_mask so world.gd can use them for spawn + collision.
-func build_terrain(biome_map: MgBiomeMap, parent: Node3D) -> Dictionary:
-	var mesh_data := biome_map.build_chunk_mesh_data(HEIGHT_SCALE, SUB_SIZE)
+func build_terrain(biome_map: MgBiomeMap, parent: Node3D, lod_name: String = GenerationManager.LOD0_NAME) -> Dictionary:
+	var config := GenerationManager.runtime_chunk_config_for_lod(lod_name)
+	var mesh_data := biome_map.build_chunk_mesh_data(
+		HEIGHT_SCALE,
+		int(config["sub_size"]),
+		bool(config["use_edge_skirts"]),
+	)
+	return build_terrain_from_mesh_data(mesh_data, parent)
+
+func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D) -> Dictionary:
 	var heights: PackedInt32Array = mesh_data.get("heights", PackedInt32Array())
 	var ocean_mask: PackedByteArray = mesh_data.get("ocean_mask", PackedByteArray())
 	var land_surfaces: Array = mesh_data.get("land_surfaces", [])

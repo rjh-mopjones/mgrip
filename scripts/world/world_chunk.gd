@@ -30,7 +30,30 @@ func activate_from_biome_map(
 	biome_map = new_biome_map
 	state = ChunkState.MESHING
 	var mesh_start := Time.get_ticks_usec()
-	var result := builder.build_terrain(biome_map, self)
+	var result := builder.build_terrain(biome_map, self, lod)
+	var mesh_ms := (Time.get_ticks_usec() - mesh_start) / 1000.0
+	heights = result["heights"]
+	ocean_mask = result["ocean_mask"]
+	var collision_ms := 0.0
+	if collision_enabled:
+		var collision_start := Time.get_ticks_usec()
+		set_collision_enabled(true)
+		collision_ms = (Time.get_ticks_usec() - collision_start) / 1000.0
+	state = ChunkState.ACTIVE
+	return {
+		"mesh_ms": mesh_ms,
+		"collision_ms": collision_ms,
+	}
+
+func activate_from_chunk_data(
+		new_biome_map: MgBiomeMap,
+		mesh_data: Dictionary,
+		builder: VoxelMeshBuilder,
+		collision_enabled: bool) -> Dictionary:
+	biome_map = new_biome_map
+	state = ChunkState.MESHING
+	var mesh_start := Time.get_ticks_usec()
+	var result := builder.build_terrain_from_mesh_data(mesh_data, self)
 	var mesh_ms := (Time.get_ticks_usec() - mesh_start) / 1000.0
 	heights = result["heights"]
 	ocean_mask = result["ocean_mask"]
@@ -48,6 +71,8 @@ func activate_from_biome_map(
 func set_collision_enabled(enabled: bool) -> void:
 	if enabled:
 		if _collision_body or heights.is_empty():
+			return
+		if heights.size() != VoxelMeshBuilder.CHUNK_SIZE * VoxelMeshBuilder.CHUNK_SIZE:
 			return
 		_collision_body = _build_collision_body()
 		add_child(_collision_body)

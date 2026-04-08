@@ -8,12 +8,23 @@ mod mesh;
 
 use godot::prelude::*;
 use mg_noise::{BiomeMap, SEA_LEVEL};
-use std::sync::Arc;
+use rayon::spawn;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::time::Instant;
 
 struct MarginsGripExtension;
 
 #[gdextension]
 unsafe impl ExtensionLibrary for MarginsGripExtension {}
+
+fn biome_map_from_arc(map: Arc<BiomeMap>) -> Gd<MgBiomeMap> {
+    let mut gd = Gd::<MgBiomeMap>::from_init_fn(|base| MgBiomeMap { inner: None, base });
+    gd.bind_mut().inner = Some(map);
+    gd
+}
 
 // ─── MgBiomeMap ──────────────────────────────────────────────────────────────
 
@@ -163,9 +174,14 @@ impl MgBiomeMap {
     }
 
     #[func]
-    pub fn build_chunk_mesh_data(&self, height_scale: f64, sub_size: i64) -> Dictionary {
+    pub fn build_chunk_mesh_data(
+        &self,
+        height_scale: f64,
+        sub_size: i64,
+        use_edge_skirts: bool,
+    ) -> Dictionary {
         let Some(map) = &self.inner else { return Dictionary::new(); };
-        mesh::build_chunk_mesh_data(map.as_ref(), height_scale, sub_size)
+        mesh::build_chunk_mesh_data(map.as_ref(), height_scale, sub_size, use_edge_skirts)
     }
 }
 
@@ -203,9 +219,7 @@ impl MgTerrainGen {
             true,           // run_rivers
             1.0,            // freq_scale — world scale
         );
-        let mut gd = Gd::<MgBiomeMap>::from_init_fn(|base| MgBiomeMap { inner: None, base });
-        gd.bind_mut().inner = Some(Arc::new(map));
-        gd
+        biome_map_from_arc(Arc::new(map))
     }
 
     /// Generate a 512×512 meso tile at a given world chunk coordinate.
@@ -226,32 +240,158 @@ impl MgTerrainGen {
             false,
             1.0,    // freq_scale — world scale
         );
-        let mut gd = Gd::<MgBiomeMap>::from_init_fn(|base| MgBiomeMap { inner: None, base });
-        gd.bind_mut().inner = Some(Arc::new(map));
-        gd
+        biome_map_from_arc(Arc::new(map))
     }
 
     /// Generate a 512×512 micro chunk (1 world unit) for 3D level rendering.
     #[func]
     pub fn generate_chunk(&self, seed: i64, world_x: f64, world_y: f64) -> Gd<MgBiomeMap> {
+        self.generate_chunk_lod(seed, world_x, world_y, 512, 2, 8.0)
+    }
+
+    /// Generate a chunk with an explicit sample resolution and detail level.
+    #[func]
+    pub fn generate_chunk_lod(
+        &self,
+        seed: i64,
+        world_x: f64,
+        world_y: f64,
+        resolution: i64,
+        detail_level: i64,
+        freq_scale: f64,
+    ) -> Gd<MgBiomeMap> {
         let map = BiomeMap::generate(
             seed as u32,
             world_x, world_y,
             1.0, 1.0,   // 1 world unit = 1 chunk = 512 blocks
-            512, 512,
-            2,          // detail_level=2 enables derive_micro_heightmap
+            resolution.max(2) as usize,
+            resolution.max(2) as usize,
+            detail_level.max(0) as u32,
             false,
             false,
-            8.0,        // freq_scale — ~64px wavelength terrain features
+            freq_scale.max(0.1),
         );
-        let mut gd = Gd::<MgBiomeMap>::from_init_fn(|base| MgBiomeMap { inner: None, base });
-        gd.bind_mut().inner = Some(Arc::new(map));
-        gd
+        biome_map_from_arc(Arc::new(map))
     }
 
     /// Sea level constant (heightmap threshold for ocean vs land).
     #[func]
     pub fn sea_level() -> f64 {
         SEA_LEVEL
+    }
+}
+
+struct ChunkBuildNativeResult {
+    biome_map: Arc<BiomeMap>,
+    mesh_buffers: mesh::ChunkMeshBuffers,
+    generation_ms: f64,
+    mesh_prep_ms: f64,
+}
+
+#[derive(GodotClass)]
+#[class(base=RefCounted)]
+pub struct MgChunkBuildJob {
+    result: Arc<Mutex<Option<ChunkBuildNativeResult>>>,
+    running: Arc<AtomicBool>,
+    base: Base<RefCounted>,
+}
+
+#[godot_api]
+impl IRefCounted for MgChunkBuildJob {
+    fn init(base: Base<RefCounted>) -> Self {
+        Self {
+            result: Arc::new(Mutex::new(None)),
+            running: Arc::new(AtomicBool::new(false)),
+            base,
+        }
+    }
+}
+
+#[godot_api]
+impl MgChunkBuildJob {
+    #[func]
+    pub fn start_chunk_build(
+        &mut self,
+        seed: i64,
+        world_x: f64,
+        world_y: f64,
+        resolution: i64,
+        detail_level: i64,
+        freq_scale: f64,
+        height_scale: f64,
+        sub_size: i64,
+        use_edge_skirts: bool,
+    ) -> bool {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        *self.result.lock().unwrap() = None;
+
+        let result_slot = Arc::clone(&self.result);
+        let running_flag = Arc::clone(&self.running);
+
+        spawn(move || {
+            let generation_start = Instant::now();
+            let map = Arc::new(BiomeMap::generate(
+                seed as u32,
+                world_x,
+                world_y,
+                1.0,
+                1.0,
+                resolution.max(2) as usize,
+                resolution.max(2) as usize,
+                detail_level.max(0) as u32,
+                false,
+                false,
+                freq_scale.max(0.1),
+            ));
+            let generation_ms = generation_start.elapsed().as_secs_f64() * 1000.0;
+
+            let mesh_start = Instant::now();
+            let mesh_buffers = mesh::build_chunk_mesh_buffers(
+                map.as_ref(),
+                height_scale,
+                sub_size,
+                use_edge_skirts,
+            );
+            let mesh_prep_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
+
+            *result_slot.lock().unwrap() = Some(ChunkBuildNativeResult {
+                biome_map: map,
+                mesh_buffers,
+                generation_ms,
+                mesh_prep_ms,
+            });
+            running_flag.store(false, Ordering::SeqCst);
+        });
+
+        true
+    }
+
+    #[func]
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    #[func]
+    pub fn is_ready(&self) -> bool {
+        !self.is_running() && self.result.lock().unwrap().is_some()
+    }
+
+    #[func]
+    pub fn take_result(&mut self) -> Dictionary {
+        let Some(output) = self.result.lock().unwrap().take() else {
+            return Dictionary::new();
+        };
+
+        let mut result = Dictionary::new();
+        result.set("biome_map", biome_map_from_arc(output.biome_map));
+        result.set(
+            "mesh_data",
+            mesh::chunk_mesh_buffers_into_dictionary(output.mesh_buffers),
+        );
+        result.set("generation_ms", output.generation_ms);
+        result.set("mesh_prep_ms", output.mesh_prep_ms);
+        result
     }
 }

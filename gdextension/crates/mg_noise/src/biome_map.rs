@@ -146,8 +146,8 @@ impl BiomeMap {
         let detail_noise = OpenSimplex::new(seed.wrapping_add(SEED_MICRO_DETAIL));
 
         // Pixel → world coordinate mapping
-        let px_to_wx = |px: usize| origin_x + (px as f64 / tile_w as f64) * world_size_x;
-        let py_to_wy = |py: usize| origin_y + (py as f64 / tile_h as f64) * world_size_y;
+        let px_to_wx = |px: usize| sample_world_coord(origin_x, world_size_x, tile_w, px);
+        let py_to_wy = |py: usize| sample_world_coord(origin_y, world_size_y, tile_h, py);
 
         // ── Phase 1: Generate all base layers ─────────────────────────────────
         // pixels stores (idx, true_wx, true_wy) — true world coords.
@@ -155,8 +155,8 @@ impl BiomeMap {
         // LightLevelStrategy always gets true coords (it normalises by map_width).
         let pixels: Vec<(usize, f64, f64)> = (0..tile_h)
             .flat_map(|py| (0..tile_w).map(move |px| {
-                let wx = origin_x + (px as f64 / tile_w as f64) * world_size_x;
-                let wy = origin_y + (py as f64 / tile_h as f64) * world_size_y;
+                let wx = sample_world_coord(origin_x, world_size_x, tile_w, px);
+                let wy = sample_world_coord(origin_y, world_size_y, tile_h, py);
                 (py * tile_w + px, wx, wy)
             }))
             .collect();
@@ -172,7 +172,7 @@ impl BiomeMap {
 
         // GPU path is only valid when freq_scale == 1.0: the GPU shaders normalise
         // coordinates by map_width, which breaks for scaled micro-level coords.
-        let scale = world_size_x / tile_w as f64;
+        let scale = sample_world_step(world_size_x, tile_w);
         let gpu_layers = if freq_scale == 1.0 {
             GpuNoiseContext::global().map(|gpu| {
                 gpu.generate_layers(seed, tile_w, tile_h, origin_x, origin_y, scale, world_height, detail_level)
@@ -433,6 +433,20 @@ impl BiomeMap {
     }
 }
 
+fn sample_world_coord(origin: f64, world_size: f64, sample_count: usize, index: usize) -> f64 {
+    if sample_count <= 1 {
+        return origin;
+    }
+    origin + (index as f64 / (sample_count - 1) as f64) * world_size
+}
+
+fn sample_world_step(world_size: f64, sample_count: usize) -> f64 {
+    if sample_count <= 1 {
+        return world_size;
+    }
+    world_size / (sample_count - 1) as f64
+}
+
 fn apply_polar_ice_cap(
     biomes: &mut [TileType],
     light_level: &[f64],
@@ -460,5 +474,28 @@ fn apply_polar_ice_cap(
         if light < threshold {
             biomes[idx] = if cont < sea_level { TileType::White } else { TileType::IceSheet };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sample_world_coord, sample_world_step};
+
+    #[test]
+    fn adjacent_tiles_share_the_same_border_samples() {
+        let sample_count = 512;
+        let left_edge = sample_world_coord(440.0, 1.0, sample_count, sample_count - 1);
+        let right_edge = sample_world_coord(441.0, 1.0, sample_count, 0);
+
+        assert!((left_edge - right_edge).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sample_step_reaches_tile_extent_inclusively() {
+        let sample_count = 512;
+        let step = sample_world_step(1.0, sample_count);
+        let last_sample = step * (sample_count - 1) as f64;
+
+        assert!((last_sample - 1.0).abs() < 1.0e-12);
     }
 }
