@@ -1,5 +1,5 @@
-use noise::{NoiseFn, OpenSimplex};
 use mg_core::NoiseStrategy;
+use noise::{NoiseFn, OpenSimplex};
 
 pub struct HumidityStrategy {
     noise: OpenSimplex,
@@ -36,7 +36,8 @@ impl HumidityStrategy {
 
         for _ in 0..(self.octaves + detail_level) {
             let sample = if self.world_width > 0.0 {
-                let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(x, y, freq, 0.003, self.world_width);
+                let [cx, cz, cy] =
+                    crate::wrap::cylindrical_noise_coords(x, y, freq, 0.003, self.world_width);
                 self.noise.get([cx, cz, cy])
             } else {
                 self.noise.get([x * freq * 0.003, y * freq * 0.003])

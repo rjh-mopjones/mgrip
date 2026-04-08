@@ -1,6 +1,6 @@
 # Spec 002 - Open World Expansion Overview
 
-**Status:** Open
+**Status:** Complete
 **Priority:** Critical
 
 This spec has been split into two smaller specs because the original scope
@@ -10,6 +10,20 @@ combined two different jobs:
 2. extend that model outward into horizon rendering and visual LOD
 
 We want to do those in order, not all at once.
+
+## Completion
+
+`002` is now complete through both `002a` and `002b`.
+
+Delivered outcomes:
+
+- coherent runtime chunk naming and chunk/world/block helper usage
+- explicit chunk ownership, lifecycle, and activation metrics
+- near-ring streaming with seam-safe movement across chunk boundaries
+- `LOD0` / `LOD1` / `LOD2` terrain representations in one shared chunk model
+- budgeted horizon streaming with directional prioritization
+- automated scenic, boundary, crossing, and flight flythrough checks
+- streamed-world debug information in logs and map overlay
 
 ## Why This Was Split
 
@@ -59,4 +73,3 @@ Do not start the horizon/LOD work until all of the following are true:
 - the player can move across chunk boundaries without exposing large voids
 - chunk metrics identify the dominant activation cost
 - the streamed runtime has explicit chunk lifecycle ownership
-

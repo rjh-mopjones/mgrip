@@ -3,6 +3,8 @@ class_name ChunkMetrics
 
 const SUMMARY_INTERVAL_MSEC := 3000
 const HISTORY_LIMIT := 24
+const ACTIVATION_SPIKE_WARN_MS := 50.0
+const ACTIVATION_STALL_FAIL_MS := 150.0
 
 var _last_summary_msec := 0
 var _recent_total_ms: Array[float] = []
@@ -47,6 +49,16 @@ func finish_activation(sample: Dictionary) -> void:
 			total_ms,
 		]
 	)
+	if total_ms >= ACTIVATION_STALL_FAIL_MS:
+		print(
+			"Chunk activation budget FAIL  [%d, %d] %s total=%.1fms exceeds %.1fms"
+			% [coord.x, coord.y, String(sample["lod"]), total_ms, ACTIVATION_STALL_FAIL_MS]
+		)
+	elif total_ms >= ACTIVATION_SPIKE_WARN_MS:
+		print(
+			"Chunk activation budget WARN  [%d, %d] %s total=%.1fms exceeds %.1fms"
+			% [coord.x, coord.y, String(sample["lod"]), total_ms, ACTIVATION_SPIKE_WARN_MS]
+		)
 
 func update_runtime_state(active_by_lod: Dictionary, pending_chunks: int) -> void:
 	_active_by_lod = active_by_lod.duplicate(true)
@@ -69,8 +81,15 @@ func maybe_print_summary() -> void:
 	if not _recent_total_ms.is_empty():
 		avg_ms /= float(_recent_total_ms.size())
 	print(
-		"Chunk runtime summary  active=%s  pending=%d  avg_total=%.1fms  peak_total=%.1fms%s"
-		% [_format_active_counts(), _pending_chunks, avg_ms, _window_peak_ms, _format_horizon_state()]
+		"Chunk runtime summary  active=%s  pending=%d  avg_total=%.1fms  peak_total=%.1fms%s%s"
+		% [
+			_format_active_counts(),
+			_pending_chunks,
+			avg_ms,
+			_window_peak_ms,
+			_format_horizon_state(),
+			_format_budget_state(avg_ms),
+		]
 	)
 	_window_peak_ms = 0.0
 
@@ -101,3 +120,12 @@ func _format_horizon_state() -> String:
 			int(_horizon_state.get("far_radius", 0)),
 		]
 	)
+
+func _format_budget_state(avg_ms: float) -> String:
+	if _window_peak_ms >= ACTIVATION_STALL_FAIL_MS:
+		return "  budget=FAIL(peak>=150ms)"
+	if _window_peak_ms >= ACTIVATION_SPIKE_WARN_MS:
+		return "  budget=WARN(peak>=50ms)"
+	if avg_ms >= ACTIVATION_SPIKE_WARN_MS:
+		return "  budget=WARN(avg>=50ms)"
+	return "  budget=OK"

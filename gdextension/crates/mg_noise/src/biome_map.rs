@@ -1,24 +1,39 @@
 //! BiomeMap: complete terrain snapshot for a given LOD tile.
 //! Holds all base and derived noise layers plus the computed biome grid.
 
+use crate::gpu::GpuNoiseContext;
+use mg_core::{NoiseStrategy, TileType};
 use noise::OpenSimplex;
 use rayon::prelude::*;
-use mg_core::{NoiseStrategy, TileType};
-use crate::gpu::GpuNoiseContext;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::biome_splines::BiomeSplines;
 use crate::derived;
-use crate::erosion_sim::{ErosionParams, simulate_erosion};
-use crate::rivers::{RiverNetwork, generate_river_network, rasterize_from_network, LOD_THRESHOLD_MACRO};
+use crate::erosion_sim::{simulate_erosion, ErosionParams};
+use crate::rivers::{
+    generate_river_network, rasterize_from_network, RiverNetwork, LOD_THRESHOLD_MACRO,
+};
 use crate::strategy::{
-    ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy,
-    PeaksAndValleysStrategy, RockHardnessStrategy, TectonicPlatesStrategy,
+    ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
+    RockHardnessStrategy, TectonicPlatesStrategy,
 };
 use crate::visualization::NoiseLayer;
 
 pub const SEA_LEVEL: f64 = -0.01;
+
+pub fn tile_has_fluid_surface(tile: TileType) -> bool {
+    matches!(
+        tile,
+        TileType::Sea
+            | TileType::ShallowSea
+            | TileType::ContinentalShelf
+            | TileType::DeepOcean
+            | TileType::OceanTrench
+            | TileType::OceanRidge
+            | TileType::CoralReef
+    )
+}
 
 /// Seed offsets per base layer (additive from world_seed).
 const SEED_CONTINENTALNESS: u32 = 0;
@@ -74,7 +89,8 @@ impl BiomeMap {
     fn empty(width: usize, height: usize, world_width: f64, world_height: f64) -> Self {
         let n = width * height;
         Self {
-            width, height,
+            width,
+            height,
             continentalness: vec![0.0; n],
             tectonic: vec![0.0; n],
             tectonic_plate_ids: vec![0.0; n],
@@ -137,12 +153,44 @@ impl BiomeMap {
         // At freq_scale != 1.0 (micro level) we scale noise coords far outside world bounds,
         // so cylindrical wrapping would give wrong results — use plain (non-wrapping) constructors.
         let use_wrap = freq_scale == 1.0;
-        let cont_strat = if use_wrap { ContinentalnessStrategy::new_wrapping(seed.wrapping_add(SEED_CONTINENTALNESS), world_width) } else { ContinentalnessStrategy::new(seed.wrapping_add(SEED_CONTINENTALNESS)) };
-        let tect_strat = if use_wrap { TectonicPlatesStrategy::new_wrapping(seed.wrapping_add(SEED_TECTONIC), world_width) } else { TectonicPlatesStrategy::new(seed.wrapping_add(SEED_TECTONIC)) };
-        let humid_strat = if use_wrap { HumidityStrategy::new_wrapping(seed.wrapping_add(SEED_HUMIDITY), world_width) } else { HumidityStrategy::new(seed.wrapping_add(SEED_HUMIDITY)) };
-        let rock_strat = if use_wrap { RockHardnessStrategy::new_wrapping(seed.wrapping_add(SEED_ROCK_HARDNESS), world_width) } else { RockHardnessStrategy::new(seed.wrapping_add(SEED_ROCK_HARDNESS)) };
-        let light_strat = LightLevelStrategy::new(seed.wrapping_add(SEED_LIGHT_LEVEL), 0.5, 1.0, world_width, world_height);
-        let pv_strat = if use_wrap { PeaksAndValleysStrategy::new_wrapping(seed.wrapping_add(SEED_PEAKS_VALLEYS), world_width) } else { PeaksAndValleysStrategy::new(seed.wrapping_add(SEED_PEAKS_VALLEYS)) };
+        let cont_strat = if use_wrap {
+            ContinentalnessStrategy::new_wrapping(
+                seed.wrapping_add(SEED_CONTINENTALNESS),
+                world_width,
+            )
+        } else {
+            ContinentalnessStrategy::new(seed.wrapping_add(SEED_CONTINENTALNESS))
+        };
+        let tect_strat = if use_wrap {
+            TectonicPlatesStrategy::new_wrapping(seed.wrapping_add(SEED_TECTONIC), world_width)
+        } else {
+            TectonicPlatesStrategy::new(seed.wrapping_add(SEED_TECTONIC))
+        };
+        let humid_strat = if use_wrap {
+            HumidityStrategy::new_wrapping(seed.wrapping_add(SEED_HUMIDITY), world_width)
+        } else {
+            HumidityStrategy::new(seed.wrapping_add(SEED_HUMIDITY))
+        };
+        let rock_strat = if use_wrap {
+            RockHardnessStrategy::new_wrapping(seed.wrapping_add(SEED_ROCK_HARDNESS), world_width)
+        } else {
+            RockHardnessStrategy::new(seed.wrapping_add(SEED_ROCK_HARDNESS))
+        };
+        let light_strat = LightLevelStrategy::new(
+            seed.wrapping_add(SEED_LIGHT_LEVEL),
+            0.5,
+            1.0,
+            world_width,
+            world_height,
+        );
+        let pv_strat = if use_wrap {
+            PeaksAndValleysStrategy::new_wrapping(
+                seed.wrapping_add(SEED_PEAKS_VALLEYS),
+                world_width,
+            )
+        } else {
+            PeaksAndValleysStrategy::new(seed.wrapping_add(SEED_PEAKS_VALLEYS))
+        };
         let detail_noise = OpenSimplex::new(seed.wrapping_add(SEED_MICRO_DETAIL));
 
         // Pixel → world coordinate mapping
@@ -154,11 +202,13 @@ impl BiomeMap {
         // fBm strategies receive (true_wx * freq_scale, true_wy * freq_scale).
         // LightLevelStrategy always gets true coords (it normalises by map_width).
         let pixels: Vec<(usize, f64, f64)> = (0..tile_h)
-            .flat_map(|py| (0..tile_w).map(move |px| {
-                let wx = sample_world_coord(origin_x, world_size_x, tile_w, px);
-                let wy = sample_world_coord(origin_y, world_size_y, tile_h, py);
-                (py * tile_w + px, wx, wy)
-            }))
+            .flat_map(|py| {
+                (0..tile_w).map(move |px| {
+                    let wx = sample_world_coord(origin_x, world_size_x, tile_w, px);
+                    let wy = sample_world_coord(origin_y, world_size_y, tile_h, py);
+                    (py * tile_w + px, wx, wy)
+                })
+            })
             .collect();
 
         // Tectonic (Voronoi plates) is always CPU — no GPU equivalent.
@@ -175,8 +225,17 @@ impl BiomeMap {
         let scale = sample_world_step(world_size_x, tile_w);
         let gpu_layers = if freq_scale == 1.0 {
             GpuNoiseContext::global().map(|gpu| {
-                gpu.generate_layers(seed, tile_w, tile_h, origin_x, origin_y, scale, world_height, detail_level)
-                   .into_f64()
+                gpu.generate_layers(
+                    seed,
+                    tile_w,
+                    tile_h,
+                    origin_x,
+                    origin_y,
+                    scale,
+                    world_height,
+                    detail_level,
+                )
+                .into_f64()
             })
         } else {
             None
@@ -185,12 +244,16 @@ impl BiomeMap {
         match gpu_layers {
             Some(gpu) => {
                 for (i, &(tect, plate_id)) in tect_data.iter().enumerate() {
-                    map.continentalness[i]    = gpu.continentalness[i];
-                    map.tectonic[i]           = tect;
-                    map.light_level[i]        = gpu.light_level[i];
-                    map.rock_hardness[i]      = gpu.rock_hardness[i];
-                    map.humidity[i]           = gpu.humidity[i];
-                    map.peaks_valleys[i]      = derived::derive_peaks_valleys(gpu.peaks_valleys[i], tect, gpu.rock_hardness[i]);
+                    map.continentalness[i] = gpu.continentalness[i];
+                    map.tectonic[i] = tect;
+                    map.light_level[i] = gpu.light_level[i];
+                    map.rock_hardness[i] = gpu.rock_hardness[i];
+                    map.humidity[i] = gpu.humidity[i];
+                    map.peaks_valleys[i] = derived::derive_peaks_valleys(
+                        gpu.peaks_valleys[i],
+                        tect,
+                        gpu.rock_hardness[i],
+                    );
                     map.tectonic_plate_ids[i] = plate_id;
                 }
             }
@@ -199,12 +262,18 @@ impl BiomeMap {
                 let base_data: Vec<(f64, f64, f64, f64, f64)> = pixels
                     .par_iter()
                     .map(|&(_, wx, wy)| {
-                        let nwx    = wx * freq_scale;
-                        let nwy    = wy * freq_scale;
-                        let cont   = cont_strat.generate(nwx, nwy, detail_level);
-                        let light  = light_strat.generate(wx, wy, detail_level);
-                        let rock   = rock_strat.generate(nwx, nwy, detail_level);
-                        let humid  = humid_strat.generate_terminator_model(nwx, nwy, detail_level, cont, light);
+                        let nwx = wx * freq_scale;
+                        let nwy = wy * freq_scale;
+                        let cont = cont_strat.generate(nwx, nwy, detail_level);
+                        let light = light_strat.generate(wx, wy, detail_level);
+                        let rock = rock_strat.generate(nwx, nwy, detail_level);
+                        let humid = humid_strat.generate_terminator_model(
+                            nwx,
+                            nwy,
+                            detail_level,
+                            cont,
+                            light,
+                        );
                         let pv_base = pv_strat.generate(nwx, nwy, detail_level);
                         (cont, light, rock, humid, pv_base)
                     })
@@ -212,12 +281,12 @@ impl BiomeMap {
                 for (i, (&(cont, light, rock, humid, pv_base), &(tect, plate_id))) in
                     base_data.iter().zip(tect_data.iter()).enumerate()
                 {
-                    map.continentalness[i]    = cont;
-                    map.tectonic[i]           = tect;
-                    map.light_level[i]        = light;
-                    map.rock_hardness[i]      = rock;
-                    map.humidity[i]           = humid;
-                    map.peaks_valleys[i]      = derived::derive_peaks_valleys(pv_base, tect, rock);
+                    map.continentalness[i] = cont;
+                    map.tectonic[i] = tect;
+                    map.light_level[i] = light;
+                    map.rock_hardness[i] = rock;
+                    map.humidity[i] = humid;
+                    map.peaks_valleys[i] = derived::derive_peaks_valleys(pv_base, tect, rock);
                     map.tectonic_plate_ids[i] = plate_id;
                 }
             }
@@ -227,15 +296,21 @@ impl BiomeMap {
         // Temperature (needs light, heightmap placeholder, humidity, continentalness)
         // We need heightmap first, so compute it from current peaks_valleys
         for i in 0..tile_w * tile_h {
-            let h = derived::derive_heightmap(map.continentalness[i], map.tectonic[i], map.peaks_valleys[i]);
+            let h = derived::derive_heightmap(
+                map.continentalness[i],
+                map.tectonic[i],
+                map.peaks_valleys[i],
+            );
             map.heightmap[i] = h;
         }
 
         // Temperature
         for i in 0..tile_w * tile_h {
             map.temperature[i] = derived::derive_temperature(
-                map.light_level[i], map.heightmap[i],
-                map.humidity[i], map.continentalness[i],
+                map.light_level[i],
+                map.heightmap[i],
+                map.humidity[i],
+                map.continentalness[i],
             );
         }
 
@@ -258,8 +333,10 @@ impl BiomeMap {
             // Recompute temperature with eroded heightmap
             for i in 0..tile_w * tile_h {
                 map.temperature[i] = derived::derive_temperature(
-                    map.light_level[i], map.heightmap[i],
-                    map.humidity[i], map.continentalness[i],
+                    map.light_level[i],
+                    map.heightmap[i],
+                    map.humidity[i],
+                    map.continentalness[i],
                 );
             }
         }
@@ -295,8 +372,10 @@ impl BiomeMap {
             map.aridity[i] = derived::derive_aridity(temp, humid);
             map.precipitation_type[i] = derived::derive_precipitation_type(temp, humid, h);
             map.snowpack[i] = derived::derive_snowpack(map.precipitation_type[i], temp, h, light);
-            map.water_table[i] = derived::derive_water_table(river, humid, h, map.precipitation_type[i], cont);
-            map.resource_richness[i] = derived::derive_resource_richness(tect, rock, map.erosion[i]);
+            map.water_table[i] =
+                derived::derive_water_table(river, humid, h, map.precipitation_type[i], cont);
+            map.resource_richness[i] =
+                derived::derive_resource_richness(tect, rock, map.erosion[i]);
         }
 
         // Apply micro detail if detail_level == 2
@@ -306,7 +385,8 @@ impl BiomeMap {
                 let py = i / tile_w;
                 let wx = px_to_wx(px);
                 let wy = py_to_wy(py);
-                map.heightmap[i] = derived::derive_micro_heightmap(map.heightmap[i], wx, wy, &detail_noise);
+                map.heightmap[i] =
+                    derived::derive_micro_heightmap(map.heightmap[i], wx, wy, &detail_noise);
             }
         }
 
@@ -326,8 +406,10 @@ impl BiomeMap {
                 map.light_level[i],
             );
             map.biomes[i] = biome;
-            map.vegetation_density[i] = derived::derive_vegetation_density(biome, map.water_table[i]);
-            map.soil_type[i] = derived::derive_soil_type(biome, map.erosion[i], map.rock_hardness[i]);
+            map.vegetation_density[i] =
+                derived::derive_vegetation_density(biome, map.water_table[i]);
+            map.soil_type[i] =
+                derived::derive_soil_type(biome, map.erosion[i], map.rock_hardness[i]);
         }
 
         // Apply polar ice cap override
@@ -370,7 +452,11 @@ impl BiomeMap {
     }
 
     pub fn is_ocean(&self, x: usize, y: usize) -> bool {
-        self.continentalness[y * self.width + x] < SEA_LEVEL
+        tile_has_fluid_surface(self.biomes[y * self.width + x])
+    }
+
+    pub fn has_surface_fluid(&self, x: usize, y: usize) -> bool {
+        tile_has_fluid_surface(self.biomes[y * self.width + x])
     }
 
     /// Export a debug PNG for the given layer. Returns RGBA bytes.
@@ -399,7 +485,9 @@ impl BiomeMap {
                 NoiseLayer::Erosion => erosion_to_rgba(self.erosion[i]),
                 NoiseLayer::Rivers => river_to_rgba(self.rivers[i]),
                 NoiseLayer::Aridity => aridity_to_rgba(self.aridity[i]),
-                NoiseLayer::PrecipitationType => precipitation_type_to_rgba(self.precipitation_type[i]),
+                NoiseLayer::PrecipitationType => {
+                    precipitation_type_to_rgba(self.precipitation_type[i])
+                }
                 NoiseLayer::Snowpack => snowpack_to_rgba(self.snowpack[i]),
                 NoiseLayer::WaterTable => water_table_to_rgba(self.water_table[i]),
                 NoiseLayer::VegetationDensity => vegetation_to_rgba(self.vegetation_density[i]),
@@ -414,7 +502,11 @@ impl BiomeMap {
     }
 
     /// Save a single layer as PNG to the given path.
-    pub fn save_layer_png(&self, layer: NoiseLayer, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_layer_png(
+        &self,
+        layer: NoiseLayer,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let rgba = self.layer_to_rgba(layer);
         let img = image::RgbaImage::from_raw(self.width as u32, self.height as u32, rgba)
             .ok_or("Failed to create image from buffer")?;
@@ -423,7 +515,10 @@ impl BiomeMap {
     }
 
     /// Save all debug PNGs to the given directory.
-    pub fn save_all_debug_pngs(&self, dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_all_debug_pngs(
+        &self,
+        dir: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(dir)?;
         for &layer in NoiseLayer::all() {
             let path = dir.join(format!("{}.png", layer.name()));
@@ -472,14 +567,19 @@ fn apply_polar_ice_cap(
         let threshold = 0.12 + light_perturb;
 
         if light < threshold {
-            biomes[idx] = if cont < sea_level { TileType::White } else { TileType::IceSheet };
+            biomes[idx] = if cont < sea_level {
+                TileType::White
+            } else {
+                TileType::IceSheet
+            };
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{sample_world_coord, sample_world_step};
+    use super::{sample_world_coord, sample_world_step, tile_has_fluid_surface};
+    use mg_core::TileType;
 
     #[test]
     fn adjacent_tiles_share_the_same_border_samples() {
@@ -497,5 +597,16 @@ mod tests {
         let last_sample = step * (sample_count - 1) as f64;
 
         assert!((last_sample - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn fluid_surface_tiles_are_semantic_not_elevation_based() {
+        assert!(tile_has_fluid_surface(TileType::Sea));
+        assert!(tile_has_fluid_surface(TileType::DeepOcean));
+        assert!(tile_has_fluid_surface(TileType::CoralReef));
+        assert!(!tile_has_fluid_surface(TileType::IceSheet));
+        assert!(!tile_has_fluid_surface(TileType::White));
+        assert!(!tile_has_fluid_surface(TileType::SaltFlat));
+        assert!(!tile_has_fluid_surface(TileType::ScorchedRock));
     }
 }

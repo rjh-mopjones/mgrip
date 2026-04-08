@@ -1,7 +1,12 @@
-use noise::{NoiseFn, OpenSimplex};
 use mg_core::TileType;
+use noise::{NoiseFn, OpenSimplex};
 
-pub fn derive_temperature(light_level: f64, elevation: f64, humidity: f64, continentalness: f64) -> f64 {
+pub fn derive_temperature(
+    light_level: f64,
+    elevation: f64,
+    humidity: f64,
+    continentalness: f64,
+) -> f64 {
     let base_temp = if light_level < 0.28 {
         -80.0 + (light_level / 0.28) * 80.0
     } else if light_level < 0.62 {
@@ -10,7 +15,11 @@ pub fn derive_temperature(light_level: f64, elevation: f64, humidity: f64, conti
         45.0 + ((light_level - 0.62) / 0.38) * 75.0
     };
 
-    let max_lapse = if base_temp > 0.0 { base_temp * 0.30 } else { 25.0 };
+    let max_lapse = if base_temp > 0.0 {
+        base_temp * 0.30
+    } else {
+        25.0
+    };
     let lapse_rate = (elevation.max(0.0) * 55.0).min(max_lapse);
     let humidity_buffer = humidity * 5.0;
     let raw = base_temp - lapse_rate + humidity_buffer;
@@ -45,7 +54,12 @@ pub fn derive_heightmap(continentalness: f64, _tectonic: f64, peaks_valleys: f64
 ///
 /// The `detail_noise` must be created ONCE outside the pixel loop:
 ///   `OpenSimplex::new(seed.wrapping_add(50))`
-pub fn derive_micro_heightmap(base_heightmap: f64, wx: f64, wy: f64, detail_noise: &OpenSimplex) -> f64 {
+pub fn derive_micro_heightmap(
+    base_heightmap: f64,
+    wx: f64,
+    wy: f64,
+    detail_noise: &OpenSimplex,
+) -> f64 {
     // Start at octave 8: freq 0.01 * 2^8 = 2.56. Produces ~2.5 major landforms per chunk.
     let start_freq = 0.01 * 2.0_f64.powi(8);
 
@@ -100,7 +114,9 @@ pub fn derive_aridity(temperature: f64, humidity: f64) -> f64 {
 }
 
 pub fn derive_precipitation_type(temperature: f64, humidity: f64, heightmap: f64) -> f64 {
-    if humidity < 0.15 { return 1.0; }
+    if humidity < 0.15 {
+        return 1.0;
+    }
     let snow_factor = ((-temperature + 5.0) / 25.0).clamp(0.0, 1.0);
     let altitude_bonus = (heightmap - 0.1).max(0.0) * 2.0;
     let snow = (snow_factor + altitude_bonus).min(1.0);
@@ -108,13 +124,22 @@ pub fn derive_precipitation_type(temperature: f64, humidity: f64, heightmap: f64
     -snow * humid_capped + (1.0 - humid_capped) * (1.0 - snow)
 }
 
-pub fn derive_snowpack(precipitation_type: f64, temperature: f64, heightmap: f64, light_level: f64) -> f64 {
+pub fn derive_snowpack(
+    precipitation_type: f64,
+    temperature: f64,
+    heightmap: f64,
+    light_level: f64,
+) -> f64 {
     let cold_factor = ((3.0 - temperature) / 40.0).clamp(0.0, 1.0);
     let snow_precip = (-precipitation_type).max(0.0);
     let temperature_snow = cold_factor * snow_precip;
 
     let temp_gate = ((30.0 - temperature) / 20.0).clamp(0.0, 1.0);
-    let snow_altitude = if light_level < 0.5 { light_level * 0.1 } else { 0.05 + (light_level - 0.5) * 0.2 };
+    let snow_altitude = if light_level < 0.5 {
+        light_level * 0.1
+    } else {
+        0.05 + (light_level - 0.5) * 0.2
+    };
     let moisture_availability = (light_level * 3.0).clamp(0.2, 1.0);
     let altitude_snow = if heightmap > snow_altitude {
         ((heightmap - snow_altitude) * 12.0).min(1.0) * temp_gate * moisture_availability
@@ -126,8 +151,11 @@ pub fn derive_snowpack(precipitation_type: f64, temperature: f64, heightmap: f64
 }
 
 pub fn derive_water_table(
-    river_flow: f64, humidity: f64, heightmap: f64,
-    precipitation_type: f64, continentalness: f64,
+    river_flow: f64,
+    humidity: f64,
+    heightmap: f64,
+    precipitation_type: f64,
+    continentalness: f64,
 ) -> f64 {
     let humidity_base = humidity * 0.3;
     let river_boost = (river_flow * 4.0).min(1.0) * 0.45;
@@ -172,8 +200,11 @@ pub fn derive_vegetation_density(biome: TileType, water_table: f64) -> f64 {
 
 pub fn derive_soil_type(biome: TileType, erosion: f64, rock_hardness: f64) -> f64 {
     let base = match biome {
-        TileType::Forest | TileType::Jungle | TileType::DeciduousForest
-        | TileType::TemperateRainforest | TileType::SubtropicalForest
+        TileType::Forest
+        | TileType::Jungle
+        | TileType::DeciduousForest
+        | TileType::TemperateRainforest
+        | TileType::SubtropicalForest
         | TileType::CloudForest => 0.8,
         TileType::Plains | TileType::Marsh | TileType::Meadow | TileType::Oasis => 0.7,
         TileType::Woodland | TileType::DryWoodland => 0.6,
@@ -183,9 +214,14 @@ pub fn derive_soil_type(biome: TileType, erosion: f64, rock_hardness: f64) -> f6
         TileType::Steppe | TileType::Thornland | TileType::Scrubland => 0.3,
         TileType::FrozenBog | TileType::Tundra => 0.2,
         TileType::Beach => 0.15,
-        TileType::Desert | TileType::Sahara | TileType::Badlands
-        | TileType::Erg | TileType::Hamada => 0.1,
-        TileType::SaltFlat | TileType::ScorchedRock | TileType::RockyCoast | TileType::SeaCliff => 0.05,
+        TileType::Desert
+        | TileType::Sahara
+        | TileType::Badlands
+        | TileType::Erg
+        | TileType::Hamada => 0.1,
+        TileType::SaltFlat | TileType::ScorchedRock | TileType::RockyCoast | TileType::SeaCliff => {
+            0.05
+        }
         TileType::Mountain | TileType::Glacier | TileType::Plateau => 0.05,
         TileType::Volcanic | TileType::LavaField | TileType::MoltenWaste => 0.08,
         TileType::Snow | TileType::White | TileType::IceSheet => 0.03,

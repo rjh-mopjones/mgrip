@@ -1,8 +1,20 @@
 # Spec 002a - Chunk Model and Near-Streaming Foundation
 
-**Status:** Open
+**Status:** Complete
 **Priority:** Critical
 **Depends On:** Spec 001 complete
+
+## Completion
+
+`002a` is complete.
+
+Implemented results:
+
+- coherent chunk naming carried through runtime helpers, logs, and docs
+- explicit `world_chunk`, `chunk_streamer`, and `chunk_metrics` ownership
+- measured activation phases for generation, meshing, collision, and attachment
+- explicit player chunk tracking and chunk-crossing logs
+- near streaming with prewarm, seam fixes, and crossing verification
 
 ## Problem
 
@@ -71,7 +83,7 @@ Rules:
   runtime model.
 - Favor explicit ownership over clever abstraction.
 - Keep initial streaming conservative.
-- No green in terrain, atmosphere, clutter, or materials.
+- Green should not dominate terrain, atmosphere, clutter, or materials. Sparse muted green vegetation is acceptable.
 
 ## Current Reality
 
@@ -304,4 +316,3 @@ Do not jump to far horizon or full LOD yet.
 Use the current playable chunk path as the base case and keep measurement in
 place while the runtime grows.
 ```
-
