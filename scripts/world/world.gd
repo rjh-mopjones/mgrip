@@ -14,6 +14,7 @@ var _chunk_metrics = null
 var _chunk_streamer = null
 var _anchor_chunk: Vector2i = Vector2i.ZERO
 var _last_map_chunk: Vector2i = Vector2i(1 << 20, 1 << 20)
+var _last_prewarm_target: Vector2i = Vector2i(1 << 20, 1 << 20)
 
 func _ready() -> void:
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
@@ -32,6 +33,7 @@ func _ready() -> void:
 	_chunk_streamer.update_streaming(_anchor_chunk)
 	_log_height_stats(boot_chunk.heights)
 	_place_player(boot_chunk)
+	_last_prewarm_target = _chunk_streamer.prewarm_target_chunk()
 	if not _is_flythrough_run():
 		_setup_map(boot_chunk)
 
@@ -58,9 +60,30 @@ func _process(_delta: float) -> void:
 		_player.position.z,
 	)
 	if current_chunk != GameState.current_chunk:
+		var had_prewarmed_ring: bool = _chunk_streamer.is_ring_ready(current_chunk)
 		GameState.current_chunk = current_chunk
-		print("Player entered chunk [%d, %d]" % [current_chunk.x, current_chunk.y])
-	_chunk_streamer.update_streaming(current_chunk)
+		print(
+			"Player entered chunk [%d, %d]  prewarmed_ring=%s  pending=%d"
+			% [
+				current_chunk.x,
+				current_chunk.y,
+				"yes" if had_prewarmed_ring else "no",
+				_chunk_streamer.pending_count(),
+			]
+		)
+	_chunk_streamer.update_streaming(current_chunk, _player.position, _player.velocity)
+	var prewarm_target: Vector2i = _chunk_streamer.prewarm_target_chunk()
+	if prewarm_target != _last_prewarm_target and prewarm_target != current_chunk:
+		print(
+			"Prewarming next center [%d, %d]  ring_ready=%s  pending=%d"
+			% [
+				prewarm_target.x,
+				prewarm_target.y,
+				"yes" if _chunk_streamer.is_ring_ready(prewarm_target) else "no",
+				_chunk_streamer.pending_count(),
+			]
+		)
+	_last_prewarm_target = prewarm_target
 	if _map_overlay:
 		var loaded_chunk = _chunk_streamer.get_chunk(current_chunk)
 		if loaded_chunk and current_chunk != _last_map_chunk:

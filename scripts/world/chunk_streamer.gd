@@ -5,6 +5,8 @@ const ACTIVE_LOD := GenerationManager.LOD0_NAME
 const STREAM_RADIUS := 1
 const COLLISION_RADIUS := 1
 const RETAIN_RADIUS := 2
+const PREWARM_EDGE_MARGIN := 72.0
+const PREWARM_MIN_SPEED := 2.0
 const MAX_CONCURRENT_JOBS := 8
 const MAX_READY_ATTACHES_PER_FRAME := 1
 const WorldChunkScript = preload("res://scripts/world/world_chunk.gd")
@@ -17,6 +19,7 @@ var _metrics
 var _chunks: Dictionary = {}
 var _pending_requests: Array[Dictionary] = []
 var _inflight_jobs: Dictionary = {}
+var _prewarm_target_chunk: Vector2i = Vector2i.ZERO
 
 func setup(terrain_root: Node3D, metrics, anchor_chunk: Vector2i) -> void:
 	_terrain_root = terrain_root
@@ -44,15 +47,25 @@ func active_counts_by_lod() -> Dictionary:
 func pending_count() -> int:
 	return _pending_requests.size() + _inflight_jobs.size()
 
-func update_streaming(center_chunk: Vector2i) -> void:
+func update_streaming(center_chunk: Vector2i, player_position: Vector3 = Vector3.ZERO, player_velocity: Vector3 = Vector3.ZERO) -> void:
 	_current_center_chunk = center_chunk
+	_prewarm_target_chunk = _predict_next_center_chunk(center_chunk, player_position, player_velocity)
 	_attach_ready_jobs(center_chunk)
 	_ensure_chunk_sync(center_chunk, ACTIVE_LOD, true)
-	_rebuild_pending(center_chunk)
+	_rebuild_pending(center_chunk, _prewarm_target_chunk)
 	_start_pending_jobs()
 	_update_collision_focus(center_chunk)
 	_unload_distant_chunks(center_chunk)
 	_metrics.update_runtime_state(active_counts_by_lod(), pending_count())
+
+func prewarm_target_chunk() -> Vector2i:
+	return _prewarm_target_chunk
+
+func is_ring_ready(center_chunk: Vector2i, radius: int = STREAM_RADIUS) -> bool:
+	for chunk_coord in _desired_chunk_order(center_chunk, radius):
+		if not _has_matching_chunk(chunk_coord, ACTIVE_LOD):
+			return false
+	return true
 
 func _activate_chunk_sync(chunk_coord: Vector2i, lod: String, collision_enabled: bool):
 	var key := _chunk_key(chunk_coord)
@@ -99,22 +112,30 @@ func _ensure_chunk_sync(chunk_coord: Vector2i, lod: String, collision_enabled: b
 		return existing
 	return _activate_chunk_sync(chunk_coord, lod, collision_enabled)
 
-func _rebuild_pending(center_chunk: Vector2i) -> void:
+func _rebuild_pending(center_chunk: Vector2i, prewarm_center_chunk: Vector2i) -> void:
 	var pending: Array[Dictionary] = []
-	for chunk_coord in _desired_chunk_order(center_chunk, STREAM_RADIUS):
-		var desired_lod := _desired_lod(center_chunk, chunk_coord)
-		var key := _chunk_key(chunk_coord)
-		if _has_matching_chunk(chunk_coord, desired_lod):
-			continue
-		if _inflight_jobs.has(key):
-			continue
-		if chunk_coord == center_chunk:
-			continue
-		pending.append({
-			"chunk_coord": chunk_coord,
-			"lod": desired_lod,
-			"collision_enabled": false,
-		})
+	var desired_centers: Array[Vector2i] = [center_chunk]
+	if prewarm_center_chunk != center_chunk:
+		desired_centers.append(prewarm_center_chunk)
+	var seen: Dictionary = {}
+	for desired_center in desired_centers:
+		for chunk_coord in _desired_chunk_order(desired_center, STREAM_RADIUS):
+			var key := _chunk_key(chunk_coord)
+			if seen.has(key):
+				continue
+			seen[key] = true
+			var desired_lod := _desired_lod(center_chunk, chunk_coord)
+			if _has_matching_chunk(chunk_coord, desired_lod):
+				continue
+			if _inflight_jobs.has(key):
+				continue
+			if chunk_coord == center_chunk:
+				continue
+			pending.append({
+				"chunk_coord": chunk_coord,
+				"lod": desired_lod,
+				"collision_enabled": false,
+			})
 	_pending_requests = pending
 
 func _desired_chunk_order(center_chunk: Vector2i, radius: int) -> Array[Vector2i]:
@@ -129,6 +150,26 @@ func _desired_chunk_order(center_chunk: Vector2i, radius: int) -> Array[Vector2i
 
 func _desired_lod(_center_chunk: Vector2i, _chunk_coord: Vector2i) -> String:
 	return ACTIVE_LOD
+
+func _predict_next_center_chunk(center_chunk: Vector2i, player_position: Vector3, player_velocity: Vector3) -> Vector2i:
+	var chunk_origin := GenerationManager.chunk_coord_to_scene_origin(center_chunk, _anchor_chunk)
+	var local_x := player_position.x - chunk_origin.x
+	var local_z := player_position.z - chunk_origin.z
+	var abs_vx := absf(player_velocity.x)
+	var abs_vz := absf(player_velocity.z)
+	if abs_vx < PREWARM_MIN_SPEED and abs_vz < PREWARM_MIN_SPEED:
+		return center_chunk
+	if abs_vx >= abs_vz:
+		if player_velocity.x > PREWARM_MIN_SPEED and local_x >= GenerationManager.BLOCKS_PER_CHUNK - PREWARM_EDGE_MARGIN:
+			return center_chunk + Vector2i.RIGHT
+		if player_velocity.x < -PREWARM_MIN_SPEED and local_x <= PREWARM_EDGE_MARGIN:
+			return center_chunk + Vector2i.LEFT
+	if abs_vz > abs_vx:
+		if player_velocity.z > PREWARM_MIN_SPEED and local_z >= GenerationManager.BLOCKS_PER_CHUNK - PREWARM_EDGE_MARGIN:
+			return center_chunk + Vector2i.DOWN
+		if player_velocity.z < -PREWARM_MIN_SPEED and local_z <= PREWARM_EDGE_MARGIN:
+			return center_chunk + Vector2i.UP
+	return center_chunk
 
 func _start_pending_jobs() -> void:
 	while _inflight_jobs.size() < MAX_CONCURRENT_JOBS and not _pending_requests.is_empty():
