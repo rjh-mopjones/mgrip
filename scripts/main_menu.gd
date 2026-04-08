@@ -3,6 +3,8 @@ extends Control
 const WORLD_SCENE_PATH := "res://scenes/world.tscn"
 const MAP_SELECTOR_SCENE_PATH := "res://scenes/map_selector.tscn"
 const WorldScript = preload("res://scripts/world/world.gd")
+const AGENT_RUNTIME_QUICK_LAUNCH_ARG := "--agent-runtime-quick-launch"
+const AGENT_RUNTIME_SMOKE_ARG := "--agent-runtime-smoke-test"
 
 @onready var _quick_launch_button: Button = $CenterContainer/PanelContainer/MarginContainer/VBoxContainer/QuickLaunchButton
 @onready var _open_map_button: Button = $CenterContainer/PanelContainer/MarginContainer/VBoxContainer/OpenMapButton
@@ -13,6 +15,9 @@ func _ready() -> void:
 		window.size_changed.connect(_on_window_size_changed)
 	_quick_launch_button.pressed.connect(_on_quick_launch_pressed)
 	_open_map_button.pressed.connect(_on_open_map_pressed)
+	if _wants_agent_runtime_quick_launch():
+		print("main_menu: auto quick launch for agent runtime")
+		call_deferred("_on_quick_launch_pressed")
 
 func _on_window_size_changed() -> void:
 	var window := get_window()
@@ -38,3 +43,9 @@ func _default_world_origin() -> Vector2:
 	)
 	world_root.free()
 	return world_origin
+
+func _wants_agent_runtime_quick_launch() -> bool:
+	var args: Array = []
+	args.append_array(OS.get_cmdline_args())
+	args.append_array(OS.get_cmdline_user_args())
+	return AGENT_RUNTIME_QUICK_LAUNCH_ARG in args or AGENT_RUNTIME_SMOKE_ARG in args

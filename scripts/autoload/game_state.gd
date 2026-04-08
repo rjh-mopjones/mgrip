@@ -20,6 +20,11 @@ var launch_world_origin: Vector2 = Vector2.ZERO
 var launch_chunk: Vector2i = Vector2i.ZERO
 var has_pending_launch: bool = false
 
+## Current runtime launch metadata used for reproducibility and agent logs.
+var runtime_launch_mode: LaunchMode = LaunchMode.DIRECT_COORD
+var runtime_launch_world_origin: Vector2 = Vector2.ZERO
+var runtime_launch_chunk: Vector2i = Vector2i.ZERO
+
 func set_direct_launch(world_origin: Vector2) -> void:
 	launch_mode = LaunchMode.DIRECT_COORD
 	launch_world_origin = world_origin
@@ -37,3 +42,15 @@ func clear_launch_request() -> void:
 	launch_mode = LaunchMode.DIRECT_COORD
 	launch_world_origin = Vector2.ZERO
 	launch_chunk = Vector2i.ZERO
+
+func record_runtime_launch(resolved_mode: LaunchMode, world_origin: Vector2, chunk_coord: Vector2i) -> void:
+	runtime_launch_mode = resolved_mode
+	runtime_launch_world_origin = world_origin
+	runtime_launch_chunk = chunk_coord
+
+func runtime_launch_mode_name() -> String:
+	match runtime_launch_mode:
+		LaunchMode.SELECTED_CHUNK:
+			return "selected_chunk"
+		_:
+			return "direct_coord"

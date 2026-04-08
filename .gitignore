@@ -1,2 +1,3 @@
 gdextension/target/
 .godot/
+__pycache__/

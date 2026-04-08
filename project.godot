@@ -21,6 +21,7 @@ config/icon="res://assets/icon.svg"
 GameState="*res://scripts/autoload/game_state.gd"
 GenerationManager="*res://scripts/autoload/generation_manager.gd"
 Flythrough="*res://scripts/autoload/flythrough.gd"
+AgentRuntime="*res://scripts/autoload/agent_runtime.gd"
 
 [display]
 

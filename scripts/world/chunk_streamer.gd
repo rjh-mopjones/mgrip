@@ -130,6 +130,33 @@ func is_ring_ready(center_chunk: Vector2i, radius: int = STREAM_RADIUS) -> bool:
 			return false
 	return true
 
+func chunk_state(chunk_coord: Vector2i) -> Dictionary:
+	var chunk = get_chunk(chunk_coord)
+	if chunk == null:
+		return {
+			"chunk_coord": chunk_coord,
+			"loaded": false,
+		}
+	return {
+		"chunk_coord": chunk_coord,
+		"loaded": true,
+		"lod": String(chunk.lod),
+		"state": _chunk_state_name(int(chunk.state)),
+		"collision_enabled": chunk.has_collision(),
+		"has_height_data": not chunk.heights.is_empty(),
+		"position": chunk.position,
+	}
+
+func collision_enabled_chunk_coords(center_chunk: Vector2i = _current_center_chunk, radius: int = COLLISION_RADIUS) -> Array[Vector2i]:
+	var coords: Array[Vector2i] = []
+	for chunk in _chunks.values():
+		if not chunk.has_collision():
+			continue
+		if maxi(absi(chunk.chunk_coord.x - center_chunk.x), absi(chunk.chunk_coord.y - center_chunk.y)) > radius:
+			continue
+		coords.append(chunk.chunk_coord)
+	return coords
+
 func _activate_chunk_sync(chunk_coord: Vector2i, lod: String, collision_enabled: bool):
 	var key := _chunk_key(chunk_coord)
 	if _chunks.has(key):
@@ -537,8 +564,26 @@ func _loaded_count_for_lod(lod: String) -> int:
 			count += 1
 	return count
 
+func _chunk_state_name(state: int) -> String:
+	match state:
+		WorldChunkScript.ChunkState.REQUESTED:
+			return "requested"
+		WorldChunkScript.ChunkState.GENERATING:
+			return "generating"
+		WorldChunkScript.ChunkState.MESHING:
+			return "meshing"
+		WorldChunkScript.ChunkState.ACTIVE:
+			return "active"
+		WorldChunkScript.ChunkState.UNLOADING:
+			return "unloading"
+		_:
+			return "unknown"
+
 func _is_flight_mode() -> bool:
-	for arg in OS.get_cmdline_args():
+	var args := PackedStringArray()
+	args.append_array(OS.get_cmdline_args())
+	args.append_array(OS.get_cmdline_user_args())
+	for arg in args:
 		var value := String(arg)
 		if value == "--flythrough-flight" or value == "--flythrough=flight":
 			return true

@@ -10,6 +10,8 @@ const DEFAULT_WORLD_Y := 220.0
 
 @onready var _terrain_root: Node3D    = $TerrainRoot
 @onready var _player: CharacterBody3D = $Player
+@onready var _head: Node3D = $Player/Head
+@onready var _camera: Camera3D = $Player/Head/Camera3D
 
 var _map_overlay: MapOverlay
 var _chunk_metrics = null
@@ -42,9 +44,15 @@ func _ready() -> void:
 	_last_prewarm_target = _chunk_streamer.prewarm_target_chunk()
 	if not _is_flythrough_run():
 		_setup_map(boot_chunk)
+	_register_agent_runtime()
 
 	_chunk_metrics.maybe_print_summary()
 	print("Chunk runtime ready in %.1fs" % ((Time.get_ticks_msec() - t0) / 1000.0))
+
+func _exit_tree() -> void:
+	var agent_runtime = get_node_or_null("/root/AgentRuntime")
+	if agent_runtime != null and agent_runtime.has_method("unregister_world_runtime"):
+		agent_runtime.call("unregister_world_runtime", self)
 
 func _on_window_size_changed() -> void:
 	var window := get_window()
@@ -124,14 +132,24 @@ func _process(_delta: float) -> void:
 func _consume_launch_world_origin() -> Vector2:
 	var fallback_origin := Vector2(world_x, world_y)
 	if not GameState.has_pending_launch:
+		GameState.record_runtime_launch(
+			GameState.LaunchMode.DIRECT_COORD,
+			fallback_origin,
+			GenerationManager.world_origin_to_chunk_coord(fallback_origin.x, fallback_origin.y)
+		)
 		return fallback_origin
 
 	var launch_origin := fallback_origin
+	var launch_mode := GameState.launch_mode
+	var launch_chunk := GenerationManager.world_origin_to_chunk_coord(fallback_origin.x, fallback_origin.y)
 	match GameState.launch_mode:
 		GameState.LaunchMode.SELECTED_CHUNK:
 			launch_origin = GenerationManager.chunk_coord_to_world_origin(GameState.launch_chunk)
+			launch_chunk = GameState.launch_chunk
 		_:
 			launch_origin = GameState.launch_world_origin
+			launch_chunk = GenerationManager.world_origin_to_chunk_coord(launch_origin.x, launch_origin.y)
+	GameState.record_runtime_launch(launch_mode, launch_origin, launch_chunk)
 	GameState.clear_launch_request()
 	return launch_origin
 
@@ -244,8 +262,44 @@ func _loaded_chunk_for_scene_block(block_x: int, block_z: int):
 	var chunk_coord := GenerationManager.scene_block_to_chunk_coord(_anchor_chunk, block_x, block_z)
 	return _chunk_streamer.get_chunk(chunk_coord)
 
+func is_chunk_loaded(chunk_coord: Vector2i) -> bool:
+	return _chunk_streamer != null and _chunk_streamer.has_chunk(chunk_coord)
+
+func get_chunk_state(chunk_coord: Vector2i) -> Dictionary:
+	if _chunk_streamer == null:
+		return {
+			"chunk_coord": chunk_coord,
+			"loaded": false,
+		}
+	return _chunk_streamer.chunk_state(chunk_coord)
+
+func get_current_chunk_state() -> Dictionary:
+	return get_chunk_state(GameState.current_chunk)
+
+func get_player_node() -> CharacterBody3D:
+	return _player
+
+func get_head_node() -> Node3D:
+	return _head
+
+func get_camera_node() -> Camera3D:
+	return _camera
+
+func get_chunk_streamer():
+	return _chunk_streamer
+
+func _register_agent_runtime() -> void:
+	var agent_runtime = get_node_or_null("/root/AgentRuntime")
+	if agent_runtime == null:
+		return
+	if agent_runtime.has_method("register_world_runtime"):
+		agent_runtime.call("register_world_runtime", self, _player, _head, _camera, _chunk_streamer)
+
 func _is_flythrough_run() -> bool:
-	for arg in OS.get_cmdline_args():
+	var args := PackedStringArray()
+	args.append_array(OS.get_cmdline_args())
+	args.append_array(OS.get_cmdline_user_args())
+	for arg in args:
 		if String(arg).begins_with("--flythrough"):
 			return true
 	return false

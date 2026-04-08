@@ -82,13 +82,19 @@ var _frame_count := 0
 var _crossing_failed := false
 
 func _ready() -> void:
-	_mode = _detect_mode(OS.get_cmdline_args())
+	_mode = _detect_mode(_all_cmdline_args())
 	if _mode.is_empty():
 		return
 	_active = true
 	_screenshot_dir = "%s/%s" % [BASE_SCREENSHOT_DIR, _mode]
 	DirAccess.make_dir_recursive_absolute(_screenshot_dir)
 	print("=== FLYTHROUGH MODE (%s) ===  output: %s" % [_mode, _screenshot_dir])
+
+func _all_cmdline_args() -> PackedStringArray:
+	var args := PackedStringArray()
+	args.append_array(OS.get_cmdline_args())
+	args.append_array(OS.get_cmdline_user_args())
+	return args
 
 func _process(delta: float) -> void:
 	if not _active:
@@ -237,8 +243,9 @@ func _capture(i: int) -> void:
 	_save_screenshot.call_deferred(i, path)
 
 func _save_screenshot(i: int, path: String) -> void:
-	var img := get_viewport().get_texture().get_image()
-	img.save_png(path)
+	var result := capture_screenshot_to_path(path)
+	if not bool(result.get("ok", false)):
+		push_error("Flythrough: failed to capture %s" % path)
 	_frame_count += 1
 	_current = i + 1
 	_timer = 0.0
@@ -251,9 +258,71 @@ func _save_screenshot(i: int, path: String) -> void:
 func _capture_frame_now() -> void:
 	var path := _next_capture_path()
 	print("Flythrough: capturing %s" % path)
-	var img := get_viewport().get_texture().get_image()
-	img.save_png(path)
+	var result := capture_screenshot_to_path(path)
+	if not bool(result.get("ok", false)):
+		push_error("Flythrough: failed to capture %s" % path)
 	_frame_count += 1
+
+func capture_screenshot_to_path(path: String) -> Dictionary:
+	var resolved_path := path
+	if resolved_path.is_empty():
+		return {
+			"ok": false,
+			"error_code": "empty_path",
+			"error": "Path is empty.",
+		}
+	var absolute_path := ProjectSettings.globalize_path(resolved_path)
+	DirAccess.make_dir_recursive_absolute(absolute_path.get_base_dir())
+	if DisplayServer.get_name() == "headless":
+		return {
+			"ok": false,
+			"path": resolved_path,
+			"absolute_path": absolute_path,
+			"error_code": "headless_screenshot_unavailable",
+			"error": "Screenshot capture is unavailable when Godot is running with the headless display driver.",
+		}
+	var viewport := get_viewport()
+	if viewport == null:
+		return {
+			"ok": false,
+			"path": resolved_path,
+			"absolute_path": absolute_path,
+			"error_code": "viewport_unavailable",
+			"error": "Viewport is unavailable.",
+		}
+	var texture := viewport.get_texture()
+	if texture == null:
+		return {
+			"ok": false,
+			"path": resolved_path,
+			"absolute_path": absolute_path,
+			"error_code": "viewport_texture_unavailable",
+			"error": "Viewport texture is unavailable for screenshot capture.",
+		}
+	var image := texture.get_image()
+	if image == null:
+		return {
+			"ok": false,
+			"path": resolved_path,
+			"absolute_path": absolute_path,
+			"error_code": "viewport_image_unavailable",
+			"error": "Viewport image is unavailable for screenshot capture.",
+		}
+	var error := image.save_png(resolved_path)
+	return {
+		"ok": error == OK,
+		"path": resolved_path,
+		"absolute_path": absolute_path,
+		"error_code": "" if error == OK else "save_png_failed",
+		"engine_error_code": error,
+		"error": error_string(error) if error != OK else "",
+	}
+
+func is_active() -> bool:
+	return _active
+
+func current_mode() -> String:
+	return _mode
 
 func _build_crossing_routes() -> Array[Dictionary]:
 	var routes: Array[Dictionary] = []
