@@ -55,6 +55,7 @@ func _ready() -> void:
 	_hint_label = Label.new()
 	_hint_label.add_theme_font_size_override("font_size", 14)
 	_hint_label.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
+	_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(_hint_label)
 
 func setup(biome_map: MgBiomeMap, anchor_chunk: Vector2i, local_chunk: Vector2i) -> void:
@@ -121,14 +122,17 @@ func _layout(player_pos: Vector3, current_chunk: Vector2i) -> void:
 
 	_title.position = orig - Vector2(0.0, 28.0)
 	_title.text = "%s MAP   [M] close   [Tab] switch" % _mode_name()
-	_hint_label.position = orig + Vector2(0.0, map_size.y + 8.0)
-	_hint_label.text = (
+	var hint_text := (
 		"Tab switches Local/Macro map.  %s"
 		% "\n".join(_debug_lines)
 		if _macro_texture
 		else "Macro map unavailable: generate world layers first.\n%s" % "\n".join(_debug_lines)
 	)
-	_map_label.position = orig + Vector2(0.0, map_size.y + 30.0)
+	_hint_label.position = orig + Vector2(0.0, map_size.y + 8.0)
+	_hint_label.size = Vector2(map_size.x, 0.0)
+	_hint_label.text = hint_text
+	var hint_height := _hint_label.get_minimum_size().y
+	_map_label.position = _hint_label.position + Vector2(0.0, hint_height + 8.0)
 	_map_label.text = _mode_text(player_pos, current_chunk)
 
 func _coord_text(p: Vector3, current_chunk: Vector2i, active_counts: Dictionary) -> String:

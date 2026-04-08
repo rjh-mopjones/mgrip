@@ -19,6 +19,7 @@ var heights: PackedInt32Array = PackedInt32Array()
 var collision_heights: PackedFloat32Array = PackedFloat32Array()
 var ocean_mask: PackedByteArray = PackedByteArray()
 var _collision_body: StaticBody3D
+var _render_resources_released := false
 
 func configure(new_chunk_coord: Vector2i, anchor_chunk: Vector2i, lod_name: String = "LOD0") -> void:
 	chunk_coord = new_chunk_coord
@@ -91,6 +92,22 @@ func has_collision() -> bool:
 
 func begin_unload() -> void:
 	state = ChunkState.UNLOADING
+	release_render_resources()
+
+func release_render_resources() -> void:
+	if _render_resources_released:
+		return
+	_render_resources_released = true
+	set_collision_enabled(false)
+	for child in get_children():
+		if child is MeshInstance3D:
+			var mesh_instance := child as MeshInstance3D
+			mesh_instance.mesh = null
+			mesh_instance.material_override = null
+	biome_map = null
+	heights = PackedInt32Array()
+	collision_heights = PackedFloat32Array()
+	ocean_mask = PackedByteArray()
 
 func _build_collision_body() -> StaticBody3D:
 	var shape_data := PackedFloat32Array()

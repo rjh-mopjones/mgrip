@@ -28,6 +28,13 @@ func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D, lod_nam
 	var land_surfaces: Array = mesh_data.get("land_surfaces", [])
 	var water_surfaces: Array = mesh_data.get("water_surfaces", [])
 
+	if _is_headless_runtime():
+		return {
+			"heights": heights,
+			"collision_heights": collision_heights,
+			"ocean_mask": ocean_mask,
+		}
+
 	var land_mat := ShaderMaterial.new()
 	land_mat.shader = preload("res://assets/shaders/terrain.gdshader")
 	_configure_land_material(land_mat, lod_name)
@@ -58,6 +65,9 @@ func build_terrain_from_mesh_data(mesh_data: Dictionary, parent: Node3D, lod_nam
 		"collision_heights": collision_heights,
 		"ocean_mask": ocean_mask,
 	}
+
+func _is_headless_runtime() -> bool:
+	return DisplayServer.get_name() == "headless"
 
 func _configure_land_material(material: ShaderMaterial, lod_name: String) -> void:
 	var haze_start := 700.0

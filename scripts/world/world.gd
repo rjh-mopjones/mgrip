@@ -2,9 +2,11 @@ extends Node3D
 
 const ChunkMetricsScript = preload("res://scripts/world/chunk_metrics.gd")
 const ChunkStreamerScript = preload("res://scripts/world/chunk_streamer.gd")
+const DEFAULT_WORLD_X := 440.0
+const DEFAULT_WORLD_Y := 220.0
 
-@export var world_x: float = 440.0
-@export var world_y: float = 220.0
+@export var world_x: float = DEFAULT_WORLD_X
+@export var world_y: float = DEFAULT_WORLD_Y
 
 @onready var _terrain_root: Node3D    = $TerrainRoot
 @onready var _player: CharacterBody3D = $Player
@@ -17,10 +19,14 @@ var _last_map_chunk: Vector2i = Vector2i(1 << 20, 1 << 20)
 var _last_prewarm_target: Vector2i = Vector2i(1 << 20, 1 << 20)
 
 func _ready() -> void:
-	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
-	DisplayServer.window_set_size(Vector2i(1440, 860))
-	DisplayServer.window_set_position(Vector2i(80, 60))
-	_anchor_chunk = GenerationManager.world_origin_to_chunk_coord(world_x, world_y)
+	var window := get_window()
+	if window:
+		window.size_changed.connect(_on_window_size_changed)
+	var launch_world_origin := _consume_launch_world_origin()
+	_anchor_chunk = GenerationManager.world_origin_to_chunk_coord(
+		launch_world_origin.x,
+		launch_world_origin.y,
+	)
 	GameState.anchor_chunk = _anchor_chunk
 	GameState.current_chunk = _anchor_chunk
 	_chunk_metrics = ChunkMetricsScript.new()
@@ -39,6 +45,11 @@ func _ready() -> void:
 
 	_chunk_metrics.maybe_print_summary()
 	print("Chunk runtime ready in %.1fs" % ((Time.get_ticks_msec() - t0) / 1000.0))
+
+func _on_window_size_changed() -> void:
+	var window := get_window()
+	if window:
+		print("world window_size=", window.size)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("map") and _map_overlay:
@@ -109,6 +120,20 @@ func _process(_delta: float) -> void:
 	_chunk_metrics.maybe_print_summary()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+func _consume_launch_world_origin() -> Vector2:
+	var fallback_origin := Vector2(world_x, world_y)
+	if not GameState.has_pending_launch:
+		return fallback_origin
+
+	var launch_origin := fallback_origin
+	match GameState.launch_mode:
+		GameState.LaunchMode.SELECTED_CHUNK:
+			launch_origin = GenerationManager.chunk_coord_to_world_origin(GameState.launch_chunk)
+		_:
+			launch_origin = GameState.launch_world_origin
+	GameState.clear_launch_request()
+	return launch_origin
 
 func _setup_map(chunk) -> void:
 	_map_overlay = MapOverlay.new()
