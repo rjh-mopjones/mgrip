@@ -6,6 +6,7 @@ const AgentActionValidatorScript = preload("res://scripts/autoload/agent_action_
 const ENABLE_ARG := "--agent-runtime"
 const QUICK_LAUNCH_ARG := "--agent-runtime-quick-launch"
 const SMOKE_ARG := "--agent-runtime-smoke-test"
+const FLY_SWIM_SMOKE_ARG := "--fly-swim-smoke-test"
 const ENABLE_ENV := "MG_AGENT_RUNTIME"
 const BRIDGE_ROOT_ENV := "MG_AGENT_RUNTIME_BRIDGE_ROOT"
 const MAX_MOVE_BLOCK_DISTANCE := GenerationManager.BLOCKS_PER_CHUNK * 2
@@ -29,6 +30,7 @@ var _completed_action_result: Dictionary = {}
 var _completed_action_observation_before: Dictionary = {}
 var _completed_action_observation_after: Dictionary = {}
 var _smoke_test_started := false
+var _fly_swim_smoke_started := false
 var _bridge_runtime_id := ""
 var _bridge_poll_remaining := 0.0
 var _bridge_request_in_progress := false
@@ -97,6 +99,10 @@ func register_world_runtime(world, player: CharacterBody3D, head: Node3D, camera
 		print("AgentRuntime: scheduling smoke test")
 		_smoke_test_started = true
 		call_deferred("_run_smoke_test")
+	if _wants_fly_swim_smoke_test() and not _fly_swim_smoke_started:
+		print("AgentRuntime: scheduling fly-swim smoke test")
+		_fly_swim_smoke_started = true
+		call_deferred("_run_fly_swim_smoke_test")
 
 func unregister_world_runtime(world) -> void:
 	if world == null or _world != world:
@@ -315,6 +321,10 @@ func _begin_action(action: Dictionary) -> Dictionary:
 			return {"completed": false}
 		"move_to_block":
 			return _begin_move_to_block(action)
+		"toggle_fly":
+			return _complete_immediately(_handle_toggle_fly())
+		"get_move_state":
+			return _complete_immediately(_handle_get_move_state())
 		_:
 			return _complete_immediately(_result("rejected", action_name, {}, "unsupported_action", "Unsupported agent action: %s" % action_name, ""))
 
@@ -360,6 +370,33 @@ func _update_current_action() -> Dictionary:
 		"wait_for_player_settled":
 			return _update_wait_for_player_settled_action()
 	return {}
+
+func _handle_toggle_fly() -> Dictionary:
+	if _player == null or not _player.has_method("toggle_fly"):
+		return _result("rejected", "toggle_fly", {}, "no_player", "Player not available or missing toggle_fly method.", "")
+	_player.call("toggle_fly")
+	return _result("completed", "toggle_fly", {"move_state": _read_move_state_name()})
+
+func _handle_get_move_state() -> Dictionary:
+	if _player == null:
+		return _result("rejected", "get_move_state", {}, "no_player", "Player not available.", "")
+	return _result("completed", "get_move_state", {
+		"move_state": _read_move_state_name(),
+		"player_position": AgentSessionScript.vector3_to_dict(_player.position),
+		"player_velocity": AgentSessionScript.vector3_to_dict(_player.velocity),
+	})
+
+func _read_move_state_name() -> String:
+	if _player == null:
+		return "unknown"
+	var state_val = _player.get("_move_state")
+	if state_val == null:
+		return "unknown"
+	match int(state_val):
+		0: return "WALKING"
+		1: return "FLYING"
+		2: return "SWIMMING"
+	return "unknown"
 
 func _begin_move_to_block(action: Dictionary) -> Dictionary:
 	var target_block: Vector2i = action["params"]["scene_block"]
@@ -720,6 +757,9 @@ func _resolve_enabled() -> bool:
 
 func _wants_smoke_test() -> bool:
 	return SMOKE_ARG in _all_cmdline_args()
+
+func _wants_fly_swim_smoke_test() -> bool:
+	return FLY_SWIM_SMOKE_ARG in _all_cmdline_args()
 
 func _all_cmdline_args() -> Array:
 	var args: Array = []
@@ -1150,6 +1190,147 @@ func _execute_smoke_test() -> Dictionary:
 		"screenshot": screenshot_result.get("data", {}),
 		"screenshot_skipped": screenshot_skipped,
 		"screenshot_error_code": String(screenshot_result.get("error_code", "")),
+	}
+
+func _run_fly_swim_smoke_test() -> void:
+	print("AgentRuntime: starting fly-swim smoke test")
+	await get_tree().process_frame
+	await get_tree().create_timer(0.5).timeout
+	var result := await _execute_fly_swim_smoke_test()
+	var ok := bool(result.get("ok", false))
+	print("AgentRuntime fly-swim smoke test: %s" % ["PASS" if ok else "FAIL"])
+	print(JSON.stringify(AgentSessionScript.sanitize_variant(result), "\t"))
+	get_tree().quit(0 if ok else 1)
+
+func _execute_fly_swim_smoke_test() -> Dictionary:
+	var started := start_session("fly_swim_smoke_test", {
+		"scenario": "fly_swim_smoke_test",
+	})
+	if String(started.get("result", {}).get("status", "")) != "completed":
+		return {"ok": false, "phase": "start_session", "result": started}
+
+	# ── Phase 1: verify initial state is WALKING ──────────────────────
+	var state_step := await run_step("get_move_state", {})
+	if not _step_succeeded(state_step):
+		return _with_session_cleanup(false, "initial_get_move_state", state_step)
+	var initial_state: String = state_step.get("result", {}).get("data", {}).get("move_state", "")
+	if initial_state != "WALKING":
+		return _with_session_cleanup(false, "initial_state_check", state_step, {
+			"expected": "WALKING", "got": initial_state,
+		})
+	print("  [fly-swim] Initial state: %s ✓" % initial_state)
+
+	# ── Phase 2: toggle fly, verify FLYING ────────────────────────────
+	var fly_step := await run_step("toggle_fly", {})
+	if not _step_succeeded(fly_step):
+		return _with_session_cleanup(false, "toggle_fly_on", fly_step)
+
+	state_step = await run_step("get_move_state", {})
+	if not _step_succeeded(state_step):
+		return _with_session_cleanup(false, "flying_get_move_state", state_step)
+	var fly_state: String = state_step.get("result", {}).get("data", {}).get("move_state", "")
+	if fly_state != "FLYING":
+		return _with_session_cleanup(false, "fly_state_check", state_step, {
+			"expected": "FLYING", "got": fly_state,
+		})
+	print("  [fly-swim] After toggle_fly: %s ✓" % fly_state)
+
+	# ── Phase 3: wait in flight, verify no gravity (Y stays stable) ───
+	var pre_fly_y: float = _player.position.y
+	var wait_step := await run_step("wait_seconds", {
+		"duration_seconds": 1.0,
+		"timeout_seconds": 2.0,
+	})
+	if not _step_succeeded(wait_step):
+		return _with_session_cleanup(false, "fly_wait", wait_step)
+	var post_fly_y: float = _player.position.y
+	var fly_y_drift := absf(post_fly_y - pre_fly_y)
+	if fly_y_drift > 1.0:
+		return _with_session_cleanup(false, "fly_no_gravity", wait_step, {
+			"pre_fly_y": pre_fly_y, "post_fly_y": post_fly_y, "drift": fly_y_drift,
+			"reason": "Player drifted %.1f units vertically while flying (expected < 1.0)" % fly_y_drift,
+		})
+	print("  [fly-swim] Flight Y drift: %.2f (< 1.0) ✓" % fly_y_drift)
+
+	# ── Phase 4: toggle fly off, verify back to WALKING ───────────────
+	fly_step = await run_step("toggle_fly", {})
+	if not _step_succeeded(fly_step):
+		return _with_session_cleanup(false, "toggle_fly_off", fly_step)
+
+	state_step = await run_step("get_move_state", {})
+	if not _step_succeeded(state_step):
+		return _with_session_cleanup(false, "walking_get_move_state", state_step)
+	var walk_state: String = state_step.get("result", {}).get("data", {}).get("move_state", "")
+	if walk_state != "WALKING":
+		return _with_session_cleanup(false, "walk_state_check", state_step, {
+			"expected": "WALKING", "got": walk_state,
+		})
+	print("  [fly-swim] After toggle_fly off: %s ✓" % walk_state)
+
+	# ── Phase 5: teleport to water, verify SWIMMING ───────────────────
+	var obs: Dictionary = started.get("observation", {})
+	var blocks_per_chunk: int = int(obs.get("runtime_constants", {}).get("blocks_per_chunk", 512))
+	var anchor := _dict_to_vector2i(obs.get("anchor_chunk", {}))
+	var current := _dict_to_vector2i(obs.get("current_chunk", {}))
+	var origin_x: int = (current.x - anchor.x) * blocks_per_chunk
+	var origin_z: int = (current.y - anchor.y) * blocks_per_chunk
+	var cx: int = origin_x + blocks_per_chunk / 2
+	var cz: int = origin_z + blocks_per_chunk / 2
+
+	var water_block: Vector2i = Vector2i(-1, -1)
+	for ring in range(0, 384, 16):
+		if water_block.x >= 0:
+			break
+		for dx in range(-ring, ring + 1, 16):
+			for dz_off in ([-ring, ring] if ring > 0 else [0]):
+				var bx: int = cx + dx
+				var bz: int = cz + dz_off
+				var sample_step := await run_step("sample_height", {"scene_block": Vector2i(bx, bz)})
+				if _step_succeeded(sample_step):
+					var h: float = float(sample_step.get("result", {}).get("data", {}).get("height", 999.0))
+					if h < float(VoxelMeshBuilder.SEA_LEVEL_Y):
+						water_block = Vector2i(bx, bz)
+						break
+			if water_block.x >= 0:
+				break
+
+	if water_block.x < 0:
+		print("  [fly-swim] No water found near spawn — skipping swim test")
+	else:
+		print("  [fly-swim] Found water at (%d, %d)" % [water_block.x, water_block.y])
+		var tp_step := await run_step("teleport_to_block", {"scene_block": water_block})
+		if not _step_succeeded(tp_step):
+			return _with_session_cleanup(false, "teleport_to_water", tp_step)
+
+		await run_step("wait_seconds", {"duration_seconds": 1.0, "timeout_seconds": 2.0})
+
+		state_step = await run_step("get_move_state", {})
+		if _step_succeeded(state_step):
+			var swim_state: String = state_step.get("result", {}).get("data", {}).get("move_state", "")
+			var swim_y: float = _player.position.y
+			var fall_from_sea: float = float(VoxelMeshBuilder.SEA_LEVEL_Y) - swim_y
+			print("  [fly-swim] In water state: %s, Y: %.1f, fall: %.1f" % [swim_state, swim_y, fall_from_sea])
+			if swim_state == "SWIMMING":
+				print("  [fly-swim] Swimming state ✓")
+			else:
+				print("  [fly-swim] WARNING: expected SWIMMING, got %s" % swim_state)
+			if fall_from_sea < 10.0:
+				print("  [fly-swim] Buoyancy check ✓ (fall %.1f < 10.0)" % fall_from_sea)
+			else:
+				return _with_session_cleanup(false, "swim_buoyancy", state_step, {
+					"fall_from_sea": fall_from_sea,
+					"reason": "Player fell %.1f below sea level (expected < 10.0)" % fall_from_sea,
+				})
+
+	# ── Cleanup ───────────────────────────────────────────────────────
+	var end_step := await run_step("end_session", {})
+	if not _step_succeeded(end_step):
+		return {"ok": false, "phase": "end_session", "step": AgentSessionScript.sanitize_variant(end_step)}
+
+	return {
+		"ok": true,
+		"phases": ["initial_walking", "toggle_fly_on", "fly_no_gravity", "toggle_fly_off", "swim_test"],
+		"water_found": water_block.x >= 0,
 	}
 
 func _with_session_cleanup(ok: bool, phase: String, step: Dictionary, extra: Dictionary = {}) -> Dictionary:

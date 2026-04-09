@@ -45,6 +45,10 @@ func validate_action(action_name: String, params: Dictionary) -> Dictionary:
 			return _validate_wait_for_player_settled(params)
 		"end_session":
 			return {"ok": true, "action": {"name": normalized_name, "params": {}}}
+		"toggle_fly":
+			return {"ok": true, "action": {"name": normalized_name, "params": {}}}
+		"get_move_state":
+			return {"ok": true, "action": {"name": normalized_name, "params": {}}}
 		_:
 			return _reject("unsupported_action", "Unsupported agent action: %s" % normalized_name, "Use one of the actions listed in specs/004-agent-playtest-runtime.md.")
 
