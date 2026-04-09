@@ -3,6 +3,8 @@ class_name MapOverlay
 
 const LOCAL_MAP_SIZE := Vector2(760.0, 760.0)
 const MACRO_WORLD_SIZE := Vector2(1024.0, 512.0)
+const LOCAL_MAP_TEXTURE_SIZE := GenerationManager.BLOCKS_PER_CHUNK
+const RUNTIME_CHUNK_PREVIEW_RENDERER := preload("res://scripts/ui/runtime_chunk_preview_renderer.gd")
 
 enum MapMode { LOCAL, MACRO }
 
@@ -22,10 +24,13 @@ var _local_texture: Texture2D
 var _macro_texture: Texture2D
 var _macro_size := Vector2.ONE
 var _debug_lines: PackedStringArray = PackedStringArray()
+var _preview_renderer
 
 func _ready() -> void:
 	layer = 10
 	visible = false
+	_preview_renderer = RUNTIME_CHUNK_PREVIEW_RENDERER.new()
+	add_child(_preview_renderer)
 
 	_bg = ColorRect.new()
 	_bg.color = Color(0.0, 0.0, 0.0, 0.78)
@@ -35,6 +40,7 @@ func _ready() -> void:
 	_map_rect = TextureRect.new()
 	_map_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_map_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_map_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	add_child(_map_rect)
 
 	_marker = ColorRect.new()
@@ -66,9 +72,11 @@ func setup(biome_map: MgBiomeMap, anchor_chunk: Vector2i, local_chunk: Vector2i)
 
 func update_local_chunk(biome_map: MgBiomeMap, local_chunk: Vector2i) -> void:
 	_local_chunk = local_chunk
-	var rgba := biome_map.export_layer_rgba("biome")
-	var img  := Image.create_from_data(512, 512, false, Image.FORMAT_RGBA8, rgba)
-	_local_texture = ImageTexture.create_from_image(img)
+	var preview: Dictionary = _preview_renderer.render_biome_map_preview(
+		biome_map,
+		LOCAL_MAP_TEXTURE_SIZE,
+	)
+	_local_texture = preview.get("texture")
 
 func refresh(
 		player_pos: Vector3,

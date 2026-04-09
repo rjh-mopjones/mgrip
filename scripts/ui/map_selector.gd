@@ -8,18 +8,21 @@ const MAX_ZOOM := 8.0
 const ZOOM_STEP := 1.25
 const TRACKPAD_ZOOM_DIVISOR := 6.0
 const DRAG_THRESHOLD := 6.0
-const COMPARE_GRID   := 8    # chunk grid size used by the compare tool
+const COMPARE_GRID := 8
+const RUNTIME_CHUNK_PREVIEW_RENDERER := preload("res://scripts/ui/runtime_chunk_preview_renderer.gd")
 
 @onready var _status_label: Label = $MarginContainer/VBoxContainer/StatusLabel
 @onready var _selection_label: Label = $MarginContainer/VBoxContainer/SelectionLabel
 @onready var _zoom_label: Label = $MarginContainer/VBoxContainer/ControlsRow/ZoomLabel
 @onready var _launch_button: Button = $MarginContainer/VBoxContainer/ControlsRow/LaunchButton
 @onready var _back_button: Button = $MarginContainer/VBoxContainer/ControlsRow/BackButton
-@onready var _map_viewport: Control = $MarginContainer/VBoxContainer/MapFrame/MapViewport
-@onready var _map_canvas: Control = $MarginContainer/VBoxContainer/MapFrame/MapViewport/MapCanvas
-@onready var _map_texture_rect: TextureRect = $MarginContainer/VBoxContainer/MapFrame/MapViewport/MapCanvas/MapTexture
-@onready var _hover_rect: ColorRect = $MarginContainer/VBoxContainer/MapFrame/MapViewport/MapCanvas/HoverRect
-@onready var _selected_rect: ColorRect = $MarginContainer/VBoxContainer/MapFrame/MapViewport/MapCanvas/SelectedRect
+@onready var _map_viewport: Control = $MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport
+@onready var _map_canvas: Control = $MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport/MapCanvas
+@onready var _map_texture_rect: TextureRect = $MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport/MapCanvas/MapTexture
+@onready var _hover_rect: ColorRect = $MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport/MapCanvas/HoverRect
+@onready var _selected_rect: ColorRect = $MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport/MapCanvas/SelectedRect
+@onready var _preview_status_label: Label = $MarginContainer/VBoxContainer/ContentRow/PreviewFrame/PreviewVBox/PreviewStatusLabel
+@onready var _preview_texture_rect: TextureRect = $MarginContainer/VBoxContainer/ContentRow/PreviewFrame/PreviewVBox/PreviewTexture
 
 var _macro_texture: Texture2D
 var _macro_seed: int = 42
@@ -36,6 +39,8 @@ var _drag_last_position := Vector2.ZERO
 var _drag_started_on_chunk := Vector2i(-1, -1)
 var _compare_mode := false
 var _compare_button: Button
+var _preview_renderer
+var _preview_request_token := 0
 
 func _ready() -> void:
 	resized.connect(_on_selector_resized)
@@ -50,6 +55,8 @@ func _ready() -> void:
 	_compare_button.text = "Compare Gen"
 	_compare_button.pressed.connect(_on_compare_button_pressed)
 	$MarginContainer/VBoxContainer/ControlsRow.add_child(_compare_button)
+	_preview_renderer = RUNTIME_CHUNK_PREVIEW_RENDERER.new()
+	add_child(_preview_renderer)
 	_map_viewport.gui_input.connect(_on_map_viewport_gui_input)
 	_map_viewport.mouse_exited.connect(_on_map_viewport_mouse_exited)
 	_macro_texture = _load_macro_texture()
@@ -159,6 +166,7 @@ func _configure_map() -> void:
 		_map_texture_rect.texture = null
 		_status_label.text = "Macro map unavailable. Generate world layers first, or use Quick Launch."
 		_selection_label.text = "No map loaded."
+		_set_preview_placeholder("Preview unavailable until a macro map and chunk selection exist.")
 		zoom_label_set()
 		return
 
@@ -169,6 +177,7 @@ func _configure_map() -> void:
 	_macro_size = Vector2(_macro_texture.get_width(), _macro_texture.get_height())
 	_status_label.text = "Scroll to zoom, click and drag to pan, click to select a chunk."
 	_selection_label.text = "No chunk selected."
+	_set_preview_placeholder("Select a chunk to render the true top-down runtime preview.")
 	_refresh_responsive_layout(true)
 
 func _set_zoom(new_zoom: float, focus_position: Vector2 = Vector2(-1.0, -1.0)) -> void:
@@ -267,6 +276,7 @@ func _set_selected_chunk(chunk_coord: Vector2i) -> void:
 	_launch_button.disabled = false
 	_update_chunk_rects()
 	_update_labels()
+	_request_preview_for_chunk(chunk_coord)
 
 func _snap_to_meso(chunk: Vector2i) -> Vector2i:
 	return Vector2i(
@@ -408,6 +418,10 @@ func _run_capture_probe(capture_dir: String) -> void:
 	print("selector_probe origin=", _map_canvas.position)
 	print("selector_probe zoom=", _zoom)
 
+	_set_selected_chunk(Vector2i(400, 250))
+	await get_tree().create_timer(1.0).timeout
+	_save_viewport_capture(capture_dir.path_join("selector_preview.png"))
+
 	# ── Compare Generation probe ─────────────────────────────────────────────
 	if _macro_texture == null:
 		print("selector_probe compare SKIP: no macro texture")
@@ -422,8 +436,8 @@ func _run_capture_probe(capture_dir: String) -> void:
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_opened.png"))
 
-	# Generation runs via call_deferred so wait several seconds for 64 chunks
-	await get_tree().create_timer(12.0).timeout
+	# Compare generation now renders one continuous 8x8 LOD0 region preview.
+	await get_tree().create_timer(24.0).timeout
 	_save_viewport_capture(capture_dir.path_join("compare_result.png"))
 
 	# Find the view and print its agreement label text
@@ -437,7 +451,14 @@ func _run_capture_probe(capture_dir: String) -> void:
 	get_tree().quit()
 
 func _save_viewport_capture(path: String) -> void:
-	var image := get_viewport().get_texture().get_image()
+	var viewport_texture := get_viewport().get_texture()
+	if viewport_texture == null:
+		print("selector_probe capture SKIP: viewport texture unavailable")
+		return
+	var image := viewport_texture.get_image()
+	if image == null:
+		print("selector_probe capture SKIP: viewport image unavailable")
+		return
 	image.save_png(path)
 
 func _load_macro_texture() -> Texture2D:
@@ -484,7 +505,7 @@ func _on_compare_button_pressed() -> void:
 	_compare_mode = not _compare_mode
 	_compare_button.text = "Exit Compare" if _compare_mode else "Compare Gen"
 	_status_label.text = (
-		"Compare mode: click a chunk to open the 3-panel comparison."
+		"Compare mode: click a chunk to open the 3-panel comparison with rendered runtime previews."
 		if _compare_mode
 		else "Scroll to zoom, click and drag to pan, click to select a chunk."
 	)
@@ -499,3 +520,38 @@ func _open_compare_view(chunk: Vector2i) -> void:
 
 func zoom_label_set() -> void:
 	_zoom_label.text = "Zoom: %.2fx" % _zoom
+
+
+func _set_preview_placeholder(message: String) -> void:
+	_preview_texture_rect.texture = null
+	_preview_status_label.text = message
+
+
+func _request_preview_for_chunk(chunk_coord: Vector2i) -> void:
+	_preview_request_token += 1
+	var token := _preview_request_token
+	_set_preview_placeholder(
+		"Rendering traversed-terrain preview for chunk (%d, %d)…" % [chunk_coord.x, chunk_coord.y]
+	)
+	call_deferred("_render_chunk_preview_async", chunk_coord, token)
+
+
+func _render_chunk_preview_async(chunk_coord: Vector2i, token: int) -> void:
+	var preview: Dictionary = _preview_renderer.render_chunk_preview(_macro_seed, chunk_coord)
+	if not is_inside_tree() or token != _preview_request_token:
+		return
+	_preview_texture_rect.texture = preview.get("texture")
+	_preview_status_label.text = _preview_summary_text(chunk_coord, preview.get("summary", {}))
+
+
+func _preview_summary_text(chunk_coord: Vector2i, summary: Dictionary) -> String:
+	var zone: Dictionary = summary.get("planet_zone", {})
+	var water: Dictionary = summary.get("water_state", {})
+	var landform: Dictionary = summary.get("landform_class", {})
+	return "Chunk (%d, %d)\n%s / %s / %s" % [
+		chunk_coord.x,
+		chunk_coord.y,
+		String(zone.get("name", "Unknown Zone")),
+		String(water.get("name", "Unknown Water")),
+		String(landform.get("name", "Unknown Landform")),
+	]

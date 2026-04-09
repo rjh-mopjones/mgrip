@@ -35,8 +35,9 @@ pub fn tile_has_fluid_surface(tile: TileType) -> bool {
     )
 }
 
-/// Identifies ocean pixels from biome.png RGB values.
-/// Mirrors `_pixel_is_ocean` in `compare_generation_view.gd` exactly.
+/// Identifies ocean pixels from legacy biome.png RGB values.
+/// Used by macro-ocean-mask loading and older comparison paths that still rely
+/// on biome image artifacts rather than semantic chunk data.
 pub fn pixel_is_ocean_rgb(r: u8, g: u8, b: u8) -> bool {
     let rf = r as f64 / 255.0;
     let bf = b as f64 / 255.0;

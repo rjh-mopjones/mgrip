@@ -3,6 +3,7 @@ extends Node3D
 const ChunkMetricsScript = preload("res://scripts/world/chunk_metrics.gd")
 const ChunkStreamerScript = preload("res://scripts/world/chunk_streamer.gd")
 const WorldEnvironmentControllerScript = preload("res://scripts/world/world_environment_controller.gd")
+const WORLD_MAP_CAPTURE_ENV := "MGRIP_WORLD_MAP_CAPTURE_DIR"
 const DEFAULT_WORLD_X := 440.0
 const DEFAULT_WORLD_Y := 220.0
 
@@ -50,7 +51,10 @@ func _ready() -> void:
 	_last_prewarm_target = _chunk_streamer.prewarm_target_chunk()
 	if not _is_flythrough_run():
 		_setup_map(boot_chunk)
-	_register_agent_runtime()
+		_register_agent_runtime()
+		var capture_dir := OS.get_environment(WORLD_MAP_CAPTURE_ENV)
+		if not capture_dir.is_empty():
+			call_deferred("_run_map_overlay_capture_probe", capture_dir)
 
 	_chunk_metrics.maybe_print_summary()
 	print("Chunk runtime ready in %.1fs" % ((Time.get_ticks_msec() - t0) / 1000.0))
@@ -165,6 +169,41 @@ func _setup_map(chunk) -> void:
 	add_child(_map_overlay)
 	_map_overlay.setup(chunk.biome_map, _anchor_chunk, chunk.chunk_coord)
 	_map_overlay.attach_hud.call_deferred(self)
+
+func _run_map_overlay_capture_probe(capture_dir: String) -> void:
+	DirAccess.make_dir_recursive_absolute(capture_dir)
+	await get_tree().process_frame
+	await get_tree().create_timer(1.0).timeout
+	if _map_overlay == null:
+		push_error("world_probe: map overlay unavailable")
+		get_tree().quit()
+		return
+	var current_chunk := GameState.current_chunk
+	var loaded_chunk = _chunk_streamer.get_chunk(current_chunk)
+	if loaded_chunk != null:
+		_map_overlay.update_local_chunk(loaded_chunk.biome_map, current_chunk)
+	_map_overlay.toggle()
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	_map_overlay.refresh(
+		_player.position,
+		current_chunk,
+		_chunk_streamer.active_counts_by_lod(),
+		{
+			"pending": _chunk_streamer.pending_count(),
+			"prewarm_target": _chunk_streamer.prewarm_target_chunk(),
+			"horizon": _chunk_streamer.horizon_runtime_state(),
+			"window": _chunk_streamer.loaded_chunk_window(current_chunk),
+		}
+	)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var screenshot_path := capture_dir.path_join("world_local_map.png")
+	var result := Flythrough.capture_screenshot_to_path(screenshot_path)
+	if not bool(result.get("ok", false)):
+		push_error("world_probe: failed to capture %s" % screenshot_path)
+	else:
+		print("world_probe saved=", String(result.get("absolute_path", screenshot_path)))
+	get_tree().quit()
 
 func _setup_environment_controller(chunk) -> void:
 	_world_environment_controller = WorldEnvironmentControllerScript.new()

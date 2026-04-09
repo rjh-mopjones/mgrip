@@ -68,21 +68,27 @@ text = "Launch Level"
 layout_mode = 2
 text = "Back"
 
-[node name="MapFrame" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
-custom_minimum_size = Vector2(0, 240)
+[node name="ContentRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_vertical = 3
+theme_override_constants/separation = 14
 
-[node name="MapViewport" type="Control" parent="MarginContainer/VBoxContainer/MapFrame"]
+[node name="MapFrame" type="PanelContainer" parent="MarginContainer/VBoxContainer/ContentRow"]
+custom_minimum_size = Vector2(0, 240)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="MapViewport" type="Control" parent="MarginContainer/VBoxContainer/ContentRow/MapFrame"]
 layout_mode = 2
 mouse_filter = 1
 clip_contents = true
 
-[node name="MapCanvas" type="Control" parent="MarginContainer/VBoxContainer/MapFrame/MapViewport"]
+[node name="MapCanvas" type="Control" parent="MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport"]
 layout_mode = 0
 mouse_filter = 2
 
-[node name="MapTexture" type="TextureRect" parent="MarginContainer/VBoxContainer/MapFrame/MapViewport/MapCanvas"]
+[node name="MapTexture" type="TextureRect" parent="MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport/MapCanvas"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -93,14 +99,44 @@ mouse_filter = 2
 expand_mode = 1
 stretch_mode = 0
 
-[node name="HoverRect" type="ColorRect" parent="MarginContainer/VBoxContainer/MapFrame/MapViewport/MapCanvas"]
+[node name="HoverRect" type="ColorRect" parent="MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport/MapCanvas"]
 visible = false
 layout_mode = 0
 mouse_filter = 2
 color = Color(1, 0.82, 0.15, 0.85)
 
-[node name="SelectedRect" type="ColorRect" parent="MarginContainer/VBoxContainer/MapFrame/MapViewport/MapCanvas"]
+[node name="SelectedRect" type="ColorRect" parent="MarginContainer/VBoxContainer/ContentRow/MapFrame/MapViewport/MapCanvas"]
 visible = false
 layout_mode = 0
 mouse_filter = 2
 color = Color(1, 0.2, 0.2, 0.9)
+
+[node name="PreviewFrame" type="PanelContainer" parent="MarginContainer/VBoxContainer/ContentRow"]
+custom_minimum_size = Vector2(380, 240)
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="PreviewVBox" type="VBoxContainer" parent="MarginContainer/VBoxContainer/ContentRow/PreviewFrame"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="PreviewTitle" type="Label" parent="MarginContainer/VBoxContainer/ContentRow/PreviewFrame/PreviewVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+horizontal_alignment = 1
+text = "Traversed Terrain Preview"
+
+[node name="PreviewStatusLabel" type="Label" parent="MarginContainer/VBoxContainer/ContentRow/PreviewFrame/PreviewVBox"]
+custom_minimum_size = Vector2(0, 58)
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+autowrap_mode = 3
+text = "Select a chunk to render the true top-down runtime preview."
+
+[node name="PreviewTexture" type="TextureRect" parent="MarginContainer/VBoxContainer/ContentRow/PreviewFrame/PreviewVBox"]
+custom_minimum_size = Vector2(360, 360)
+layout_mode = 2
+size_flags_vertical = 3
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0

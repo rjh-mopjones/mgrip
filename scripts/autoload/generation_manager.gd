@@ -68,17 +68,20 @@ func generate_runtime_chunk(chunk_coord: Vector2i) -> MgBiomeMap:
 	var world_origin := chunk_coord_to_world_origin(chunk_coord)
 	return _gen.generate_chunk(GameState.world_seed, world_origin.x, world_origin.y)
 
-func generate_runtime_chunk_for_lod(chunk_coord: Vector2i, lod_name: String) -> MgBiomeMap:
+func generate_runtime_chunk_for_lod_with_seed(seed: int, chunk_coord: Vector2i, lod_name: String) -> MgBiomeMap:
 	var world_origin := chunk_coord_to_world_origin(chunk_coord)
 	var config := runtime_chunk_config_for_lod(lod_name)
 	return _gen.generate_chunk_lod(
-		GameState.world_seed,
+		seed,
 		world_origin.x,
 		world_origin.y,
 		int(config["resolution"]),
 		int(config["detail_level"]),
 		float(config["freq_scale"]),
 	)
+
+func generate_runtime_chunk_for_lod(chunk_coord: Vector2i, lod_name: String) -> MgBiomeMap:
+	return generate_runtime_chunk_for_lod_with_seed(GameState.world_seed, chunk_coord, lod_name)
 
 func runtime_chunk_config_for_lod(lod_name: String) -> Dictionary:
 	match lod_name:
