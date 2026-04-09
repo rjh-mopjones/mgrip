@@ -188,6 +188,8 @@ Spec 007 is implemented, but the final shipped work is broader than the
 original Rust-only framing because the verification and player-facing map
 surfaces also had to be repaired.
 
+### Shipped Changes
+
 Implemented outcome:
 
 - world-anchored identity layers now hold stable across macro and runtime
@@ -211,33 +213,63 @@ Implemented outcome:
 - the compare modal now has a legend, and water-biome drift is rendered as a
   diagnostic hatch instead of a reef-looking fill
 
-Top-down local map implementation details:
+### Top-Down Local Map Pipeline
+
+The local map implementation is intentionally **not** a camera render. It is a
+top-down terrain diagram generated from the same runtime chunk data that the
+terrain mesh uses.
 
 - the local map is not a camera render or a screenshot of the 3D scene
 - it is a data-driven raster built from the runtime `LOD0` chunk `MgBiomeMap`
 - the shared renderer lives in `scripts/ui/runtime_chunk_preview_renderer.gd`
-- chunk source data comes from
+- the runtime chunk source data comes from
   `GenerationManager.generate_runtime_chunk_for_lod_with_seed(seed, chunk_coord, "LOD0")`
   which resolves to:
   - resolution `512`
   - `detail_level = 2`
   - `freq_scale = 8.0`
+- that means the renderer is looking at the same runtime chunk scale used for
+  the traversed terrain, not the old `LOD2` compare proxy
 - the local-map image is built from three runtime data products taken from that
   `MgBiomeMap`:
   - `block_heights(HEIGHT_SCALE)` for terrain elevation
   - `is_ocean_grid()` for fluid/ocean occupancy
   - `export_layer_rgba("biome")` for biome identity colour
+- the renderer produces three distinct artifacts for every chunk:
+  - `image`: the player-facing top-down local map
+  - `biome_image`: raw biome colour identity at runtime resolution
+  - `ocean_mask_image`: binary fluid/ocean truth at runtime resolution
 - ocean pixels are identified from the runtime fluid mask, then coloured as a
   blue water ramp derived from depth and hillshade
 - land pixels are coloured from height, slope, contour accents, and then
   lightly tinted toward the runtime biome colour so the local map still reads
   as terrain first
+- the player-facing map therefore mixes:
+  - hard runtime truth for water occupancy
+  - real runtime terrain relief from the height field
+  - a restrained amount of biome colour for orientation
 - the same renderer output is reused by:
   - the selector preview
   - the compare runtime panel
   - the in-level `[M]` local map overlay
 
-Macro linkage details:
+### Coordinate and Data Linkage
+
+The local map and the macro map are linked by world coordinates, not by
+sampling one image into the other.
+
+- compare selection starts from a world-region / meso-region pick on the macro map
+- each runtime compare cell maps to a runtime `chunk_coord`
+- each `chunk_coord` is converted to generator-space world origin via
+  `GenerationManager.chunk_coord_to_world_origin(...)`
+- runtime generation then samples that world origin at `LOD0`
+- macro comparison generates the same world region at `freq_scale = 1.0`
+
+This means macro and runtime are linked through the same absolute world-space
+coordinates and generator rules, rather than by trying to visually align two
+unrelated images after the fact.
+
+### Macro Map Linkage and Compare Truth
 
 - the visible macro panel in compare remains a crop of `biome.png` from the
   newest layers artifact because that is the user-facing macro representation
@@ -255,6 +287,71 @@ Macro linkage details:
 - this means `biome.png` remains the visual macro context, but macro-vs-runtime
   scoring now comes from generated semantic data on both sides instead of a
   colour heuristic on one side and true data on the other
+
+### What Each Compare Panel Actually Means
+
+The compare modal now mixes context panels and scored panels. This is important
+because not every visible panel is itself a source of truth.
+
+- `Macro Visual`
+  - this is a crop of `biome.png`
+  - it is context for the user because this is the macro world representation
+    they actually navigate with
+  - it is not the sole scoring surface
+- `Runtime Local Map`
+  - this is the player-facing LOD0 top-down local map raster
+  - it is derived from real runtime chunk data
+  - it is meant to answer “what would the player traverse here?”
+- `Macro Colours over Runtime`
+  - this is only a bridge/intuition panel
+  - it helps the eye relate macro colour regions to runtime terrain shapes
+  - it is not a scoring surface
+- `Delta`
+  - this is the actual diagnostic panel
+  - it overlays disagreement on top of runtime terrain
+  - it currently distinguishes:
+    - matching ocean
+    - macro ocean only
+    - runtime ocean only
+    - water-biome drift
+    - land-biome drift
+
+### What Is Scored Versus What Is Merely Shown
+
+Scored truth:
+
+- macro ocean mask from generated macro `is_ocean_grid()`
+- runtime ocean mask from runtime `LOD0` `is_ocean_grid()`
+- macro biome colour identity from generated macro `export_layer_rgba("biome")`
+- runtime biome colour identity from runtime `LOD0` `export_layer_rgba("biome")`
+
+Shown for context / readability:
+
+- the visible `biome.png` crop
+- the player-facing runtime top-down local map
+- the washed macro-over-runtime bridge panel
+
+This distinction matters because the compare tool intentionally preserves the
+user-facing macro map and player-facing local map while scoring against the
+semantic generator data behind them.
+
+### Current Limits of the Implemented Compare
+
+The current compare is much more honest than the old macro-vs-LOD2 proxy, but
+it still has known limitations:
+
+- ocean/land agreement is the strongest signal and the main receipt for this
+  spec
+- exact biome mismatch is still noisier than ocean/land agreement because it
+  compares exact runtime/macro biome colours rather than normalized biome
+  families
+- the runtime local map is a presentation raster, while the biome mismatch
+  scoring still comes from the raw runtime biome image; this is correct but can
+  be visually confusing if not explained
+- the compare legend and hatch pattern reduce confusion, but they do not change
+  the underlying scoring model
+- `biome.png` must be regenerated after macro biome semantic changes or the
+  visible macro context becomes stale even if the semantic compare path is fresh
 
 Current interpretation:
 

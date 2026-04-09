@@ -141,6 +141,13 @@ When touching macro/runtime coherence, local maps, or Compare Generation:
   `~/.margins_grip/layers/<tag>/images/biome.png`. If a change affects macro
   biome semantics, regenerate the layers artifact before trusting compare or
   selector screenshots.
+- Macro/runtime linkage is by world coordinate and generator semantics, not by
+  trying to compare two presentation images directly. Keep the distinction
+  between:
+  - visible macro context (`biome.png`)
+  - generated macro semantic truth (`generate_region(..., freq_scale=1.0)`)
+  - runtime `LOD0` semantic truth
+  - player-facing runtime local-map presentation
 - Compare Generation keeps `biome.png` as world-context, but the scored macro
   truth should come from generated macro semantic data at `freq_scale=1.0`,
   not palette heuristics sampled from the visible PNG.
@@ -153,9 +160,21 @@ When touching macro/runtime coherence, local maps, or Compare Generation:
   - `block_heights(HEIGHT_SCALE)` for elevation
   - `is_ocean_grid()` for water occupancy
   - `export_layer_rgba("biome")` for biome identity colour
+- It should expose and keep distinct:
+  - the player-facing local-map `image`
+  - the raw runtime `biome_image`
+  - the runtime `ocean_mask_image`
+- Do not collapse those into one concept. The visible local map is for players;
+  the raw biome and mask images are for compare semantics.
 - The runtime chunk source for those maps should come from
   `GenerationManager.generate_runtime_chunk_for_lod_with_seed(..., "LOD0")`,
   which currently means `512` resolution, `detail_level = 2`, `freq_scale = 8.0`.
+- The coordinate path should stay explicit:
+  - compare/selector picks a region or chunk
+  - chunk coords convert to world origin via
+    `GenerationManager.chunk_coord_to_world_origin(...)`
+  - runtime `LOD0` generation happens from that world origin
+  - macro compare generation uses the same world region at `freq_scale=1.0`
 - Ocean in the local map should be derived from the runtime fluid mask and
   rendered as readable blue water first. Land should be height/slope shaded and
   only lightly tinted toward biome colour. Do not let the local map become a
@@ -168,12 +187,24 @@ When touching macro/runtime coherence, local maps, or Compare Generation:
   - macro biome via `export_layer_rgba("biome")`
   - macro ocean via `is_ocean_grid()`
   against the runtime `LOD0` biome/ocean data derived the same way.
+- Treat the compare panels differently:
+  - `Macro Visual` is user-facing context
+  - `Runtime Local Map` is player-facing terrain preview
+  - `Macro Colours over Runtime` is a bridge view only
+  - `Delta` is the actual scored diagnostic surface
+- Ocean/land agreement is the strongest signal for spec-007-style validation.
+  Exact biome mismatch is still a useful diagnostic, but it is noisier and
+  should not be interpreted as the same class of failure without further
+  normalization.
 - `CoralReef` was removed because it repeatedly created misleading
   underwater-biome comparison output. Do not reintroduce a special reef biome
   casually without reconsidering compare semantics and map readability.
 - Windowed screenshot probes are the trustworthy receipt for compare and
   local-map UI changes. Headless runs are useful for parse/load checks but not
   for judging the final rendered UI.
+- If you add temporary screenshot-probe plumbing to runtime scenes such as
+  `world.gd`, keep it clearly developer-gated and be explicit when removing it
+  afterwards so it does not look like unexplained feature churn.
 
 ## Coordinate and Chunk Terminology
 
