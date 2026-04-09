@@ -8,6 +8,7 @@ const MAX_ZOOM := 8.0
 const ZOOM_STEP := 1.25
 const TRACKPAD_ZOOM_DIVISOR := 6.0
 const DRAG_THRESHOLD := 6.0
+const COMPARE_GRID   := 8    # chunk grid size used by the compare tool
 
 @onready var _status_label: Label = $MarginContainer/VBoxContainer/StatusLabel
 @onready var _selection_label: Label = $MarginContainer/VBoxContainer/SelectionLabel
@@ -21,6 +22,7 @@ const DRAG_THRESHOLD := 6.0
 @onready var _selected_rect: ColorRect = $MarginContainer/VBoxContainer/MapFrame/MapViewport/MapCanvas/SelectedRect
 
 var _macro_texture: Texture2D
+var _macro_seed: int = 42
 var _macro_size := Vector2.ONE
 var _zoom := 1.0
 var _fit_zoom := 1.0
@@ -32,6 +34,8 @@ var _drag_moved := false
 var _drag_start_position := Vector2.ZERO
 var _drag_last_position := Vector2.ZERO
 var _drag_started_on_chunk := Vector2i(-1, -1)
+var _compare_mode := false
+var _compare_button: Button
 
 func _ready() -> void:
 	resized.connect(_on_selector_resized)
@@ -42,6 +46,10 @@ func _ready() -> void:
 		window.size_changed.connect(_on_window_size_changed)
 	_launch_button.pressed.connect(_on_launch_button_pressed)
 	_back_button.pressed.connect(_on_back_pressed)
+	_compare_button = Button.new()
+	_compare_button.text = "Compare Gen"
+	_compare_button.pressed.connect(_on_compare_button_pressed)
+	$MarginContainer/VBoxContainer/ControlsRow.add_child(_compare_button)
 	_map_viewport.gui_input.connect(_on_map_viewport_gui_input)
 	_map_viewport.mouse_exited.connect(_on_map_viewport_mouse_exited)
 	_macro_texture = _load_macro_texture()
@@ -100,7 +108,10 @@ func _handle_input_event(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 			elif not mouse_button.pressed and _dragging:
 				if _dragging and not _drag_moved and _drag_started_on_chunk.x >= 0:
-					_set_selected_chunk(_drag_started_on_chunk)
+					if _compare_mode:
+						_open_compare_view(_drag_started_on_chunk)
+					else:
+						_set_selected_chunk(_drag_started_on_chunk)
 				_dragging = false
 				_drag_moved = false
 				get_viewport().set_input_as_handled()
@@ -279,17 +290,17 @@ func _refresh_hover_from_mouse() -> void:
 func _update_chunk_rects() -> void:
 	if _hover_chunk.x >= 0:
 		_hover_rect.visible = true
-		var hover_rect := _marker_rect_for_chunk(_hover_chunk)
-		_hover_rect.position = hover_rect.position
-		_hover_rect.size = hover_rect.size
+		var r := _marker_rect_for_chunk(_hover_chunk, COMPARE_GRID if _compare_mode else 1)
+		_hover_rect.position = r.position
+		_hover_rect.size = r.size
 	else:
 		_hover_rect.visible = false
 
 	if _has_selection():
 		_selected_rect.visible = true
-		var selected_rect := _marker_rect_for_chunk(_selected_chunk)
-		_selected_rect.position = selected_rect.position
-		_selected_rect.size = selected_rect.size
+		var r := _marker_rect_for_chunk(_selected_chunk, COMPARE_GRID if _compare_mode else 1)
+		_selected_rect.position = r.position
+		_selected_rect.size = r.size
 	else:
 		_selected_rect.visible = false
 
@@ -299,10 +310,10 @@ func _chunk_size_in_canvas() -> Vector2:
 		_map_canvas.size.y / MACRO_WORLD_SIZE.y,
 	)
 
-func _marker_rect_for_chunk(chunk_coord: Vector2i) -> Rect2:
+func _marker_rect_for_chunk(chunk_coord: Vector2i, grid: int = 1) -> Rect2:
 	var cell_size := _chunk_size_in_canvas()
 	var chunk_origin := Vector2(chunk_coord.x, chunk_coord.y) * cell_size
-	return Rect2(chunk_origin, cell_size)
+	return Rect2(chunk_origin, cell_size * grid)
 
 func _chunk_from_viewport_pos(pos: Vector2) -> Vector2i:
 	if _macro_texture == null:
@@ -379,6 +390,33 @@ func _run_capture_probe(capture_dir: String) -> void:
 	print("selector_probe canvas=", _map_canvas.size)
 	print("selector_probe origin=", _map_canvas.position)
 	print("selector_probe zoom=", _zoom)
+
+	# ── Compare Generation probe ─────────────────────────────────────────────
+	if _macro_texture == null:
+		print("selector_probe compare SKIP: no macro texture")
+		get_tree().quit()
+		return
+
+	_on_compare_button_pressed()
+	await get_tree().process_frame
+	_save_viewport_capture(capture_dir.path_join("compare_mode_entered.png"))
+
+	_open_compare_view(Vector2i(197, 253))
+	await get_tree().process_frame
+	_save_viewport_capture(capture_dir.path_join("compare_opened.png"))
+
+	# Generation runs via call_deferred so wait several seconds for 64 chunks
+	await get_tree().create_timer(12.0).timeout
+	_save_viewport_capture(capture_dir.path_join("compare_result.png"))
+
+	# Find the view and print its agreement label text
+	for child in get_tree().current_scene.get_children():
+		if child is CanvasLayer:
+			for sub in child.get_children():
+				if sub.has_method("show_comparison"):
+					print("compare_probe agreement=", sub._agreement_label.text)
+					print("compare_probe status=", sub._status_label.text)
+
 	get_tree().quit()
 
 func _save_viewport_capture(path: String) -> void:
@@ -395,6 +433,7 @@ func _load_macro_texture() -> Texture2D:
 		return null
 
 	var newest_path := ""
+	var newest_entry_dir := ""
 	var newest_time := -1
 	for entry in dir.get_directories():
 		var image_path := layers_dir.path_join(entry).path_join("images/biome.png")
@@ -404,14 +443,42 @@ func _load_macro_texture() -> Texture2D:
 		if mtime > newest_time:
 			newest_time = mtime
 			newest_path = image_path
+			newest_entry_dir = layers_dir.path_join(entry)
 
 	if newest_path.is_empty():
 		return null
+
+	# Parse seed from manifest.ron if present
+	var manifest_path := newest_entry_dir.path_join("manifest.ron")
+	if FileAccess.file_exists(manifest_path):
+		var manifest_text := FileAccess.get_file_as_string(manifest_path)
+		var regex := RegEx.new()
+		regex.compile("seed:\\s*(\\d+)")
+		var rx_match := regex.search(manifest_text)
+		if rx_match:
+			_macro_seed = int(rx_match.get_string(1))
 
 	var image := Image.load_from_file(newest_path)
 	if image == null:
 		return null
 	return ImageTexture.create_from_image(image)
+
+func _on_compare_button_pressed() -> void:
+	_compare_mode = not _compare_mode
+	_compare_button.text = "Exit Compare" if _compare_mode else "Compare Gen"
+	_status_label.text = (
+		"Compare mode: click a chunk to open the 3-panel comparison."
+		if _compare_mode
+		else "Scroll to zoom, click and drag to pan, click to select a chunk."
+	)
+
+func _open_compare_view(chunk: Vector2i) -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 128
+	get_tree().current_scene.add_child(layer)
+	var view := preload("res://scripts/ui/compare_generation_view.gd").new()
+	layer.add_child(view)
+	view.show_comparison(_macro_seed, float(chunk.x), float(chunk.y), COMPARE_GRID, _macro_texture, MACRO_WORLD_SIZE)
 
 func zoom_label_set() -> void:
 	_zoom_label.text = "Zoom: %.2fx" % _zoom

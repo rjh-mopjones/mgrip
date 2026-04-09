@@ -1,0 +1,471 @@
+# Spec 007 - World-Anchored Noise Layers
+
+**Status:** Complete
+**Priority:** Critical
+**Depends On:** None — this is a foundation fix that should precede further terrain work
+
+---
+
+## Problem
+
+The terrain generator uses a single `freq_scale` parameter to multiply noise
+coordinates before sampling every fBm layer. At macro scale (`freq_scale=1.0`)
+the world looks coherent. At micro / runtime scale (`freq_scale=8.0`) the same
+absolute world position evaluates at a completely different point in noise
+space.
+
+Concrete example:
+
+```
+Macro image:   world (500, 400) → noise coord (500 * 1.0 * 0.01) = (5.0, 4.0)
+Runtime chunk: world (500, 400) → noise coord (500 * 8.0 * 0.01) = (40.0, 32.0)
+```
+
+These are different points in the noise function. They produce different
+continentalness values. They disagree about whether (500, 400) is ocean or
+land.
+
+This breaks every system that tries to relate what the macro map shows to what
+the runtime generates:
+
+- clicking an ocean chunk in the map selector spawns on land
+- runtime presentation classifications (`PlanetZone`, `SurfaceWaterState`,
+  `AtmosphereClass`) disagree with what the macro debug images show
+- LOD levels can classify the same chunk differently from each other
+- any future macro-to-micro inheritance is built on an incoherent foundation
+
+---
+
+## Root Cause
+
+`freq_scale` is doing two separate jobs that should not be coupled:
+
+1. **Giving micro chunks meaningful terrain variation** — without scaling,
+   a 1×1 world-unit tile spans a tiny slice of noise space and produces
+   near-constant values per layer. Scaling expands that slice so local terrain
+   has interesting shape.
+
+2. **Determining the identity of a place** — ocean vs land, planetary zone,
+   tectonic regime. This should not vary with render scale.
+
+`light_level` was already correctly excluded from `freq_scale`. It evaluates
+at raw world coordinates and normalises by map dimensions. It is the proof of
+concept that world-anchored layers work. Every other identity layer should
+follow the same pattern.
+
+---
+
+## Design
+
+Split noise layers into two explicit tiers.
+
+### Tier 1 — World-Anchored Layers
+
+Evaluated at raw world coordinates. Never multiplied by `freq_scale`.
+
+These define the **identity** of a place. They are stable regardless of
+which LOD or `freq_scale` is used to generate a chunk. A chunk at world
+position (500, 400) always gets the same values from these layers.
+
+| Layer | Reason |
+|---|---|
+| `continentalness` | Primary gate for ocean vs land. Must be stable. |
+| `tectonic` | Voronoi plate structure. Already CPU-only. Plate boundaries must not shift between LODs. |
+| `light_level` | Already world-anchored. No change. |
+
+### Tier 2 — Detail Layers
+
+Evaluated at `world_coord * freq_scale`. These define the **local texture**
+of a place — terrain roughness, rock variety, local moisture variation.
+
+| Layer | Role |
+|---|---|
+| `peaks_valleys` | Local relief. Adds height variation on top of continentalness. |
+| `rock_hardness` | Surface texture signal. |
+| `humidity` | Local moisture. Terminator model still couples to world-anchored `light_level`. |
+
+---
+
+## What Changes
+
+### `biome_map.rs` — coordinate dispatch
+
+Currently:
+
+```rust
+let nwx = wx * freq_scale;
+let nwy = wy * freq_scale;
+
+let cont = cont_strat.generate(nwx, nwy, detail_level);
+let tect = tect_strat.generate_full(nwx, nwy);
+let humid = humid_strat.generate_terminator_model(nwx, nwy, ...);
+let rock = rock_strat.generate(nwx, nwy, detail_level);
+let pv_base = pv_strat.generate(nwx, nwy, detail_level);
+let light = light_strat.generate(wx, wy, detail_level);   // already world-anchored
+```
+
+After:
+
+```rust
+let nwx = wx * freq_scale;  // detail coordinates
+let nwy = wy * freq_scale;
+
+// Tier 1 — world-anchored: always use (wx, wy)
+let cont  = cont_strat.generate(wx, wy, detail_level);
+let tect  = tect_strat.generate_full(wx, wy);
+let light = light_strat.generate(wx, wy, detail_level);  // unchanged
+
+// Tier 2 — detail: use (nwx, nwy)
+let humid   = humid_strat.generate_terminator_model(nwx, nwy, ...);
+let rock    = rock_strat.generate(nwx, nwy, detail_level);
+let pv_base = pv_strat.generate(nwx, nwy, detail_level);
+```
+
+### Wrapping
+
+Currently wrapping is controlled by `use_wrap = freq_scale == 1.0` applied
+uniformly to all layers.
+
+After this change, world-anchored layers (`continentalness`, `tectonic`) must
+always use wrapping regardless of `freq_scale`. Detail layers keep the current
+behaviour (wrapping disabled when `freq_scale != 1.0`).
+
+Change the wrapping gate from a single flag to per-tier control:
+
+```rust
+let world_wrap = true;           // Tier 1 always wraps
+let detail_wrap = freq_scale == 1.0;  // Tier 2 only wraps at macro scale
+```
+
+Pass the appropriate wrap flag to each strategy's generate call.
+
+### Cylindrical wrapping for continentalness
+
+Continentalness is the only layer that currently uses cylindrical wrapping
+(east-west seam closure). This wrapping must be preserved for the
+world-anchored call. Since it is now always called with `(wx, wy)` and
+`world_wrap = true`, the existing cylindrical wrapping path continues to work
+without modification.
+
+---
+
+## What Does Not Change
+
+- `light_level` coordinate handling — already correct
+- `biome_splines.rs` — biome classification logic is unchanged
+- The ocean gate (`elevation < SEA_LEVEL`) — unchanged
+- `tile_has_fluid_surface` — unchanged
+- `derive_heightmap`, `derive_temperature`, all derived layers — unchanged
+- GDExtension API — unchanged
+- Godot-side code — unchanged
+- GPU path — already disabled when `freq_scale != 1.0`; no change needed
+
+---
+
+## Expected Outcomes
+
+After this change:
+
+- A chunk generated at `freq_scale=8.0` and a macro tile generated at
+  `freq_scale=1.0` over the same world coordinates produce the same
+  `continentalness` value and the same ocean/land classification
+- Clicking an ocean chunk in the map selector spawns in ocean
+- `PlanetZone` and `SurfaceWaterState` classifications are coherent with
+  the macro debug images
+- LOD0, LOD1, LOD2 representations of the same chunk agree on ocean vs land
+  and on planetary zone
+- Tectonic plate boundaries are stable across render scales
+
+Local terrain detail (`peaks_valleys`, `rock_hardness`, local humidity
+variation) continues to differ between macro and micro representations — this
+is correct and intended. Identity is stable; detail varies by scale.
+
+---
+
+## Risks
+
+### Terrain appearance will change
+
+World-anchored `continentalness` evaluated at `(wx, wy)` will produce
+different values than the current scaled evaluation at
+`(wx * freq_scale, wy * freq_scale)`. Continents and oceans will be in
+different places than the current runtime. This is not a regression — the
+current terrain is wrong relative to the macro map. After the fix, runtime
+terrain matches the macro map.
+
+The existing CLI golden fixture at
+`testdata/runtime_presentation/seed42_v1_step256.ron` will need to be
+regenerated after this change because it was built against the broken
+architecture.
+
+### Humidity terminator coupling
+
+`humidity` uses `generate_terminator_model` which takes `light_level` as an
+input but is evaluated at scaled coordinates. This existing coupling mismatch
+is out of scope for this spec. Humidity drives local moisture variation and
+rain shadow effects; it does not gate ocean/land or planetary zone
+classification. Keeping it freq-scaled is the pragmatic choice now. A future
+spec can revisit if terminus moisture zones become visually wrong.
+
+### Within-chunk continentalness variation
+
+At `freq_scale=8.0`, the current architecture produces continentalness
+variation within a single micro chunk — which can sometimes make a chunk
+appear half-ocean, half-land. After anchoring continentalness to world
+coordinates, a 1×1 world-unit chunk spans a much smaller slice of the
+unscaled noise space, so continentalness will be near-constant within one
+chunk. This is intentional: ocean vs land is a chunk-level identity, not a
+sub-chunk detail. Coast variation within a chunk comes from the
+`peaks_valleys` relief layer modulating height around the sea level threshold
+at the coast edge, not from within-chunk continentalness oscillation.
+
+---
+
+## Verification
+
+The primary verification for this spec is a **visual scale-comparison tool**
+that makes the before/after incoherence immediately legible. Unit tests are a
+safety net; the comparison tool is the receipt.
+
+---
+
+### Compare Generation Tool
+
+#### In-game flow
+
+A new mode added to the map selector:
+
+```
+Quick Launch → Open Map → Compare Generation
+```
+
+The user clicks (or drag-selects) a region on the macro map. The tool
+generates a three-panel view:
+
+| Panel | Content |
+|---|---|
+| **Macro** | Cropped macro biome texture for the selected region |
+| **Micro** | NxN grid of LOD2 micro chunk biome images (`detail=0, freq_scale=8.0`) |
+| **Diff** | Per-cell colour overlay — green = agree on ocean/land, red = disagree |
+
+Default grid size is 8×8. The user can drag a larger region for 16×16.
+Agreement percentage is shown as a label (e.g. `Agreement: 94%`).
+
+**Before the fix:** the diff panel is mostly red — macro shows ocean, micro
+generates land, or vice versa across the majority of cells.
+
+**After the fix:** the diff panel is near-solid green. Residual red cells
+appear only at coastline boundaries where both representations legitimately
+straddle the ocean/land threshold.
+
+#### CLI command
+
+```bash
+margins_grip compare-scale <seed> <wx> <wy> <grid_size> <output_dir>
+```
+
+Generates the same three panels as PNG files plus a sidecar JSON:
+
+```
+output_dir/
+  macro.png          # cropped macro biome image
+  micro_grid.png     # NxN micro chunk grid
+  diff.png           # green/red agreement overlay
+  agreement.json     # per-cell and overall agreement stats
+```
+
+`agreement.json` format:
+
+```json
+{
+  "seed": 42,
+  "origin": [200, 100],
+  "grid_size": 8,
+  "overall_agreement": 0.953,
+  "cells": [
+    { "chunk": [200, 100], "macro_ocean": true, "micro_ocean": true, "agree": true },
+    ...
+  ]
+}
+```
+
+This is what the agentic harness reads and asserts against.
+
+#### Agentic harness assertion
+
+The agent triggers the comparison via CLI, reads `agreement.json`, and fails
+the session if `overall_agreement < 0.95` for a known-ocean region:
+
+```python
+# pseudocode — actual implementation in agentic test script
+result = run("margins_grip compare-scale 42 200 100 8 /tmp/compare_out")
+data = json.load("/tmp/compare_out/agreement.json")
+assert data["overall_agreement"] >= 0.95, f"Scale coherence below threshold: {data}"
+```
+
+On failure, the diff PNG is saved as evidence in the session artifact directory.
+
+---
+
+### Unit tests
+
+These cover specific known coordinates programmatically and run in CI.
+
+**Test 1 — Cross-scale ocean coherence**
+
+```rust
+#[test]
+fn ocean_classification_is_stable_across_freq_scales() {
+    for (wx, wy) in REFERENCE_OCEAN_COORDS {
+        let macro_map = BiomeMap::generate(SEED, wx, wy, 64.0, 64.0, 256, 256, 0, false, false, 1.0);
+        let micro_map = BiomeMap::generate(SEED, wx, wy, 1.0, 1.0, 512, 512, 2, false, false, 8.0);
+        assert_eq!(macro_ocean(macro_map, wx, wy), micro_ocean(micro_map));
+    }
+}
+```
+
+Choose `REFERENCE_OCEAN_COORDS` from known ocean positions visible in the
+macro biome image for seed 42. Minimum 5 coordinates.
+
+**Test 2 — Cross-LOD classification stability**
+
+```rust
+#[test]
+fn runtime_presentation_is_stable_across_lod() {
+    for (wx, wy) in REFERENCE_COORDS {
+        let lod0 = build_presentation(SEED, wx, wy, 512, 2, 8.0);
+        let lod2 = build_presentation(SEED, wx, wy, 65, 0, 8.0);
+        assert_eq!(lod0.planet_zone, lod2.planet_zone);
+        assert_eq!(lod0.water_state, lod2.water_state);
+    }
+}
+```
+
+---
+
+### Regenerate the golden fixture
+
+After all tests pass, regenerate the RON fixture:
+
+```bash
+margins_grip inspect layer-presentation-grid post_fix 256 > \
+  testdata/runtime_presentation/seed42_v1_step256.ron
+```
+
+Commit the new fixture alongside a `compare-scale` diff PNG for seed 42 at
+a known ocean region as the canonical visual receipt of the fix.
+
+---
+
+## Modifies
+
+### Phase 1 — Rust fix (Codex)
+
+```text
+gdextension/crates/mg_noise/src/biome_map.rs
+  - change continentalness generate() call from (nwx, nwy) to (wx, wy)
+  - change tectonic generate_full() call from (nwx, nwy) to (wx, wy)
+  - split use_wrap into world_wrap=true and detail_wrap=(freq_scale==1.0)
+  - pass world_wrap to continentalness and tectonic strategy calls
+  - pass detail_wrap to peaks_valleys, rock_hardness, humidity strategy calls
+
+gdextension/crates/mg_noise/src/strategy/continentalness.rs
+  - accept wrap flag as parameter (or verify existing wrap parameter path)
+
+gdextension/crates/mg_noise/src/strategy/tectonic.rs
+  - accept wrap flag as parameter; confirm Voronoi period wrapping works at
+    world scale
+
+gdextension/crates/mg_noise/src/runtime_presentation/mod.rs (tests)
+  - add cross-scale and cross-LOD coherence tests
+
+testdata/runtime_presentation/seed42_v1_step256.ron
+  - regenerate after implementation
+```
+
+### Phase 2 — Compare Generation tool
+
+```text
+gdextension/src/bin/cli.rs
+  - add `compare-scale <seed> <wx> <wy> <grid_size> <output_dir>` subcommand
+  - generates macro.png, micro_grid.png, diff.png, agreement.json
+
+scripts/ui/map_selector.gd
+  - add "Compare Generation" button/mode
+
+scripts/ui/compare_generation_view.gd  (new)
+  - three-panel layout: Macro | Micro | Diff
+  - calls BiomeMap.generate() for each micro cell at LOD2
+  - overlays green/red diff cells
+  - shows agreement percentage label
+  - variable grid size from drag-select
+```
+
+---
+
+## Acceptance Criteria
+
+### Phase 1 — Rust fix
+- `ocean_classification_is_stable_across_freq_scales` passes for ≥5 known ocean coordinates
+- `runtime_presentation_is_stable_across_lod` passes for ≥5 diverse world coordinates
+- `default_grid_audit_passes_for_seed_42_step_256` still passes (coverage maintained)
+- golden fixture regenerated and committed
+
+### Phase 2 — Compare Generation tool
+- `margins_grip compare-scale 42 <ocean_region> 8 <out>` produces `agreement.json`
+  with `overall_agreement >= 0.95`
+- diff PNG committed alongside golden fixture as visual receipt
+- in-game Compare Generation mode accessible from map selector
+- three-panel view renders without errors for any valid map region click
+- agentic harness can trigger compare-scale, read agreement.json, and assert threshold
+
+---
+
+## Codex Prompt
+
+Read `specs/007-world-anchored-noise-layers.md` in full before starting.
+
+This prompt covers **Phase 1 only** (the Rust fix). The Compare Generation
+tool (Phase 2) is a separate implementation task.
+
+This spec fixes a fundamental coordinate scaling bug in the Rust terrain
+generator. The generator uses `freq_scale` to multiply noise coordinates
+before sampling. This is correct for detail layers (peaks, rock, local
+humidity) but wrong for identity layers (continentalness, tectonic) which
+should be stable across all render scales.
+
+**Implement the following changes to
+`gdextension/crates/mg_noise/src/biome_map.rs`:**
+
+1. Change the `continentalness` strategy call from `(nwx, nwy)` to `(wx, wy)`
+2. Change the `tectonic` strategy call from `(nwx * freq_scale, ...)` to
+   `(wx, wy)` — check the exact call site
+3. Split the single `use_wrap` flag into `world_wrap = true` (for
+   continentalness and tectonic) and `detail_wrap = freq_scale == 1.0`
+   (for peaks_valleys, rock_hardness, humidity)
+4. Pass the correct wrap flag to each strategy's generate call
+5. Confirm that `light_level` is unchanged (it already uses `wx, wy`)
+
+**Then add tests to
+`gdextension/crates/mg_noise/src/runtime_presentation/mod.rs`:**
+
+1. A test that generates the same world coordinate at both `freq_scale=1.0`
+   and `freq_scale=8.0` and asserts ocean/land agreement
+2. A test that generates the same world coordinate at LOD0
+   (`detail=2, freq_scale=8.0`) and LOD2 (`detail=0, freq_scale=8.0`) and
+   asserts that `planet_zone` and `water_state` match
+
+**Then regenerate the golden fixture:**
+
+```bash
+cargo run --release --bin margins_grip -- \
+  inspect layer-presentation-grid <latest_tag> 256 \
+  > gdextension/src/testdata/runtime_presentation/seed42_v1_step256.ron
+```
+
+Do not change `biome_splines.rs`, the GDExtension API, or any Godot-side
+code. The fix is entirely inside the Rust noise generation coordinate
+dispatch.
+
+Run `cargo test` in the gdextension workspace after implementing. All
+existing tests must pass plus the two new coherence tests.

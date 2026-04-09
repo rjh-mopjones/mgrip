@@ -6,10 +6,10 @@
     world_height: 512,
     sample_count: 8,
     planet_zone_counts: {
-        "AbyssalNight": 1,
         "DeepNightIce": 3,
         "DryDaysideMargin": 3,
-        "OuterTerminus": 1,
+        "FrozenCoast": 1,
+        "InnerTerminus": 1,
     },
     atmosphere_class_counts: {
         "BlackIceDark": 4,
@@ -17,23 +17,20 @@
         "TemperateTwilight": 1,
     },
     water_state_counts: {
-        "EvaporiteBasin": 1,
-        "MeltwaterChannel": 1,
-        "None": 6,
+        "MarshWater": 1,
+        "None": 7,
     },
     landform_class_counts: {
-        "Basin": 1,
         "CoastShelf": 1,
-        "FlatPlain": 5,
-        "RiverCutLowland": 1,
+        "DuneWaste": 1,
+        "FlatPlain": 6,
     },
     surface_palette_class_counts: {
         "BlackIceRock": 4,
-        "CoastalSediment": 2,
         "DarkTerminusSoil": 1,
-        "SaltCrust": 1,
+        "ScorchedStone": 3,
     },
     interestingness_min: 0.0,
-    interestingness_avg: 0.093005314,
-    interestingness_max: 0.20266667,
+    interestingness_avg: 0.075353004,
+    interestingness_max: 0.16933334,
 )

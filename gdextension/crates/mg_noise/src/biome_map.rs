@@ -150,28 +150,23 @@ impl BiomeMap {
         let world_height = 512.0;
         let mut map = Self::empty(tile_w, tile_h, world_width, world_height);
 
-        // At freq_scale != 1.0 (micro level) we scale noise coords far outside world bounds,
-        // so cylindrical wrapping would give wrong results — use plain (non-wrapping) constructors.
-        let use_wrap = freq_scale == 1.0;
-        let cont_strat = if use_wrap {
-            ContinentalnessStrategy::new_wrapping(
-                seed.wrapping_add(SEED_CONTINENTALNESS),
-                world_width,
-            )
-        } else {
-            ContinentalnessStrategy::new(seed.wrapping_add(SEED_CONTINENTALNESS))
-        };
-        let tect_strat = if use_wrap {
-            TectonicPlatesStrategy::new_wrapping(seed.wrapping_add(SEED_TECTONIC), world_width)
-        } else {
-            TectonicPlatesStrategy::new(seed.wrapping_add(SEED_TECTONIC))
-        };
-        let humid_strat = if use_wrap {
+        // Tier 1 (identity) layers — continentalness and tectonic — always use raw world
+        // coordinates and always wrap. They define the identity of a place and must be
+        // stable regardless of freq_scale or LOD.
+        // Tier 2 (detail) layers use scaled coordinates and only wrap at macro scale.
+        let detail_wrap = freq_scale == 1.0;
+        let cont_strat = ContinentalnessStrategy::new_wrapping(
+            seed.wrapping_add(SEED_CONTINENTALNESS),
+            world_width,
+        );
+        let tect_strat =
+            TectonicPlatesStrategy::new_wrapping(seed.wrapping_add(SEED_TECTONIC), world_width);
+        let humid_strat = if detail_wrap {
             HumidityStrategy::new_wrapping(seed.wrapping_add(SEED_HUMIDITY), world_width)
         } else {
             HumidityStrategy::new(seed.wrapping_add(SEED_HUMIDITY))
         };
-        let rock_strat = if use_wrap {
+        let rock_strat = if detail_wrap {
             RockHardnessStrategy::new_wrapping(seed.wrapping_add(SEED_ROCK_HARDNESS), world_width)
         } else {
             RockHardnessStrategy::new(seed.wrapping_add(SEED_ROCK_HARDNESS))
@@ -183,7 +178,7 @@ impl BiomeMap {
             world_width,
             world_height,
         );
-        let pv_strat = if use_wrap {
+        let pv_strat = if detail_wrap {
             PeaksAndValleysStrategy::new_wrapping(
                 seed.wrapping_add(SEED_PEAKS_VALLEYS),
                 world_width,
@@ -212,37 +207,42 @@ impl BiomeMap {
             .collect();
 
         // Tectonic (Voronoi plates) is always CPU — no GPU equivalent.
+        // Uses raw world coordinates (Tier 1 — world-anchored).
         let tect_data: Vec<(f64, f64)> = pixels
             .par_iter()
             .map(|&(_, wx, wy)| {
-                let s = tect_strat.generate_full(wx * freq_scale, wy * freq_scale);
+                let s = tect_strat.generate_full(wx, wy);
                 (s.boundary_distance, s.plate_id)
             })
             .collect();
 
-        // GPU path is only valid when freq_scale == 1.0: the GPU shaders normalise
-        // coordinates by map_width, which breaks for scaled micro-level coords.
+        // Three-way dispatch:
+        //   GPU macro  (freq_scale == 1.0, GPU available) — GPU supplies all layers at
+        //     world scale; original macro behaviour unchanged.
+        //   GPU micro  (freq_scale != 1.0, GPU available) — GPU supplies Tier 1 identity
+        //     layers (continentalness, light_level) at true world scale so ocean/land and
+        //     zone classification match the macro image. CPU supplies Tier 2 detail layers
+        //     (peaks_valleys, rock_hardness, humidity) at scaled coords to preserve
+        //     within-chunk terrain variety.
+        //   CPU fallback (no GPU) — Tier 1 uses world-anchored coords; Tier 2 uses scaled.
         let scale = sample_world_step(world_size_x, tile_w);
-        let gpu_layers = if freq_scale == 1.0 {
-            GpuNoiseContext::global().map(|gpu| {
-                gpu.generate_layers(
-                    seed,
-                    tile_w,
-                    tile_h,
-                    origin_x,
-                    origin_y,
-                    scale,
-                    world_height,
-                    detail_level,
-                )
-                .into_f64()
-            })
-        } else {
-            None
-        };
+        let gpu_layers = GpuNoiseContext::global().map(|gpu| {
+            gpu.generate_layers(
+                seed,
+                tile_w,
+                tile_h,
+                origin_x,
+                origin_y,
+                scale,
+                world_height,
+                detail_level,
+            )
+            .into_f64()
+        });
 
         match gpu_layers {
-            Some(gpu) => {
+            Some(gpu) if freq_scale == 1.0 => {
+                // Macro/meso: GPU provides all layers at world scale (unchanged).
                 for (i, &(tect, plate_id)) in tect_data.iter().enumerate() {
                     map.continentalness[i] = gpu.continentalness[i];
                     map.tectonic[i] = tect;
@@ -257,14 +257,47 @@ impl BiomeMap {
                     map.tectonic_plate_ids[i] = plate_id;
                 }
             }
+            Some(gpu) => {
+                // Micro: GPU Tier 1 identity (continentalness, light_level) + CPU Tier 2
+                // detail (peaks_valleys, rock_hardness, humidity) at scaled coordinates.
+                let detail_data: Vec<(f64, f64, f64)> = pixels
+                    .par_iter()
+                    .enumerate()
+                    .map(|(i, &(_, wx, wy))| {
+                        let nwx = wx * freq_scale;
+                        let nwy = wy * freq_scale;
+                        let rock = rock_strat.generate(nwx, nwy, detail_level);
+                        let humid = humid_strat.generate_terminator_model(
+                            nwx,
+                            nwy,
+                            detail_level,
+                            gpu.continentalness[i],
+                            gpu.light_level[i],
+                        );
+                        let pv_base = pv_strat.generate(nwx, nwy, detail_level);
+                        (rock, humid, pv_base)
+                    })
+                    .collect();
+                for (i, (&(tect, plate_id), &(rock, humid, pv_base))) in
+                    tect_data.iter().zip(detail_data.iter()).enumerate()
+                {
+                    map.continentalness[i] = gpu.continentalness[i];
+                    map.tectonic[i] = tect;
+                    map.light_level[i] = gpu.light_level[i];
+                    map.rock_hardness[i] = rock;
+                    map.humidity[i] = humid;
+                    map.peaks_valleys[i] = derived::derive_peaks_valleys(pv_base, tect, rock);
+                    map.tectonic_plate_ids[i] = plate_id;
+                }
+            }
             None => {
-                // CPU rayon — fBm layers use scaled coords, light level uses true coords.
+                // CPU fallback — Tier 1 world-anchored, Tier 2 scaled.
                 let base_data: Vec<(f64, f64, f64, f64, f64)> = pixels
                     .par_iter()
                     .map(|&(_, wx, wy)| {
                         let nwx = wx * freq_scale;
                         let nwy = wy * freq_scale;
-                        let cont = cont_strat.generate(nwx, nwy, detail_level);
+                        let cont = cont_strat.generate(wx, wy, detail_level);
                         let light = light_strat.generate(wx, wy, detail_level);
                         let rock = rock_strat.generate(nwx, nwy, detail_level);
                         let humid = humid_strat.generate_terminator_model(

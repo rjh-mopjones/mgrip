@@ -451,6 +451,38 @@ impl MgTerrainGen {
         biome_map_from_arc(Arc::new(map))
     }
 
+    /// Generate a multi-chunk region in a single BiomeMap.
+    /// Covers `world_w` × `world_h` world units at resolution `res_w` × `res_h` pixels.
+    /// Use `freq_scale=1.0` for macro (world-anchored) classification.
+    #[func]
+    pub fn generate_region(
+        &self,
+        seed: i64,
+        world_x: f64,
+        world_y: f64,
+        world_w: f64,
+        world_h: f64,
+        res_w: i64,
+        res_h: i64,
+        detail_level: i64,
+        freq_scale: f64,
+    ) -> Gd<MgBiomeMap> {
+        let map = BiomeMap::generate(
+            seed as u32,
+            world_x,
+            world_y,
+            world_w.max(0.1),
+            world_h.max(0.1),
+            res_w.max(2) as usize,
+            res_h.max(2) as usize,
+            detail_level.max(0) as u32,
+            false,
+            false,
+            freq_scale.max(0.1),
+        );
+        biome_map_from_arc(Arc::new(map))
+    }
+
     /// Sea level constant (heightmap threshold for ocean vs land).
     #[func]
     pub fn sea_level() -> f64 {

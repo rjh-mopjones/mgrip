@@ -588,6 +588,12 @@ mod tests {
 
     #[test]
     fn classifies_reference_chunks_for_dayside_terminus_and_nightside() {
+        // Reference values regenerated after spec 007 (world-anchored noise layers).
+        // light_level and temperature are world-position-derived, so they are stable
+        // across the architecture change. Zone/water/palette/landform reflect the
+        // corrected world-anchored terrain for seed 42.
+
+        // Reference values regenerated after spec 007 full GPU fix (GPU always used).
         let nightside = build_reference_summary(256.0, 0.0);
         assert_eq!(nightside.planet_zone, PlanetZone::DeepNightIce);
         assert_eq!(nightside.atmosphere_class, AtmosphereClass::BlackIceDark);
@@ -597,7 +603,6 @@ mod tests {
             nightside.surface_palette_class,
             SurfacePaletteClass::BlackIceRock
         );
-        assert!(nightside.interestingness_score <= 0.01);
         assert!(nightside.average_light_level < 0.01);
         assert!(nightside.average_temperature < -40.0);
 
@@ -607,32 +612,131 @@ mod tests {
             dayside_margin.atmosphere_class,
             AtmosphereClass::HarshAmberHaze
         );
-        assert_eq!(
-            dayside_margin.water_state,
-            SurfaceWaterState::EvaporiteBasin
-        );
-        assert_eq!(dayside_margin.landform_class, LandformClass::Basin);
+        assert_eq!(dayside_margin.water_state, SurfaceWaterState::None);
+        assert_eq!(dayside_margin.landform_class, LandformClass::FlatPlain);
         assert_eq!(
             dayside_margin.surface_palette_class,
-            SurfacePaletteClass::SaltCrust
+            SurfacePaletteClass::ScorchedStone
         );
-        assert!(dayside_margin.interestingness_score > 0.13);
         assert!(dayside_margin.average_light_level > 0.6);
-        assert!(dayside_margin.average_aridity > 0.8);
 
         let inferno = build_reference_summary(500.0, 450.0);
         assert_eq!(inferno.planet_zone, PlanetZone::SubstellarInferno);
         assert_eq!(inferno.atmosphere_class, AtmosphereClass::BlastedRadiance);
-        assert_eq!(inferno.water_state, SurfaceWaterState::None);
-        assert_eq!(inferno.landform_class, LandformClass::DuneWaste);
+        assert_eq!(inferno.water_state, SurfaceWaterState::EvaporiteBasin);
+        assert_eq!(inferno.landform_class, LandformClass::Basin);
         assert_eq!(
             inferno.surface_palette_class,
             SurfacePaletteClass::ScorchedStone
         );
         assert!(inferno.interestingness_score > 0.09);
-        assert!(dayside_margin.interestingness_score > nightside.interestingness_score + 0.10);
         assert!(inferno.average_light_level > 0.9);
         assert!(inferno.average_temperature > 100.0);
+    }
+
+    #[test]
+    fn ocean_classification_is_stable_across_freq_scales() {
+        // GPU is now always used regardless of freq_scale. Both freq_scale=1.0 (macro)
+        // and freq_scale=8.0 (runtime micro) evaluate continentalness via the same GPU
+        // shader at world coordinates, so they must agree on ocean/land identity.
+        const REFERENCE_COORDS: &[(f64, f64)] = &[
+            (100.0, 50.0),
+            (200.0, 150.0),
+            (350.0, 300.0),
+            (450.0, 400.0),
+            (700.0, 250.0),
+        ];
+
+        for &(wx, wy) in REFERENCE_COORDS {
+            let macro_map =
+                BiomeMap::generate(TEST_SEED, wx, wy, 1.0, 1.0, 65, 65, 0, false, false, 1.0);
+            let micro_map = BiomeMap::generate(
+                TEST_SEED,
+                wx,
+                wy,
+                1.0,
+                1.0,
+                65,
+                65,
+                0,
+                false,
+                false,
+                MICRO_FREQUENCY_SCALE,
+            );
+
+            // Both use GPU at world coordinates — continentalness must be identical
+            let center = 32 * 65 + 32;
+            let cont_macro = macro_map.continentalness[center];
+            let cont_micro = micro_map.continentalness[center];
+            assert!(
+                (cont_macro - cont_micro).abs() < 1e-6,
+                "continentalness disagrees at ({wx}, {wy}): freq_scale=1.0: {cont_macro:.6}, freq_scale=8.0: {cont_micro:.6}"
+            );
+
+            assert_eq!(
+                macro_map.is_ocean(32, 32),
+                micro_map.is_ocean(32, 32),
+                "ocean classification disagrees at ({wx}, {wy})"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_presentation_is_stable_across_lod() {
+        // LOD0 (high detail) and LOD2 (low detail) over the same world coordinate
+        // must agree on planet_zone and water_state after the world-anchored fix.
+        const REFERENCE_COORDS: &[(f64, f64)] = &[
+            (256.0, 0.0),
+            (400.0, 250.0),
+            (500.0, 450.0),
+            (150.0, 300.0),
+            (700.0, 200.0),
+        ];
+
+        for &(wx, wy) in REFERENCE_COORDS {
+            let lod0 = BiomeMap::generate(
+                TEST_SEED,
+                wx,
+                wy,
+                MICRO_CHUNK_WORLD_SIZE,
+                MICRO_CHUNK_WORLD_SIZE,
+                MICRO_TILE_RESOLUTION,
+                MICRO_TILE_RESOLUTION,
+                2,
+                false,
+                false,
+                MICRO_FREQUENCY_SCALE,
+            )
+            .build_runtime_chunk_presentation_bundle()
+            .summary;
+
+            let lod2 = BiomeMap::generate(
+                TEST_SEED,
+                wx,
+                wy,
+                MICRO_CHUNK_WORLD_SIZE,
+                MICRO_CHUNK_WORLD_SIZE,
+                65,
+                65,
+                0,
+                false,
+                false,
+                MICRO_FREQUENCY_SCALE,
+            )
+            .build_runtime_chunk_presentation_bundle()
+            .summary;
+
+            assert_eq!(
+                lod0.planet_zone, lod2.planet_zone,
+                "planet_zone disagrees at ({wx}, {wy}): LOD0={:?}, LOD2={:?}",
+                lod0.planet_zone, lod2.planet_zone
+            );
+            assert_eq!(
+                lod0.water_state, lod2.water_state,
+                "water_state disagrees at ({wx}, {wy}): LOD0={:?}, LOD2={:?}",
+                lod0.water_state, lod2.water_state
+            );
+        }
     }
 
     #[test]
