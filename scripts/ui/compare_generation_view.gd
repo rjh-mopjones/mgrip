@@ -13,7 +13,8 @@ const MACRO_WASH_STRENGTH := 0.34
 const MATCH_OCEAN_TINT := Color(0.18, 0.42, 0.63, 1.0)
 const MACRO_OCEAN_ONLY_TINT := Color(0.16, 0.86, 0.92, 1.0)
 const RUNTIME_OCEAN_ONLY_TINT := Color(0.95, 0.38, 0.16, 1.0)
-const BIOME_MISMATCH_TINT := Color(0.92, 0.22, 0.84, 1.0)
+const WATER_BIOME_MISMATCH_TINT := Color(0.96, 0.20, 0.78, 1.0)
+const LAND_BIOME_MISMATCH_TINT := Color(0.88, 0.26, 0.92, 1.0)
 const RUNTIME_CHUNK_PREVIEW_RENDERER := preload("res://scripts/ui/runtime_chunk_preview_renderer.gd")
 
 var _seed: int
@@ -188,20 +189,23 @@ func _generate() -> void:
 	var macro_ocean_only := int(stats.get("macro_ocean_only", 0))
 	var runtime_ocean_only := int(stats.get("runtime_ocean_only", 0))
 	var biome_mismatch := int(stats.get("biome_mismatch", 0))
+	var water_biome_mismatch := int(stats.get("water_biome_mismatch", 0))
+	var land_biome_mismatch := int(stats.get("land_biome_mismatch", 0))
 	var ocean_pct := 100.0 * float(ocean_agree) / float(maxi(pixel_total, 1))
 	var biome_pct := 100.0 * float(biome_agree) / float(maxi(pixel_total, 1))
 	var land_biome_pct := 100.0 * float(land_biome_agree) / float(maxi(land_biome_total, 1))
 	_status_label.text = (
-		"Done. Left panel keeps biome.png as macro world context; bottom-left washes those biome colours over the traversed runtime terrain; bottom-right flags both ocean-mask drift and non-ocean biome colour drift against the runtime biome layer."
+		"Done. Left panel keeps biome.png as macro world context; bottom-left washes those biome colours over the traversed runtime terrain; bottom-right flags ocean-mask drift plus both land-biome and water-biome colour drift."
 	)
 	_agreement_label.text = (
-		"Ocean: %d/%d (%.1f%%)    Biome: %d/%d (%.1f%%)    Land biome: %d/%d (%.1f%%)    Clean chunks: %d/%d    Macro-ocean only: %d px    Runtime-ocean only: %d px    Biome mismatch: %d px"
+		"Ocean: %d/%d (%.1f%%)    Biome: %d/%d (%.1f%%)    Land biome: %d/%d (%.1f%%)    Clean chunks: %d/%d    Macro-ocean only: %d px    Runtime-ocean only: %d px    Water-biome mismatch: %d px    Land-biome mismatch: %d px    Total biome mismatch: %d px"
 		% [
 			ocean_agree, pixel_total, ocean_pct,
 			biome_agree, pixel_total, biome_pct,
 			land_biome_agree, land_biome_total, land_biome_pct,
 			chunk_clean, chunk_total,
-			macro_ocean_only, runtime_ocean_only, biome_mismatch
+			macro_ocean_only, runtime_ocean_only,
+			water_biome_mismatch, land_biome_mismatch, biome_mismatch
 		]
 	)
 
@@ -268,14 +272,16 @@ func _build_diff_overlay_image(
 			var macro_ocean := _mask_pixel_is_ocean(macro_mask_img.get_pixel(px, py))
 			var runtime_ocean := _mask_pixel_is_ocean(runtime_mask_img.get_pixel(px, py))
 			var overlay := base
-			if macro_ocean and runtime_ocean:
+			if macro_ocean and runtime_ocean and not _colors_match(macro_color, runtime_biome_color):
+				overlay = base.lerp(WATER_BIOME_MISMATCH_TINT, 0.82)
+			elif macro_ocean and runtime_ocean:
 				overlay = base.lerp(MATCH_OCEAN_TINT, 0.32)
 			elif macro_ocean and not runtime_ocean:
 				overlay = base.lerp(MACRO_OCEAN_ONLY_TINT, 0.82)
 			elif runtime_ocean and not macro_ocean:
 				overlay = base.lerp(RUNTIME_OCEAN_ONLY_TINT, 0.82)
 			elif not _colors_match(macro_color, runtime_biome_color):
-				overlay = base.lerp(BIOME_MISMATCH_TINT, 0.72)
+				overlay = base.lerp(LAND_BIOME_MISMATCH_TINT, 0.72)
 			image.set_pixel(px, py, overlay)
 	return image
 
@@ -294,6 +300,8 @@ func _compute_comparison_stats(
 	var macro_ocean_only := 0
 	var runtime_ocean_only := 0
 	var biome_mismatch := 0
+	var water_biome_mismatch := 0
+	var land_biome_mismatch := 0
 	var chunk_clean := 0
 	var chunk_total := _grid_size * _grid_size
 	for gy in range(_grid_size):
@@ -321,6 +329,10 @@ func _compute_comparison_stats(
 							land_biome_agree += 1
 					else:
 						biome_mismatch += 1
+						if macro_ocean or runtime_ocean:
+							water_biome_mismatch += 1
+						else:
+							land_biome_mismatch += 1
 						chunk_has_mismatch = true
 					if not macro_ocean and not runtime_ocean:
 						land_biome_total += 1
@@ -335,6 +347,8 @@ func _compute_comparison_stats(
 		"macro_ocean_only": macro_ocean_only,
 		"runtime_ocean_only": runtime_ocean_only,
 		"biome_mismatch": biome_mismatch,
+		"water_biome_mismatch": water_biome_mismatch,
+		"land_biome_mismatch": land_biome_mismatch,
 		"chunk_total": chunk_total,
 		"chunk_clean": chunk_clean,
 	}
