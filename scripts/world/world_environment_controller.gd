@@ -42,6 +42,9 @@ func apply_runtime_presentation(runtime_presentation: Dictionary) -> void:
 		_sky_material.set_shader_parameter("mie_colour", profile["haze_color"])
 		_sky_material.set_shader_parameter("night_blend", night_blend)
 		_sky_material.set_shader_parameter("aurora_intensity", aurora_intensity)
+		_sky_material.set_shader_parameter("aurora_colour_a", scatter["aurora_colour_a"])
+		_sky_material.set_shader_parameter("aurora_colour_b", scatter["aurora_colour_b"])
+		_sky_material.set_shader_parameter("ground_glow_colour", scatter["ground_glow_colour"])
 	if _sun != null:
 		_sun.light_color = profile["sun_color"]
 		_sun.light_energy = float(profile["sun_energy"])
@@ -258,17 +261,17 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 
 func _scatter_profile_for(atmosphere_name: String) -> Dictionary:
 	var profiles := {
-		"BlastedRadiance":   {"rayleigh_strength": 0.6, "mie_strength": 1.4, "atmosphere_density": 1.4, "mie_g": 0.85, "aurora_intensity_max": 0.0},
-		"HarshAmberHaze":    {"rayleigh_strength": 0.8, "mie_strength": 1.2, "atmosphere_density": 1.2, "mie_g": 0.80, "aurora_intensity_max": 0.0},
-		"DryTwilight":       {"rayleigh_strength": 1.0, "mie_strength": 0.9, "atmosphere_density": 0.9, "mie_g": 0.72, "aurora_intensity_max": 0.0},
-		"TemperateTwilight": {"rayleigh_strength": 1.1, "mie_strength": 1.0, "atmosphere_density": 1.0, "mie_g": 0.70, "aurora_intensity_max": 0.05},
-		"WetTwilight":       {"rayleigh_strength": 1.3, "mie_strength": 1.1, "atmosphere_density": 1.2, "mie_g": 0.62, "aurora_intensity_max": 0.1},
-		"FrostTwilight":     {"rayleigh_strength": 1.2, "mie_strength": 0.8, "atmosphere_density": 1.1, "mie_g": 0.60, "aurora_intensity_max": 0.3},
-		"PolarGlow":         {"rayleigh_strength": 1.0, "mie_strength": 0.6, "atmosphere_density": 0.9, "mie_g": 0.58, "aurora_intensity_max": 0.6},
-		"BlackIceDark":      {"rayleigh_strength": 0.7, "mie_strength": 0.5, "atmosphere_density": 0.8, "mie_g": 0.55, "aurora_intensity_max": 0.85},
-		"GeothermalNight":   {"rayleigh_strength": 0.6, "mie_strength": 0.9, "atmosphere_density": 1.0, "mie_g": 0.65, "aurora_intensity_max": 0.5},
+		"BlastedRadiance":   {"rayleigh_strength": 0.6, "mie_strength": 1.4, "atmosphere_density": 1.4, "mie_g": 0.85, "aurora_intensity_max": 0.0,  "aurora_colour_a": Color(0.10, 0.90, 0.30), "aurora_colour_b": Color(0.72, 0.14, 0.86), "ground_glow_colour": Color(0.18, 0.06, 0.04)},
+		"HarshAmberHaze":    {"rayleigh_strength": 0.8, "mie_strength": 1.2, "atmosphere_density": 1.2, "mie_g": 0.80, "aurora_intensity_max": 0.0,  "aurora_colour_a": Color(0.10, 0.90, 0.30), "aurora_colour_b": Color(0.72, 0.14, 0.86), "ground_glow_colour": Color(0.14, 0.05, 0.03)},
+		"DryTwilight":       {"rayleigh_strength": 1.0, "mie_strength": 0.9, "atmosphere_density": 0.9, "mie_g": 0.72, "aurora_intensity_max": 0.0,  "aurora_colour_a": Color(0.10, 0.90, 0.30), "aurora_colour_b": Color(0.72, 0.14, 0.86), "ground_glow_colour": Color(0.10, 0.05, 0.05)},
+		"TemperateTwilight": {"rayleigh_strength": 1.1, "mie_strength": 1.0, "atmosphere_density": 1.0, "mie_g": 0.70, "aurora_intensity_max": 0.05, "aurora_colour_a": Color(0.10, 0.90, 0.30), "aurora_colour_b": Color(0.72, 0.14, 0.86), "ground_glow_colour": Color(0.08, 0.04, 0.06)},
+		"WetTwilight":       {"rayleigh_strength": 1.3, "mie_strength": 1.1, "atmosphere_density": 1.2, "mie_g": 0.62, "aurora_intensity_max": 0.1,  "aurora_colour_a": Color(0.12, 0.88, 0.42), "aurora_colour_b": Color(0.60, 0.18, 0.90), "ground_glow_colour": Color(0.06, 0.04, 0.08)},
+		"FrostTwilight":     {"rayleigh_strength": 1.2, "mie_strength": 0.8, "atmosphere_density": 1.1, "mie_g": 0.60, "aurora_intensity_max": 0.3,  "aurora_colour_a": Color(0.08, 0.92, 0.50), "aurora_colour_b": Color(0.55, 0.12, 0.92), "ground_glow_colour": Color(0.04, 0.04, 0.10)},
+		"PolarGlow":         {"rayleigh_strength": 1.0, "mie_strength": 0.6, "atmosphere_density": 0.9, "mie_g": 0.58, "aurora_intensity_max": 0.6,  "aurora_colour_a": Color(0.04, 0.96, 0.60), "aurora_colour_b": Color(0.40, 0.08, 0.96), "ground_glow_colour": Color(0.03, 0.05, 0.12)},
+		"BlackIceDark":      {"rayleigh_strength": 0.7, "mie_strength": 0.5, "atmosphere_density": 0.8, "mie_g": 0.55, "aurora_intensity_max": 0.85, "aurora_colour_a": Color(0.02, 0.98, 0.70), "aurora_colour_b": Color(0.28, 0.06, 0.98), "ground_glow_colour": Color(0.02, 0.04, 0.10)},
+		"GeothermalNight":   {"rayleigh_strength": 0.6, "mie_strength": 0.9, "atmosphere_density": 1.0, "mie_g": 0.65, "aurora_intensity_max": 0.5,  "aurora_colour_a": Color(0.80, 0.30, 0.08), "aurora_colour_b": Color(0.96, 0.60, 0.10), "ground_glow_colour": Color(0.22, 0.06, 0.02)},
 	}
-	return profiles.get(atmosphere_name, {"rayleigh_strength": 1.0, "mie_strength": 1.0, "atmosphere_density": 1.0, "mie_g": 0.70, "aurora_intensity_max": 0.0})
+	return profiles.get(atmosphere_name, {"rayleigh_strength": 1.0, "mie_strength": 1.0, "atmosphere_density": 1.0, "mie_g": 0.70, "aurora_intensity_max": 0.0, "aurora_colour_a": Color(0.10, 0.90, 0.30), "aurora_colour_b": Color(0.72, 0.14, 0.86), "ground_glow_colour": Color(0.08, 0.04, 0.06)})
 
 func _enum_name(value, fallback: String) -> String:
 	if value is Dictionary:
