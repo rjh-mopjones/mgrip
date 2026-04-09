@@ -133,6 +133,29 @@ biomes, visuals, or worldgen logic:
 If a terrain or biome change makes the world look generic-Earth, assume it is
 wrong until proven otherwise.
 
+## Macro Map and Compare Notes
+
+When touching macro/runtime coherence, local maps, or Compare Generation:
+
+- `biome.png` is loaded from the newest layers artifact under
+  `~/.margins_grip/layers/<tag>/images/biome.png`. If a change affects macro
+  biome semantics, regenerate the layers artifact before trusting compare or
+  selector screenshots.
+- Compare Generation keeps `biome.png` as world-context, but the scored macro
+  truth should come from generated macro semantic data at `freq_scale=1.0`,
+  not palette heuristics sampled from the visible PNG.
+- The runtime local map, selector preview, and in-level `[M]` map should share
+  the same LOD0 data-driven renderer. Do not let one path drift onto an older
+  biome-export shortcut.
+- The runtime local map should read as terrain/ocean first. Water-biome drift
+  belongs in compare diagnostics, not in the base ocean colour of the map.
+- `CoralReef` was removed because it repeatedly created misleading
+  underwater-biome comparison output. Do not reintroduce a special reef biome
+  casually without reconsidering compare semantics and map readability.
+- Windowed screenshot probes are the trustworthy receipt for compare and
+  local-map UI changes. Headless runs are useful for parse/load checks but not
+  for judging the final rendered UI.
+
 ## Coordinate and Chunk Terminology
 
 Follow the naming rules from `specs/002-open-world-streaming-and-lod.md`:

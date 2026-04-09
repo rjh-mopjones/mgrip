@@ -1,6 +1,6 @@
 # Spec 007 - World-Anchored Noise Layers
 
-**Status:** Complete
+**Status:** Implemented
 **Priority:** Critical
 **Depends On:** None — this is a foundation fix that should precede further terrain work
 
@@ -182,6 +182,45 @@ is correct and intended. Identity is stable; detail varies by scale.
 
 ---
 
+## Implementation Notes
+
+Spec 007 is implemented, but the final shipped work is broader than the
+original Rust-only framing because the verification and player-facing map
+surfaces also had to be repaired.
+
+Implemented outcome:
+
+- world-anchored identity layers now hold stable across macro and runtime
+  generation, so macro-vs-runtime ocean/land agreement is materially improved
+- runtime coherence tests and the presentation fixture were updated, and
+  `cargo test --manifest-path gdextension/Cargo.toml` passes
+- the in-game Compare Generation flow ships from the map selector, but the
+  implemented UI is a four-panel diagnostic rather than the original
+  three-panel concept:
+  - `Macro Visual (biome.png)` for world context
+  - `Runtime Local Map (LOD0)` built from the same chunk data the terrain uses
+  - `Macro Colours over Runtime` as a bridge view
+  - `Delta` for ocean drift plus land-biome and water-biome drift
+- macro comparison semantics no longer rely on sampling `biome.png` colours to
+  infer truth; the compare tool generates fresh macro semantic data at
+  `freq_scale=1.0` and compares that against runtime chunk semantics
+- the selector preview, compare runtime panel, and in-level `[M]` local map
+  now share the same LOD0 data-driven local-map path
+- `CoralReef` was removed because it created ambiguous underwater-biome
+  behaviour and repeatedly confused comparison output
+- the compare modal now has a legend, and water-biome drift is rendered as a
+  diagnostic hatch instead of a reef-looking fill
+
+Current interpretation:
+
+- ocean/land agreement is the strongest signal and the main receipt for this
+  spec
+- exact biome mismatch is useful as a diagnostic, but it is still noisier than
+  the ocean/land signal and should not be treated as a hard failure in the same
+  way
+
+---
+
 ## Risks
 
 ### Terrain appearance will change
@@ -239,24 +278,25 @@ A new mode added to the map selector:
 Quick Launch → Open Map → Compare Generation
 ```
 
-The user clicks (or drag-selects) a region on the macro map. The tool
-generates a three-panel view:
+The user clicks a region on the macro map. The implemented tool generates a
+four-panel view:
 
 | Panel | Content |
 |---|---|
-| **Macro** | Cropped macro biome texture for the selected region |
-| **Micro** | NxN grid of LOD2 micro chunk biome images (`detail=0, freq_scale=8.0`) |
-| **Diff** | Per-cell colour overlay — green = agree on ocean/land, red = disagree |
+| **Macro Visual** | Cropped `biome.png` texture for the selected region |
+| **Runtime Local Map** | NxN grid of LOD0 local-map previews built from runtime chunk data |
+| **Macro Colours over Runtime** | Macro colours washed over the runtime terrain preview |
+| **Delta** | Ocean drift plus land-biome and water-biome drift |
 
-Default grid size is 8×8. The user can drag a larger region for 16×16.
-Agreement percentage is shown as a label (e.g. `Agreement: 94%`).
+Default grid size is 8×8. Agreement percentages and mismatch counts are shown
+as labels, and the modal includes an on-screen legend for the overlay colours.
 
-**Before the fix:** the diff panel is mostly red — macro shows ocean, micro
-generates land, or vice versa across the majority of cells.
+**Before the fix:** macro can show one coastline identity while runtime
+generates another at the same world position.
 
-**After the fix:** the diff panel is near-solid green. Residual red cells
-appear only at coastline boundaries where both representations legitimately
-straddle the ocean/land threshold.
+**After the fix:** ocean agreement is high, and the remaining disagreements are
+mostly concentrated near coastline drift or biome-family drift instead of whole
+region identity failure.
 
 #### CLI command
 
@@ -264,13 +304,13 @@ straddle the ocean/land threshold.
 margins_grip compare-scale <seed> <wx> <wy> <grid_size> <output_dir>
 ```
 
-Generates the same three panels as PNG files plus a sidecar JSON:
+Generates the macro/runtime/diff artifacts plus a sidecar JSON:
 
 ```
 output_dir/
   macro.png          # cropped macro biome image
-  micro_grid.png     # NxN micro chunk grid
-  diff.png           # green/red agreement overlay
+  micro_grid.png     # NxN runtime local-map grid
+  diff.png           # ocean + biome drift overlay
   agreement.json     # per-cell and overall agreement stats
 ```
 
@@ -394,11 +434,19 @@ scripts/ui/map_selector.gd
   - add "Compare Generation" button/mode
 
 scripts/ui/compare_generation_view.gd  (new)
-  - three-panel layout: Macro | Micro | Diff
-  - calls BiomeMap.generate() for each micro cell at LOD2
-  - overlays green/red diff cells
-  - shows agreement percentage label
-  - variable grid size from drag-select
+  - four-panel layout with legend
+  - compares fresh macro semantic data against runtime chunk semantics
+  - shows runtime local-map previews instead of LOD2 biome proxy images
+  - overlays ocean drift plus land/water biome drift
+
+scripts/ui/runtime_chunk_preview_renderer.gd  (new)
+  - shared LOD0 local-map renderer for compare, selector preview, and in-level map
+
+scripts/ui/map_overlay.gd
+  - switch in-level local map to the shared LOD0 renderer
+
+scripts/world/world.gd
+  - developer screenshot probe for verifying the in-level map overlay
 ```
 
 ---
@@ -416,7 +464,7 @@ scripts/ui/compare_generation_view.gd  (new)
   with `overall_agreement >= 0.95`
 - diff PNG committed alongside golden fixture as visual receipt
 - in-game Compare Generation mode accessible from map selector
-- three-panel view renders without errors for any valid map region click
+- four-panel view renders without errors for any valid map region click
 - agentic harness can trigger compare-scale, read agreement.json, and assert threshold
 
 ---
