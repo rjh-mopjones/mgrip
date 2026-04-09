@@ -221,7 +221,6 @@ fn is_coastal_biome(biome: TileType) -> bool {
             | TileType::Mangrove
             | TileType::RockyCoast
             | TileType::SeaCliff
-            | TileType::CoralReef
             | TileType::ContinentalShelf
             | TileType::ShallowSea
     )

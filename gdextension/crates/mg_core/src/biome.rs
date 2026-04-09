@@ -15,7 +15,6 @@ pub enum TileType {
     // Coastal
     Beach,
     Mangrove,
-    CoralReef,
     RockyCoast,
     SeaCliff,
 
@@ -78,7 +77,6 @@ impl TileType {
 
             Self::Beach => [220, 182, 130],
             Self::Mangrove => [38, 18, 32],         // dark purple-brown coastal
-            Self::CoralReef => [200, 100, 120],
             Self::RockyCoast => [98, 95, 108],
             Self::SeaCliff => [135, 135, 155],
 

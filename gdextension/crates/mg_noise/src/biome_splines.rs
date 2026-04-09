@@ -205,9 +205,6 @@ impl BiomeSplines {
             return TileType::SaltFlat;
         }
         let depth = self.sea_level - elevation;
-        if depth < 0.05 && temp > 20.0 && temp < 35.0 && tectonic > 0.5 {
-            return TileType::CoralReef;
-        }
         if tectonic < 0.2 && depth > 0.3 {
             return TileType::OceanTrench;
         }
@@ -414,7 +411,6 @@ mod tests {
                 | TileType::ContinentalShelf
                 | TileType::Sea
                 | TileType::DeepOcean
-                | TileType::CoralReef
                 | TileType::OceanTrench
                 | TileType::OceanRidge
         ));

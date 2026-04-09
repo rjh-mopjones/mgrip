@@ -31,7 +31,6 @@ pub fn tile_has_fluid_surface(tile: TileType) -> bool {
             | TileType::DeepOcean
             | TileType::OceanTrench
             | TileType::OceanRidge
-            | TileType::CoralReef
     )
 }
 
@@ -45,8 +44,8 @@ pub fn pixel_is_ocean_rgb(r: u8, g: u8, b: u8) -> bool {
     if bf - rf > 0.25 && bf > 0.35 {
         return true;
     }
-    // CoralReef: rgb(200, 100, 120)  /  OceanRidge: rgb(120, 80, 60)
-    (r == 200 && g == 100 && b == 120) || (r == 120 && g == 80 && b == 60)
+    // OceanRidge: rgb(120, 80, 60)
+    r == 120 && g == 80 && b == 60
 }
 
 /// Ocean mask derived from biome.png — authoritative ocean/land from the macro pipeline.
@@ -694,7 +693,6 @@ mod tests {
     fn fluid_surface_tiles_are_semantic_not_elevation_based() {
         assert!(tile_has_fluid_surface(TileType::Sea));
         assert!(tile_has_fluid_surface(TileType::DeepOcean));
-        assert!(tile_has_fluid_surface(TileType::CoralReef));
         assert!(!tile_has_fluid_surface(TileType::IceSheet));
         assert!(!tile_has_fluid_surface(TileType::White));
         assert!(!tile_has_fluid_surface(TileType::SaltFlat));
