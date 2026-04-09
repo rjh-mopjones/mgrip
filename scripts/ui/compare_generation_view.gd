@@ -1,14 +1,18 @@
 extends Control
 
-## Three-panel comparison tool.
-## Left: macro biome.png crop for region context.
-## Middle: true top-down renders of the real LOD0 runtime chunks.
-## Right: semantic agreement overlay derived from macro/runtime chunk data.
+## Four-panel comparison tool.
+## Top-left: macro biome.png crop for world-scale context.
+## Top-right: true top-down runtime local map built from LOD0 chunk data.
+## Bottom-left: macro biome colours washed over runtime terrain.
+## Bottom-right: semantic ocean-mask drift overlay on runtime terrain.
 
 const CELL_PX := 128
-const MACRO_SAMPLE_RES := 65
-const AGREE_COLOR := Color(0.12, 0.78, 0.31, 1.0)
-const DISAGREE_COLOR := Color(0.82, 0.18, 0.18, 1.0)
+const GRID_LINE_COLOR := Color(1.0, 1.0, 1.0, 0.16)
+const GRID_LINE_STRONG := Color(0.05, 0.05, 0.06, 0.46)
+const MACRO_WASH_STRENGTH := 0.34
+const MATCH_OCEAN_TINT := Color(0.18, 0.42, 0.63, 1.0)
+const MACRO_OCEAN_ONLY_TINT := Color(0.16, 0.86, 0.92, 1.0)
+const RUNTIME_OCEAN_ONLY_TINT := Color(0.95, 0.38, 0.16, 1.0)
 const RUNTIME_CHUNK_PREVIEW_RENDERER := preload("res://scripts/ui/runtime_chunk_preview_renderer.gd")
 
 var _seed: int
@@ -20,12 +24,11 @@ var _macro_world_size: Vector2
 var _title_label: Label
 var _status_label: Label
 var _macro_rect: TextureRect
-var _micro_rect: TextureRect
+var _runtime_rect: TextureRect
+var _wash_rect: TextureRect
 var _diff_rect: TextureRect
 var _agreement_label: Label
 var _preview_renderer
-var _generator := MgTerrainGen.new()
-var _macro_ocean_cache: Dictionary = {}
 
 
 func _ready() -> void:
@@ -61,14 +64,23 @@ func _ready() -> void:
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	vbox.add_child(_status_label)
 
-	var panels_row := HBoxContainer.new()
-	panels_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panels_row.add_theme_constant_override("separation", 8)
-	vbox.add_child(panels_row)
+	var panels_grid := GridContainer.new()
+	panels_grid.columns = 2
+	panels_grid.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	panels_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panels_grid.add_theme_constant_override("h_separation", 8)
+	panels_grid.add_theme_constant_override("v_separation", 8)
+	vbox.add_child(panels_grid)
 
-	for panel_label in ["Macro  (biome.png)", "Runtime Preview  (LOD0)", "Diff"]:
+	for panel_label in [
+		"Macro Visual  (biome.png)",
+		"Runtime Local Map  (LOD0)",
+		"Macro Colours over Runtime",
+		"Delta  (Ocean Mask Drift)",
+	]:
 		var col := VBoxContainer.new()
 		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		col.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		var lbl := Label.new()
 		lbl.text = panel_label
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -80,13 +92,15 @@ func _ready() -> void:
 		rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 		col.add_child(rect)
-		panels_row.add_child(col)
+		panels_grid.add_child(col)
 		match panel_label:
-			"Macro  (biome.png)":
+			"Macro Visual  (biome.png)":
 				_macro_rect = rect
-			"Runtime Preview  (LOD0)":
-				_micro_rect = rect
-			"Diff":
+			"Runtime Local Map  (LOD0)":
+				_runtime_rect = rect
+			"Macro Colours over Runtime":
+				_wash_rect = rect
+			"Delta  (Ocean Mask Drift)":
 				_diff_rect = rect
 
 	_agreement_label = Label.new()
@@ -129,65 +143,46 @@ func _generate() -> void:
 	var img_w := n * CELL_PX
 	var img_h := n * CELL_PX
 	var macro_img := _build_macro_crop(n, img_w, img_h)
+	var macro_mask_img := _build_macro_ocean_mask_image(macro_img)
+	_draw_chunk_grid(macro_img)
 	_macro_rect.texture = ImageTexture.create_from_image(macro_img)
 
-	var diff_img := Image.create(img_w, img_h, false, Image.FORMAT_RGBA8)
 	_status_label.text = "Building %dx%d LOD0 local-map region from runtime chunk data…" % [n, n]
 	var region_preview: Dictionary = _preview_renderer.render_chunk_grid_preview(
 		_seed,
 		Vector2i(int(_origin.x), int(_origin.y)),
 		n
 	)
-	var region_image: Image = region_preview.get("image")
-	region_image.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
-	_micro_rect.texture = ImageTexture.create_from_image(region_image)
+	var runtime_img := _copy_image(region_preview.get("image"))
+	runtime_img.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
+	_draw_chunk_grid(runtime_img)
+	_runtime_rect.texture = ImageTexture.create_from_image(runtime_img)
 
-	var cell_ocean: Dictionary = region_preview.get("cell_ocean", {})
-	var agree_count := 0
-	var total := n * n
-	for gy in range(n):
-		for gx in range(n):
-			var chunk_coord := Vector2i(int(_origin.x) + gx, int(_origin.y) + gy)
-			var macro_ocean := _sample_macro_ocean(chunk_coord)
-			var micro_ocean := bool(cell_ocean.get("%d:%d" % [chunk_coord.x, chunk_coord.y], false))
-			var agree := macro_ocean == micro_ocean
-			if agree:
-				agree_count += 1
+	var runtime_mask_img := _copy_image(region_preview.get("ocean_mask_image"))
+	runtime_mask_img.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
 
-			diff_img.fill_rect(
-				Rect2i(gx * CELL_PX, gy * CELL_PX, CELL_PX, CELL_PX),
-				AGREE_COLOR if agree else DISAGREE_COLOR
-			)
+	var wash_img := _build_macro_wash_image(runtime_img, macro_img)
+	var diff_img := _build_diff_overlay_image(runtime_img, macro_mask_img, runtime_mask_img)
+	_draw_chunk_grid(wash_img)
+	_draw_chunk_grid(diff_img)
+	_wash_rect.texture = ImageTexture.create_from_image(wash_img)
 	_diff_rect.texture = ImageTexture.create_from_image(diff_img)
 
-	var pct := 100.0 * agree_count / total
-	_agreement_label.text = "Agreement: %d/%d  (%.1f%%)" % [agree_count, total, pct]
+	var stats := _compute_mask_stats(macro_mask_img, runtime_mask_img)
+	var pixel_total := int(stats.get("pixel_total", 0))
+	var pixel_agree := int(stats.get("pixel_agree", 0))
+	var chunk_total := int(stats.get("chunk_total", 0))
+	var chunk_clean := int(stats.get("chunk_clean", 0))
+	var macro_ocean_only := int(stats.get("macro_ocean_only", 0))
+	var runtime_ocean_only := int(stats.get("runtime_ocean_only", 0))
+	var pct := 100.0 * float(pixel_agree) / float(maxi(pixel_total, 1))
 	_status_label.text = (
-		"Done. Runtime preview is an LOD0 local-map built from the same chunk data the terrain uses; diff uses semantic macro/runtime ocean agreement."
+		"Done. Left panel keeps biome.png as macro world context; bottom-left washes those biome colours over the traversed runtime terrain; bottom-right compares biome.png ocean mask vs runtime LOD0 fluid mask across the full 8x8 region."
 	)
-
-
-func _sample_macro_ocean(chunk_coord: Vector2i) -> bool:
-	var key := "%d:%d" % [chunk_coord.x, chunk_coord.y]
-	if _macro_ocean_cache.has(key):
-		return bool(_macro_ocean_cache[key])
-
-	var macro_map: MgBiomeMap = _generator.generate_region(
-		_seed,
-		float(chunk_coord.x),
-		float(chunk_coord.y),
-		1.0,
-		1.0,
-		MACRO_SAMPLE_RES,
-		MACRO_SAMPLE_RES,
-		0,
-		1.0
+	_agreement_label.text = (
+		"Pixel agreement: %d/%d (%.1f%%)    Clean chunks: %d/%d    Macro-ocean only: %d px    Runtime-ocean only: %d px"
+		% [pixel_agree, pixel_total, pct, chunk_clean, chunk_total, macro_ocean_only, runtime_ocean_only]
 	)
-	var center := MACRO_SAMPLE_RES / 2
-	var result := macro_map.is_ocean(center, center)
-	_macro_ocean_cache[key] = result
-	return result
-
 
 func _build_macro_crop(n: int, img_w: int, img_h: int) -> Image:
 	if _macro_texture == null:
@@ -215,3 +210,114 @@ func _build_macro_crop(n: int, img_w: int, img_h: int) -> Image:
 	var crop := src.get_region(Rect2i(px_x, px_y, px_w, px_h))
 	crop.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
 	return crop
+
+
+func _build_macro_ocean_mask_image(macro_img: Image) -> Image:
+	var image := Image.create(macro_img.get_width(), macro_img.get_height(), false, Image.FORMAT_RGBA8)
+	for py in range(macro_img.get_height()):
+		for px in range(macro_img.get_width()):
+			var color := macro_img.get_pixel(px, py)
+			image.set_pixel(px, py, Color.WHITE if _pixel_is_macro_ocean(color) else Color.BLACK)
+	return image
+
+
+func _build_macro_wash_image(runtime_img: Image, macro_img: Image) -> Image:
+	var image := _copy_image(runtime_img)
+	for py in range(image.get_height()):
+		for px in range(image.get_width()):
+			var runtime_color := image.get_pixel(px, py)
+			var macro_color := macro_img.get_pixel(px, py)
+			image.set_pixel(px, py, runtime_color.lerp(macro_color, MACRO_WASH_STRENGTH))
+	return image
+
+
+func _build_diff_overlay_image(runtime_img: Image, macro_mask_img: Image, runtime_mask_img: Image) -> Image:
+	var image := _copy_image(runtime_img)
+	for py in range(image.get_height()):
+		for px in range(image.get_width()):
+			var base := image.get_pixel(px, py)
+			var macro_ocean := _mask_pixel_is_ocean(macro_mask_img.get_pixel(px, py))
+			var runtime_ocean := _mask_pixel_is_ocean(runtime_mask_img.get_pixel(px, py))
+			var overlay := base
+			if macro_ocean and runtime_ocean:
+				overlay = base.lerp(MATCH_OCEAN_TINT, 0.32)
+			elif macro_ocean and not runtime_ocean:
+				overlay = base.lerp(MACRO_OCEAN_ONLY_TINT, 0.82)
+			elif runtime_ocean and not macro_ocean:
+				overlay = base.lerp(RUNTIME_OCEAN_ONLY_TINT, 0.82)
+			image.set_pixel(px, py, overlay)
+	return image
+
+
+func _compute_mask_stats(macro_mask_img: Image, runtime_mask_img: Image) -> Dictionary:
+	var pixel_total := macro_mask_img.get_width() * macro_mask_img.get_height()
+	var pixel_agree := 0
+	var macro_ocean_only := 0
+	var runtime_ocean_only := 0
+	var chunk_clean := 0
+	var chunk_total := _grid_size * _grid_size
+	for gy in range(_grid_size):
+		for gx in range(_grid_size):
+			var chunk_has_mismatch := false
+			var start_x := gx * CELL_PX
+			var start_y := gy * CELL_PX
+			for py in range(start_y, start_y + CELL_PX):
+				for px in range(start_x, start_x + CELL_PX):
+					var macro_ocean := _mask_pixel_is_ocean(macro_mask_img.get_pixel(px, py))
+					var runtime_ocean := _mask_pixel_is_ocean(runtime_mask_img.get_pixel(px, py))
+					if macro_ocean == runtime_ocean:
+						pixel_agree += 1
+					elif macro_ocean:
+						macro_ocean_only += 1
+						chunk_has_mismatch = true
+					else:
+						runtime_ocean_only += 1
+						chunk_has_mismatch = true
+			if not chunk_has_mismatch:
+				chunk_clean += 1
+	return {
+		"pixel_total": pixel_total,
+		"pixel_agree": pixel_agree,
+		"macro_ocean_only": macro_ocean_only,
+		"runtime_ocean_only": runtime_ocean_only,
+		"chunk_total": chunk_total,
+		"chunk_clean": chunk_clean,
+	}
+
+
+func _draw_chunk_grid(image: Image) -> void:
+	var w := image.get_width()
+	var h := image.get_height()
+	for gx in range(_grid_size + 1):
+		var x := mini(gx * CELL_PX, w - 1)
+		for y in range(h):
+			image.set_pixel(x, y, GRID_LINE_COLOR)
+			if x + 1 < w:
+				image.set_pixel(x + 1, y, GRID_LINE_STRONG)
+	for gy in range(_grid_size + 1):
+		var y := mini(gy * CELL_PX, h - 1)
+		for x in range(w):
+			image.set_pixel(x, y, GRID_LINE_COLOR)
+			if y + 1 < h:
+				image.set_pixel(x, y + 1, GRID_LINE_STRONG)
+
+
+func _copy_image(src: Image) -> Image:
+	var image := Image.create(src.get_width(), src.get_height(), false, Image.FORMAT_RGBA8)
+	image.blit_rect(src, Rect2i(Vector2i.ZERO, Vector2i(src.get_width(), src.get_height())), Vector2i.ZERO)
+	return image
+
+
+func _mask_pixel_is_ocean(color: Color) -> bool:
+	return color.r > 0.5
+
+
+func _pixel_is_macro_ocean(color: Color) -> bool:
+	var r := int(round(color.r * 255.0))
+	var g := int(round(color.g * 255.0))
+	var b := int(round(color.b * 255.0))
+	var rf := float(r) / 255.0
+	var bf := float(b) / 255.0
+	if bf - rf > 0.25 and bf > 0.35:
+		return true
+	return (r == 200 and g == 100 and b == 120) or (r == 120 and g == 80 and b == 60)
