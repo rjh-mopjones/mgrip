@@ -14,32 +14,44 @@ func setup(world_environment: WorldEnvironment, sun: DirectionalLight3D = null) 
 	if _world_environment == null:
 		return
 	_environment = _prepare_environment(_world_environment.environment)
-	_world_environment.environment = _environment
 	_sky_material = _prepare_sky_material(_environment)
+	_world_environment.environment = _environment
 
 func apply_runtime_presentation(runtime_presentation: Dictionary) -> void:
 	if _environment == null or runtime_presentation.is_empty():
 		return
 	var atmosphere_name := _enum_name(runtime_presentation.get("atmosphere_class", {}), "TemperateTwilight")
 	var zone_name := _enum_name(runtime_presentation.get("planet_zone", {}), "InnerTerminus")
-	var profile := _profile_for(atmosphere_name, zone_name)
+	var light_level: float = clamp(float(runtime_presentation.get("average_light_level", 0.0)), 0.0, 1.0)
+	apply_sun_direction(light_level)
+	var profile: Dictionary = _profile_for(atmosphere_name, zone_name)
 	_environment.ambient_light_color = profile["ambient_color"]
 	_environment.ambient_light_energy = float(profile["ambient_energy"])
 	_environment.fog_enabled = true
 	_environment.fog_light_color = profile["fog_color"]
 	_environment.fog_density = float(profile["fog_density"])
 	if _sky_material != null:
-		_sky_material.set_shader_parameter("zenith_color", profile["zenith_color"])
-		_sky_material.set_shader_parameter("upper_color", profile["upper_color"])
-		_sky_material.set_shader_parameter("horizon_color", profile["horizon_color"])
-		_sky_material.set_shader_parameter("haze_color", profile["haze_color"])
-		_sky_material.set_shader_parameter("horizon_height", float(profile["horizon_height"]))
-		_sky_material.set_shader_parameter("horizon_softness", float(profile["horizon_softness"]))
-		_sky_material.set_shader_parameter("sun_disc_size", float(profile["sun_disc_size"]))
-		_sky_material.set_shader_parameter("sun_glow_size", float(profile["sun_glow_size"]))
+		var scatter: Dictionary = _scatter_profile_for(atmosphere_name)
+		var night_blend: float = 1.0 - clamp(light_level * 2.5, 0.0, 1.0)
+		var aurora_intensity: float = float(scatter["aurora_intensity_max"]) * (1.0 - clamp(light_level * 3.0, 0.0, 1.0))
+		_sky_material.set_shader_parameter("scatter_coeffs", Vector3(0.5, 1.2, 2.8))
+		_sky_material.set_shader_parameter("rayleigh_strength", float(scatter["rayleigh_strength"]))
+		_sky_material.set_shader_parameter("mie_strength", float(scatter["mie_strength"]))
+		_sky_material.set_shader_parameter("atmosphere_density", float(scatter["atmosphere_density"]))
+		_sky_material.set_shader_parameter("mie_g", float(scatter["mie_g"]))
+		_sky_material.set_shader_parameter("mie_colour", profile["haze_color"])
+		_sky_material.set_shader_parameter("night_blend", night_blend)
+		_sky_material.set_shader_parameter("aurora_intensity", aurora_intensity)
 	if _sun != null:
 		_sun.light_color = profile["sun_color"]
 		_sun.light_energy = float(profile["sun_energy"])
+
+func apply_sun_direction(light_level: float) -> void:
+	if _sun == null:
+		return
+	# south = +Z, north = -Z, up = +Y
+	# rotating by -elevation around X lifts the sun from the southern (+Z) horizon toward zenith
+	_sun.rotation = Vector3(-clamp(light_level, 0.0, 1.0) * PI / 2.0, 0.0, 0.0)
 
 func _prepare_environment(base_environment: Environment) -> Environment:
 	if base_environment == null:
@@ -52,16 +64,15 @@ func _prepare_sky_material(environment: Environment) -> ShaderMaterial:
 	var sky := environment.sky
 	if sky == null:
 		sky = Sky.new()
-	else:
-		sky = sky.duplicate(true)
-	environment.sky = sky
+		environment.sky = sky
+	# Use the existing sky's material if it's already a ShaderMaterial with our shader.
+	# Do NOT replace the sky object or create an extra duplicate — the environment is assigned
+	# to WorldEnvironment after this returns, so the RS gets a consistent view of the material.
 	var material = sky.sky_material as ShaderMaterial
 	if material == null:
 		material = ShaderMaterial.new()
 		material.shader = SKY_SHADER
-	else:
-		material = material.duplicate(true)
-	sky.sky_material = material
+		sky.sky_material = material
 	return material
 
 func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
@@ -244,6 +255,20 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 		profile["sun_energy"] = float(profile["sun_energy"]) * 1.08
 		profile["fog_density"] = float(profile["fog_density"]) * 1.08
 	return profile
+
+func _scatter_profile_for(atmosphere_name: String) -> Dictionary:
+	var profiles := {
+		"BlastedRadiance":   {"rayleigh_strength": 0.6, "mie_strength": 1.4, "atmosphere_density": 1.4, "mie_g": 0.85, "aurora_intensity_max": 0.0},
+		"HarshAmberHaze":    {"rayleigh_strength": 0.8, "mie_strength": 1.2, "atmosphere_density": 1.2, "mie_g": 0.80, "aurora_intensity_max": 0.0},
+		"DryTwilight":       {"rayleigh_strength": 1.0, "mie_strength": 0.9, "atmosphere_density": 0.9, "mie_g": 0.72, "aurora_intensity_max": 0.0},
+		"TemperateTwilight": {"rayleigh_strength": 1.1, "mie_strength": 1.0, "atmosphere_density": 1.0, "mie_g": 0.70, "aurora_intensity_max": 0.05},
+		"WetTwilight":       {"rayleigh_strength": 1.3, "mie_strength": 1.1, "atmosphere_density": 1.2, "mie_g": 0.62, "aurora_intensity_max": 0.1},
+		"FrostTwilight":     {"rayleigh_strength": 1.2, "mie_strength": 0.8, "atmosphere_density": 1.1, "mie_g": 0.60, "aurora_intensity_max": 0.3},
+		"PolarGlow":         {"rayleigh_strength": 1.0, "mie_strength": 0.6, "atmosphere_density": 0.9, "mie_g": 0.58, "aurora_intensity_max": 0.6},
+		"BlackIceDark":      {"rayleigh_strength": 0.7, "mie_strength": 0.5, "atmosphere_density": 0.8, "mie_g": 0.55, "aurora_intensity_max": 0.85},
+		"GeothermalNight":   {"rayleigh_strength": 0.6, "mie_strength": 0.9, "atmosphere_density": 1.0, "mie_g": 0.65, "aurora_intensity_max": 0.5},
+	}
+	return profiles.get(atmosphere_name, {"rayleigh_strength": 1.0, "mie_strength": 1.0, "atmosphere_density": 1.0, "mie_g": 0.70, "aurora_intensity_max": 0.0})
 
 func _enum_name(value, fallback: String) -> String:
 	if value is Dictionary:

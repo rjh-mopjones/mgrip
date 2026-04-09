@@ -1,35 +1,82 @@
 shader_type sky;
 render_mode disable_fog;
 
-uniform vec3 zenith_color : source_color = vec3(0.015, 0.005, 0.028);
-uniform vec3 upper_color : source_color = vec3(0.120, 0.025, 0.040);
-uniform vec3 horizon_color : source_color = vec3(0.620, 0.180, 0.080);
-uniform vec3 haze_color : source_color = vec3(0.980, 0.420, 0.140);
-uniform float horizon_height = -0.08;
-uniform float horizon_softness = 0.30;
-uniform float sun_disc_size = 0.045;
-uniform float sun_glow_size = 0.22;
+// Scattering coefficients — no source_color hint, these are physical coefficients not colours.
+// B > G > R so blue light is stripped from the sun path faster than red at low sun angles,
+// producing horizon reddening. Margin's atmosphere is alien — tune these for the world.
+uniform vec3 scatter_coeffs = vec3(0.5, 1.2, 2.8);
+uniform float rayleigh_strength = 1.0;
+uniform float mie_strength = 1.0;
+uniform float atmosphere_density = 1.0;
+uniform vec3 mie_colour : source_color = vec3(0.98, 0.62, 0.28);
+uniform float mie_g = 0.76; // Henyey-Greenstein: ~0.85 tight corona, ~0.55 diffuse haze
+
+// Nightside — Phase 2 uniforms, wired now so Phase 2 only needs to set values
+uniform float night_blend = 0.0;
+uniform float aurora_intensity = 0.0;
+uniform vec3 aurora_colour_a : source_color = vec3(0.10, 0.90, 0.30); // oxygen green
+uniform vec3 aurora_colour_b : source_color = vec3(0.72, 0.14, 0.86); // high-altitude purple
+uniform vec3 ground_glow_colour : source_color = vec3(0.08, 0.04, 0.06);
+uniform float ground_glow_intensity = 0.4;
+
+// Scale constants — named so they can be tuned without hunting for magic numbers
+const float RAYLEIGH_SCALE   = 0.01;  // optical depth scale for sun transmittance
+const float RAYLEIGH_SCATTER = 0.02;  // sky dome scatter brightness
+const float MIE_SCATTER      = 0.008; // sun halo brightness
+
+float rayleigh_phase(float cos_theta) {
+	return 0.75 * (1.0 + cos_theta * cos_theta);
+}
+
+float mie_phase(float cos_theta, float g) {
+	float g2 = g * g;
+	// Clamp denominator to avoid divide-by-zero at exact g=1
+	return (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * cos_theta, 0.0001), 1.5);
+}
 
 void sky() {
-	float up = clamp(EYEDIR.y * 0.5 + 0.5, 0.0, 1.0);
-	float horizon = smoothstep(horizon_height - horizon_softness, horizon_height + horizon_softness, EYEDIR.y);
-	vec3 sky_col = mix(horizon_color, upper_color, pow(horizon, 0.75));
-	sky_col = mix(sky_col, zenith_color, pow(up, 1.8));
-	float below_horizon = 1.0 - smoothstep(-0.30, 0.06, EYEDIR.y);
-	vec3 ground_col = mix(vec3(0.03, 0.01, 0.02), horizon_color * 0.32, smoothstep(-0.30, 0.0, EYEDIR.y));
-	sky_col = mix(sky_col, ground_col, below_horizon * 0.85);
+	// In Godot sky shaders, LIGHT0_DIRECTION is the direction light travels (source -> scene).
+	// Negate it to get the direction from the scene toward the sun.
+	vec3 sun_dir  = -LIGHT0_DIRECTION;
+	float sun_elev = dot(sun_dir, vec3(0.0, 1.0, 0.0)); // 0.0 = horizon, 1.0 = overhead
+	float cos_theta = dot(EYEDIR, sun_dir);
 
-	if (LIGHT0_ENABLED) {
-		vec3 sun_dir = normalize(-LIGHT0_DIRECTION);
-		float sun_dot = max(dot(EYEDIR, sun_dir), 0.0);
-		float disc = smoothstep(cos(sun_disc_size), cos(sun_disc_size * 0.35), sun_dot);
-		float glow = pow(sun_dot, 1.0 / max(sun_glow_size, 0.001));
-		vec3 glow_col = haze_color * (0.55 + 0.45 * LIGHT0_COLOR);
-		sky_col += glow_col * glow * 0.35;
-		sky_col += vec3(1.0, 0.52, 0.18) * disc * 1.4;
+	// Two separate optical depth paths — this is the mechanism that produces terminus reddening.
+	// When sun_elev is near 0 (sun on horizon), sun_optical is large, exp(-sun_optical * beta_r)
+	// strips blue wavelengths far more than red, reddening the sunlight before it scatters.
+	float view_optical = atmosphere_density / max(EYEDIR.y + 0.12, 0.04);
+	float sun_optical  = atmosphere_density / max(sun_elev  + 0.12, 0.04);
+
+	vec3 beta_r = scatter_coeffs * rayleigh_strength;
+
+	// Wavelength-dependent transmittance along the sun's atmospheric path
+	vec3 sun_transmit = exp(-sun_optical * beta_r * RAYLEIGH_SCALE);
+
+	float r_phase = rayleigh_phase(cos_theta);
+	float m_phase = mie_phase(cos_theta, mie_g);
+
+	// Sky dome colour from Rayleigh-scattered sunlight
+	vec3 sky_col = r_phase * beta_r * sun_transmit * view_optical * RAYLEIGH_SCATTER;
+
+	// Mie haze — glow and corona around the sun direction
+	sky_col += m_phase * mie_strength * mie_colour * sun_transmit * view_optical * MIE_SCATTER;
+
+	// Sun disc — only renders when sun is above the horizon
+	if (LIGHT0_ENABLED && sun_elev > -0.04) {
+		float angle_to_sun = acos(clamp(cos_theta, -1.0, 1.0));
+		float disc_size = max(LIGHT0_SIZE, 0.035); // fallback if angular_distance not set on light
+		float disc = 1.0 - smoothstep(disc_size * 0.35, disc_size, angle_to_sun);
+		sky_col += LIGHT0_COLOR * disc * 1.4 * sun_transmit;
 	}
 
-	float low_haze = 1.0 - smoothstep(0.02, 0.50, up);
-	sky_col = mix(sky_col, haze_color, low_haze * 0.18);
+	// Night blend — applied to the full dome so the nightside is dark from all angles.
+	// Ground glow is applied after so it shows through regardless.
+	vec3 night_sky = vec3(0.004, 0.002, 0.010);
+	sky_col = mix(sky_col, night_sky, night_blend);
+
+	// Ground glow — applied last so it is never overridden by night_blend
+	float below = 1.0 - smoothstep(-0.25, 0.0, EYEDIR.y);
+	sky_col = mix(sky_col, ground_glow_colour * ground_glow_intensity, below * 0.9);
+
 	COLOR = sky_col;
 }
