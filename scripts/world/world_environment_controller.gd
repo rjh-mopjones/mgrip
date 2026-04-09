@@ -48,6 +48,7 @@ func apply_runtime_presentation(runtime_presentation: Dictionary) -> void:
 	if _sun != null:
 		_sun.light_color = profile["sun_color"]
 		_sun.light_energy = float(profile["sun_energy"])
+		_sun.shadow_color = profile["shadow_color"]
 
 func apply_sun_direction(light_level: float) -> void:
 	if _sun == null:
@@ -90,6 +91,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 		"fog_density": 0.00018,
 		"sun_color": Color(0.98, 0.74, 0.52),
 		"sun_energy": 1.05,
+		"shadow_color": Color(0.16, 0.08, 0.08),
 		"horizon_height": -0.08,
 		"horizon_softness": 0.30,
 		"sun_disc_size": 0.045,
@@ -108,6 +110,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00022,
 				"sun_color": Color(1.00, 0.72, 0.40),
 				"sun_energy": 1.30,
+				"shadow_color": Color(0.28, 0.10, 0.03),
 				"horizon_height": -0.10,
 				"horizon_softness": 0.24,
 				"sun_disc_size": 0.050,
@@ -125,6 +128,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00020,
 				"sun_color": Color(0.99, 0.73, 0.49),
 				"sun_energy": 1.16,
+				"shadow_color": Color(0.22, 0.09, 0.04),
 				"horizon_height": -0.08,
 				"horizon_softness": 0.27,
 				"sun_disc_size": 0.046,
@@ -142,6 +146,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00016,
 				"sun_color": Color(0.95, 0.70, 0.56),
 				"sun_energy": 0.92,
+				"shadow_color": Color(0.16, 0.07, 0.08),
 				"horizon_height": -0.06,
 				"horizon_softness": 0.34,
 				"sun_disc_size": 0.040,
@@ -159,6 +164,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00018,
 				"sun_color": Color(0.86, 0.68, 0.66),
 				"sun_energy": 0.86,
+				"shadow_color": Color(0.10, 0.07, 0.12),
 				"horizon_height": -0.05,
 				"horizon_softness": 0.36,
 				"sun_disc_size": 0.038,
@@ -176,6 +182,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00024,
 				"sun_color": Color(0.86, 0.67, 0.64),
 				"sun_energy": 0.82,
+				"shadow_color": Color(0.08, 0.07, 0.14),
 				"horizon_height": -0.04,
 				"horizon_softness": 0.38,
 				"sun_disc_size": 0.038,
@@ -193,6 +200,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00020,
 				"sun_color": Color(0.82, 0.86, 0.96),
 				"sun_energy": 0.72,
+				"shadow_color": Color(0.06, 0.07, 0.18),
 				"horizon_height": -0.03,
 				"horizon_softness": 0.40,
 				"sun_disc_size": 0.036,
@@ -210,6 +218,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00018,
 				"sun_color": Color(0.62, 0.78, 0.92),
 				"sun_energy": 0.42,
+				"shadow_color": Color(0.04, 0.06, 0.20),
 				"horizon_height": -0.02,
 				"horizon_softness": 0.42,
 				"sun_disc_size": 0.032,
@@ -227,6 +236,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00014,
 				"sun_color": Color(0.36, 0.48, 0.62),
 				"sun_energy": 0.20,
+				"shadow_color": Color(0.02, 0.04, 0.16),
 				"horizon_height": -0.01,
 				"horizon_softness": 0.45,
 				"sun_disc_size": 0.028,
@@ -244,6 +254,7 @@ func _profile_for(atmosphere_name: String, zone_name: String) -> Dictionary:
 				"fog_density": 0.00018,
 				"sun_color": Color(0.86, 0.42, 0.20),
 				"sun_energy": 0.34,
+				"shadow_color": Color(0.18, 0.05, 0.03),
 				"horizon_height": -0.03,
 				"horizon_softness": 0.38,
 				"sun_disc_size": 0.034,
