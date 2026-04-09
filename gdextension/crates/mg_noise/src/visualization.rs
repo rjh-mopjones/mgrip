@@ -112,12 +112,40 @@ pub fn temperature_to_rgba(temp: f64) -> [u8; 4] {
 
 pub fn humidity_to_rgba(v: f64) -> [u8; 4] {
     let t = v.clamp(0.0, 1.0);
-    [
-        (40.0 * (1.0 - t)) as u8,
-        (100.0 * t) as u8,
-        (200.0 * t + 55.0 * (1.0 - t)) as u8,
-        255,
-    ]
+    // Brown(arid) → tan → green(moderate) → teal → blue(saturated)
+    if t < 0.25 {
+        let s = t / 0.25;
+        [
+            (100.0 + 60.0 * s) as u8,
+            (60.0 + 80.0 * s) as u8,
+            (30.0 + 30.0 * s) as u8,
+            255,
+        ]
+    } else if t < 0.5 {
+        let s = (t - 0.25) / 0.25;
+        [
+            (160.0 - 100.0 * s) as u8,
+            (140.0 - 10.0 * s) as u8,
+            (60.0 + 20.0 * s) as u8,
+            255,
+        ]
+    } else if t < 0.75 {
+        let s = (t - 0.5) / 0.25;
+        [
+            (60.0 - 40.0 * s) as u8,
+            (130.0 + 20.0 * s) as u8,
+            (80.0 + 80.0 * s) as u8,
+            255,
+        ]
+    } else {
+        let s = (t - 0.75) / 0.25;
+        [
+            (20.0 - 10.0 * s) as u8,
+            (150.0 - 50.0 * s) as u8,
+            (160.0 + 60.0 * s) as u8,
+            255,
+        ]
+    }
 }
 
 pub fn tectonic_to_rgba(v: f64) -> [u8; 4] {

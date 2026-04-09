@@ -65,20 +65,20 @@ impl HumidityStrategy {
     ) -> f64 {
         let base_noise = (self.fbm(x, y, detail_level) + 1.0) * 0.5;
 
-        // Gaussian peak at terminator (light ≈ 0.2, width 0.22)
-        let terminator_peak = (-(light_level - 0.2).powi(2) / (2.0 * 0.22 * 0.22)).exp();
+        // Gaussian peak at terminator (light ≈ 0.2, σ = 0.16 for a visible ring)
+        let terminator_peak = (-(light_level - 0.2).powi(2) / (2.0 * 0.16 * 0.16)).exp();
 
-        // Day-side drying (quadratic for light > 0.4)
-        let day_drying = if light_level > 0.4 {
-            let t = (light_level - 0.4) / 0.6;
-            1.0 - t * t * 0.8
+        // Day-side drying (quadratic for light > 0.3, up to 90% reduction)
+        let day_drying = if light_level > 0.3 {
+            let t = (light_level - 0.3) / 0.7;
+            1.0 - t * t * 0.9
         } else {
             1.0
         };
 
-        // Night-side cold trap (light < 0.15)
-        let night_trap = if light_level < 0.15 {
-            0.15 + (light_level / 0.15) * 0.85
+        // Night-side cold trap (light < 0.1)
+        let night_trap = if light_level < 0.1 {
+            light_level / 0.1
         } else {
             1.0
         };
@@ -95,8 +95,8 @@ impl HumidityStrategy {
         };
 
         let atmospheric = terminator_peak * day_drying * night_trap;
-        let scaled_moisture = moisture_source * (0.3 + terminator_peak * 0.7);
-        (base_noise * 0.2 + scaled_moisture * 0.3 + atmospheric * 0.5).clamp(0.0, 1.0)
+        let scaled_moisture = moisture_source * (0.4 + terminator_peak * 0.6);
+        (base_noise * 0.06 + scaled_moisture * 0.24 + atmospheric * 0.70).clamp(0.0, 1.0)
     }
 }
 

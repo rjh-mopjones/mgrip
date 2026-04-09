@@ -354,8 +354,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "#;
 
 /// Terminator-ring humidity model (tidally locked planet).
-/// Reads continentalness; computes light_level inline (no scatter, saves a round-trip).
-/// Gaussian peak at light≈0.2, day-side drying, night-side cold trap.
+/// Reads continentalness; computes light_level inline with domain warp matching CPU.
+/// Gaussian peak at light≈0.2 (σ=0.12), day-side drying, night-side cold trap.
 const HUMIDITY_MAIN: &str = r#"
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -365,20 +365,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let wy = params.world_y + f32(gid.y) * params.scale;
     let cont = continentalness[idx];
 
-    // Light level (simplified — no scatter for GPU efficiency)
+    // Light level with domain warp (matching CPU and LIGHT_LEVEL_MAIN)
     let map_width = params.world_height * 2.0;
-    var raw_dx = wx / map_width - 0.5;
-    if (raw_dx >  0.5) { raw_dx -= 1.0; }
-    if (raw_dx < -0.5) { raw_dx += 1.0; }
-    let dy = wy / params.world_height - 1.0;
+    let nx = wx / map_width;
+    let ny = wy / params.world_height;
+    let warp1_x = open_simplex_2d(wx * 0.0015,         wy * 0.0015 + 50.0)  * 0.12;
+    let warp1_y = open_simplex_2d(wx * 0.0015 + 150.0,  wy * 0.0015)         * 0.12;
+    let warp2_x = open_simplex_2d(wx * 0.005,           wy * 0.005 + 100.0)  * 0.06;
+    let warp2_y = open_simplex_2d(wx * 0.005 + 200.0,   wy * 0.005)          * 0.06;
+    var raw_dx = nx - 0.5 + warp1_x + warp2_x;
+    if (raw_dx >  0.5) { raw_dx = raw_dx - 1.0; }
+    if (raw_dx < -0.5) { raw_dx = raw_dx + 1.0; }
+    let dy = ny - 1.0 + warp1_y + warp2_y;
     let dist = min(sqrt(raw_dx * raw_dx + dy * dy), 1.0);
-    let far  = max((dist - 0.5) / 0.5, 0.0);
-    let light = clamp(pow(cos(dist * 1.5707963), 1.0 + 1.5 * far * far), 0.0, 1.0);
+    let far_dist = max((dist - 0.5) / 0.5, 0.0);
+    let darkening = 1.0 + 1.5 * far_dist * far_dist;
+    let base_light = pow(cos(dist * 1.5707963), darkening);
+    let scatter = fbm(wx * 0.005, wy * 0.005, 3u, 1.0, 0.5, 2.0) * 0.05;
+    let light = clamp(base_light + scatter, 0.0, 1.0);
 
     // Terminator humidity model (matching CPU generate_terminator_model)
-    let terminator_peak = exp(-(light - 0.2) * (light - 0.2) / (2.0 * 0.22 * 0.22));
-    let day_drying = select(1.0, 1.0 - pow((light - 0.4) / 0.6, 2.0) * 0.8, light > 0.4);
-    let night_trap = select(0.15 + (light / 0.15) * 0.85, 1.0, light >= 0.15);
+    let terminator_peak = exp(-(light - 0.2) * (light - 0.2) / (2.0 * 0.16 * 0.16));
+    let day_drying = select(1.0, 1.0 - pow((light - 0.3) / 0.7, 2.0) * 0.9, light > 0.3);
+    let night_trap = select(light / 0.1, 1.0, light >= 0.1);
 
     var moisture_source = 0.0;
     let sea_level = -0.01;
@@ -394,7 +403,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let base_noise = (fbm(wx * 0.003, wy * 0.003, params.octaves, params.frequency, params.persistence, params.lacunarity) + 1.0) * 0.5;
     let atmospheric = terminator_peak * day_drying * night_trap;
-    let scaled_moisture = moisture_source * (0.3 + terminator_peak * 0.7);
-    output[idx] = clamp(base_noise * 0.2 + scaled_moisture * 0.3 + atmospheric * 0.5, 0.0, 1.0);
+    let scaled_moisture = moisture_source * (0.4 + terminator_peak * 0.6);
+    output[idx] = clamp(base_noise * 0.06 + scaled_moisture * 0.24 + atmospheric * 0.70, 0.0, 1.0);
 }
 "#;

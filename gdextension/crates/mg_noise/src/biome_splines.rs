@@ -39,13 +39,13 @@ pub enum MoistureClass {
 
 impl MoistureClass {
     pub fn from_humidity(h: f64) -> Self {
-        if h < 0.2 {
+        if h < 0.15 {
             Self::Arid
-        } else if h < 0.4 {
+        } else if h < 0.30 {
             Self::Dry
-        } else if h < 0.6 {
+        } else if h < 0.50 {
             Self::Moderate
-        } else if h < 0.8 {
+        } else if h < 0.70 {
             Self::Humid
         } else {
             Self::Saturated
