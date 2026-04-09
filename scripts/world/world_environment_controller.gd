@@ -51,7 +51,6 @@ func apply_runtime_presentation(runtime_presentation: Dictionary) -> void:
 	if _sun != null:
 		_sun.light_color = profile["sun_color"]
 		_sun.light_energy = float(profile["sun_energy"])
-		_sun.shadow_color = profile["shadow_color"]
 
 func apply_sun_direction(light_level: float) -> void:
 	if _sun == null:
