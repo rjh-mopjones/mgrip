@@ -8,16 +8,51 @@ mod mesh;
 
 use godot::prelude::*;
 use mg_noise::{
-    AtmosphereClass, BiomeMap, LandformClass, PlanetZone, RuntimeChunkPresentation,
+    AtmosphereClass, BiomeMap, LandformClass, MacroOceanMask, PlanetZone, RuntimeChunkPresentation,
     RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids, SurfacePaletteClass,
     SurfaceWaterState, SEA_LEVEL,
 };
 use rayon::spawn;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::time::Instant;
+
+static MACRO_OCEAN_MASK: OnceLock<Option<MacroOceanMask>> = OnceLock::new();
+
+fn get_macro_ocean_mask() -> Option<&'static MacroOceanMask> {
+    MACRO_OCEAN_MASK
+        .get_or_init(|| {
+            let store = mg_artifacts::ArtifactStore::new().ok()?;
+            let (path, ww, wh) = newest_biome_png(&store)?;
+            MacroOceanMask::load(&path, ww, wh)
+                .map_err(|e| eprintln!("[mg] macro ocean mask load failed: {e}"))
+                .ok()
+        })
+        .as_ref()
+}
+
+fn newest_biome_png(
+    store: &mg_artifacts::ArtifactStore,
+) -> Option<(std::path::PathBuf, f64, f64)> {
+    let layers = store.list_layers().ok()?;
+    let mut best: Option<(std::path::PathBuf, std::time::SystemTime, f64, f64)> = None;
+    for (tag, manifest) in &layers {
+        let path = store.layer_image_path(tag, "biome.png");
+        if !path.exists() {
+            continue;
+        }
+        if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
+            let ww = manifest.world_width as f64;
+            let wh = manifest.world_height as f64;
+            if best.as_ref().map_or(true, |(_, t, _, _)| mtime > *t) {
+                best = Some((path, mtime, ww, wh));
+            }
+        }
+    }
+    best.map(|(p, _, ww, wh)| (p, ww, wh))
+}
 
 struct MarginsGripExtension;
 
@@ -435,7 +470,7 @@ impl MgTerrainGen {
         detail_level: i64,
         freq_scale: f64,
     ) -> Gd<MgBiomeMap> {
-        let map = BiomeMap::generate(
+        let mut map = BiomeMap::generate(
             seed as u32,
             world_x,
             world_y,
@@ -448,6 +483,9 @@ impl MgTerrainGen {
             false,
             freq_scale.max(0.1),
         );
+        if let Some(mask) = get_macro_ocean_mask() {
+            map.apply_macro_ocean_mask(mask, world_x, world_y, 1.0, 1.0);
+        }
         biome_map_from_arc(Arc::new(map))
     }
 
@@ -541,7 +579,7 @@ impl MgChunkBuildJob {
 
         spawn(move || {
             let generation_start = Instant::now();
-            let map = Arc::new(BiomeMap::generate(
+            let mut map = BiomeMap::generate(
                 seed as u32,
                 world_x,
                 world_y,
@@ -553,7 +591,11 @@ impl MgChunkBuildJob {
                 false,
                 false,
                 freq_scale.max(0.1),
-            ));
+            );
+            if let Some(mask) = get_macro_ocean_mask() {
+                map.apply_macro_ocean_mask(mask, world_x, world_y, 1.0, 1.0);
+            }
+            let map = Arc::new(map);
             let generation_ms = generation_start.elapsed().as_secs_f64() * 1000.0;
 
             let mesh_start = Instant::now();

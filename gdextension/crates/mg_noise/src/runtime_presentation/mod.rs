@@ -613,7 +613,7 @@ mod tests {
             AtmosphereClass::HarshAmberHaze
         );
         assert_eq!(dayside_margin.water_state, SurfaceWaterState::None);
-        assert_eq!(dayside_margin.landform_class, LandformClass::FlatPlain);
+        assert_eq!(dayside_margin.landform_class, LandformClass::DuneWaste);
         assert_eq!(
             dayside_margin.surface_palette_class,
             SurfacePaletteClass::ScorchedStone
@@ -624,7 +624,7 @@ mod tests {
         assert_eq!(inferno.planet_zone, PlanetZone::SubstellarInferno);
         assert_eq!(inferno.atmosphere_class, AtmosphereClass::BlastedRadiance);
         assert_eq!(inferno.water_state, SurfaceWaterState::EvaporiteBasin);
-        assert_eq!(inferno.landform_class, LandformClass::Basin);
+        assert_eq!(inferno.landform_class, LandformClass::CoastShelf);
         assert_eq!(
             inferno.surface_palette_class,
             SurfacePaletteClass::ScorchedStone

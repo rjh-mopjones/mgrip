@@ -109,7 +109,7 @@ func _handle_input_event(event: InputEvent) -> void:
 			elif not mouse_button.pressed and _dragging:
 				if _dragging and not _drag_moved and _drag_started_on_chunk.x >= 0:
 					if _compare_mode:
-						_open_compare_view(_drag_started_on_chunk)
+						_open_compare_view(_snap_to_meso(_drag_started_on_chunk))
 					else:
 						_set_selected_chunk(_drag_started_on_chunk)
 				_dragging = false

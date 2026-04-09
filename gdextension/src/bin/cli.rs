@@ -720,26 +720,9 @@ fn run_inspect_chunk_presentation(
 // ─── compare scale ───────────────────────────────────────────────────────────
 
 /// Returns true for any ocean biome pixel sampled from biome.png.
-/// Mirrors _pixel_is_ocean in compare_generation_view.gd exactly.
-///
-/// Blue-dominant biomes (Sea, ShallowSea, ContinentalShelf, DeepOcean, OceanTrench)
-/// are caught by the channel ratio check.  CoralReef[200,100,120] and OceanRidge[120,80,60]
-/// need exact matching because they are not blue-dominant.
+/// Delegates to `mg_noise::pixel_is_ocean_rgb` so the logic stays in one place.
 fn pixel_is_ocean_biome_png(r: u8, g: u8, b: u8) -> bool {
-    let rf = r as f64 / 255.0;
-    let bf = b as f64 / 255.0;
-    if bf - rf > 0.25 && bf > 0.35 {
-        return true;
-    }
-    // CoralReef: rgb(200, 100, 120)
-    if r == 200 && g == 100 && b == 120 {
-        return true;
-    }
-    // OceanRidge: rgb(120, 80, 60)
-    if r == 120 && g == 80 && b == 60 {
-        return true;
-    }
-    false
+    mg_noise::pixel_is_ocean_rgb(r, g, b)
 }
 
 /// Discover the newest biome.png across all layers artifacts, mirroring the logic in
@@ -859,6 +842,12 @@ fn run_compare_scale(
         });
     println!("  macro.png  (biome.png crop)");
 
+    // Build macro ocean mask from the already-loaded biome image so the CLI
+    // applies the same override as the in-game generate_chunk_lod path.
+    let macro_ocean_mask = mg_noise::MacroOceanMask::load(&biome_png_path, world_w, world_h)
+        .map_err(|e| eprintln!("[compare-scale] macro ocean mask: {e}"))
+        .ok();
+
     // ── Micro grid: NxN individual chunks at freq_scale=8.0, LOD2 ────────────
     let pb = spinner(&format!("Generating {n}×{n} micro chunks…"));
     let mut micro_rgba = vec![0u8; img_w * img_h * 4];
@@ -871,11 +860,14 @@ fn run_compare_scale(
             let cx = world_x + gx as f64;
             let cy = world_y + gy as f64;
 
-            let micro = BiomeMap::generate(
+            let mut micro = BiomeMap::generate(
                 seed, cx, cy, 1.0, 1.0,
                 MICRO_RES, MICRO_RES,
                 0, false, false, MICRO_FREQUENCY_SCALE,
             );
+            if let Some(ref mask) = macro_ocean_mask {
+                micro.apply_macro_ocean_mask(mask, cx, cy, 1.0, 1.0);
+            }
 
             let mc = MICRO_RES / 2;
             let micro_ocean = micro.is_ocean(mc, mc);

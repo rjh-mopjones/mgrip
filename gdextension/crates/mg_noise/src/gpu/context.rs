@@ -37,7 +37,13 @@ impl GpuNoiseContext {
     /// Get (or lazily initialise) the global GPU context. Returns `None` if no GPU.
     pub fn global() -> Option<&'static GpuNoiseContext> {
         GPU_CONTEXT
-            .get_or_init(|| pollster::block_on(Self::new()).ok())
+            .get_or_init(|| {
+                let result = pollster::block_on(Self::new());
+                if let Err(ref e) = result {
+                    eprintln!("[mg_noise] GPU init failed: {e}");
+                }
+                result.ok()
+            })
             .as_ref()
     }
 

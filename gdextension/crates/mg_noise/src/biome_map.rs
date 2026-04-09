@@ -35,6 +35,56 @@ pub fn tile_has_fluid_surface(tile: TileType) -> bool {
     )
 }
 
+/// Identifies ocean pixels from biome.png RGB values.
+/// Mirrors `_pixel_is_ocean` in `compare_generation_view.gd` exactly.
+pub fn pixel_is_ocean_rgb(r: u8, g: u8, b: u8) -> bool {
+    let rf = r as f64 / 255.0;
+    let bf = b as f64 / 255.0;
+    // Blue-dominant biomes: Sea, ShallowSea, ContinentalShelf, DeepOcean, OceanTrench
+    if bf - rf > 0.25 && bf > 0.35 {
+        return true;
+    }
+    // CoralReef: rgb(200, 100, 120)  /  OceanRidge: rgb(120, 80, 60)
+    (r == 200 && g == 100 && b == 120) || (r == 120 && g == 80 && b == 60)
+}
+
+/// Ocean mask derived from biome.png — authoritative ocean/land from the macro pipeline.
+///
+/// The macro pipeline runs 120-iteration erosion and classifies biomes at world scale.
+/// Where its classification differs from the runtime micro pipeline (e.g. dayside cells
+/// that the splines demote to SaltFlat despite negative continentalness), this mask
+/// overrides the runtime result.
+pub struct MacroOceanMask {
+    pixels: Vec<bool>,
+    width: usize,
+    height: usize,
+    world_width: f64,
+    world_height: f64,
+}
+
+impl MacroOceanMask {
+    /// Load from a biome.png file produced by `BiomeMap::save_layer_png(NoiseLayer::Biome, ...)`.
+    pub fn load(path: &std::path::Path, world_width: f64, world_height: f64) -> Result<Self, String> {
+        let img = image::open(path)
+            .map_err(|e| format!("failed to load {}: {e}", path.display()))?
+            .into_rgb8();
+        let width = img.width() as usize;
+        let height = img.height() as usize;
+        let pixels = img.pixels().map(|p| pixel_is_ocean_rgb(p[0], p[1], p[2])).collect();
+        Ok(Self { pixels, width, height, world_width, world_height })
+    }
+
+    /// Returns true if the world position maps to an ocean pixel in biome.png.
+    pub fn is_ocean_at_world(&self, wx: f64, wy: f64) -> bool {
+        if self.width == 0 || self.height == 0 {
+            return false;
+        }
+        let px = ((wx / self.world_width * self.width as f64) as usize).min(self.width - 1);
+        let py = ((wy / self.world_height * self.height as f64) as usize).min(self.height - 1);
+        self.pixels.get(py * self.width + px).copied().unwrap_or(false)
+    }
+}
+
 /// Seed offsets per base layer (additive from world_seed).
 const SEED_CONTINENTALNESS: u32 = 0;
 const SEED_TECTONIC: u32 = 1;
@@ -216,15 +266,14 @@ impl BiomeMap {
             })
             .collect();
 
-        // Three-way dispatch:
-        //   GPU macro  (freq_scale == 1.0, GPU available) — GPU supplies all layers at
-        //     world scale; original macro behaviour unchanged.
-        //   GPU micro  (freq_scale != 1.0, GPU available) — GPU supplies Tier 1 identity
-        //     layers (continentalness, light_level) at true world scale so ocean/land and
-        //     zone classification match the macro image. CPU supplies Tier 2 detail layers
-        //     (peaks_valleys, rock_hardness, humidity) at scaled coords to preserve
-        //     within-chunk terrain variety.
-        //   CPU fallback (no GPU) — Tier 1 uses world-anchored coords; Tier 2 uses scaled.
+        // Two-way dispatch:
+        //   GPU (available) — all layers from GPU at true world coords. Biome classification
+        //     (ocean/land boundary, zone, palette) is therefore identical to biome.png for
+        //     any freq_scale. Micro-scale terrain variety comes from derive_micro_heightmap
+        //     at detail_level >= 2, not from scaled noise layers.
+        //   CPU fallback (no GPU) — all layers from CPU at true world coords (wx, wy).
+        //     freq_scale is intentionally ignored here; the scaled coords were causing
+        //     coast_perturb to flip shallow-ocean cells to land.
         let scale = sample_world_step(world_size_x, tile_w);
         let gpu_layers = GpuNoiseContext::global().map(|gpu| {
             gpu.generate_layers(
@@ -241,8 +290,8 @@ impl BiomeMap {
         });
 
         match gpu_layers {
-            Some(gpu) if freq_scale == 1.0 => {
-                // Macro/meso: GPU provides all layers at world scale (unchanged).
+            Some(gpu) => {
+                // GPU path — all layers at world scale regardless of freq_scale.
                 for (i, &(tect, plate_id)) in tect_data.iter().enumerate() {
                     map.continentalness[i] = gpu.continentalness[i];
                     map.tectonic[i] = tect;
@@ -257,57 +306,22 @@ impl BiomeMap {
                     map.tectonic_plate_ids[i] = plate_id;
                 }
             }
-            Some(gpu) => {
-                // Micro: GPU Tier 1 identity (continentalness, light_level) + CPU Tier 2
-                // detail (peaks_valleys, rock_hardness, humidity) at scaled coordinates.
-                let detail_data: Vec<(f64, f64, f64)> = pixels
-                    .par_iter()
-                    .enumerate()
-                    .map(|(i, &(_, wx, wy))| {
-                        let nwx = wx * freq_scale;
-                        let nwy = wy * freq_scale;
-                        let rock = rock_strat.generate(nwx, nwy, detail_level);
-                        let humid = humid_strat.generate_terminator_model(
-                            nwx,
-                            nwy,
-                            detail_level,
-                            gpu.continentalness[i],
-                            gpu.light_level[i],
-                        );
-                        let pv_base = pv_strat.generate(nwx, nwy, detail_level);
-                        (rock, humid, pv_base)
-                    })
-                    .collect();
-                for (i, (&(tect, plate_id), &(rock, humid, pv_base))) in
-                    tect_data.iter().zip(detail_data.iter()).enumerate()
-                {
-                    map.continentalness[i] = gpu.continentalness[i];
-                    map.tectonic[i] = tect;
-                    map.light_level[i] = gpu.light_level[i];
-                    map.rock_hardness[i] = rock;
-                    map.humidity[i] = humid;
-                    map.peaks_valleys[i] = derived::derive_peaks_valleys(pv_base, tect, rock);
-                    map.tectonic_plate_ids[i] = plate_id;
-                }
-            }
             None => {
-                // CPU fallback — Tier 1 world-anchored, Tier 2 scaled.
+                // CPU fallback — all layers at true world coords (wx, wy).
                 let base_data: Vec<(f64, f64, f64, f64, f64)> = pixels
                     .par_iter()
                     .map(|&(_, wx, wy)| {
-                        let nwx = wx * freq_scale;
-                        let nwy = wy * freq_scale;
                         let cont = cont_strat.generate(wx, wy, detail_level);
                         let light = light_strat.generate(wx, wy, detail_level);
-                        let rock = rock_strat.generate(nwx, nwy, detail_level);
+                        let rock = rock_strat.generate(wx, wy, detail_level);
                         let humid = humid_strat.generate_terminator_model(
-                            nwx,
-                            nwy,
+                            wx,
+                            wy,
                             detail_level,
                             cont,
                             light,
                         );
-                        let pv_base = pv_strat.generate(nwx, nwy, detail_level);
+                        let pv_base = pv_strat.generate(wx, wy, detail_level);
                         (cont, light, rock, humid, pv_base)
                     })
                     .collect();
@@ -457,6 +471,49 @@ impl BiomeMap {
         );
 
         map
+    }
+
+    /// Override biome classification for cells where the macro biome.png says ocean.
+    ///
+    /// The macro world map is authoritative for ocean placement. Where biome.png shows
+    /// ocean but the noise pipeline classified as land (e.g. dayside cells demoted to
+    /// SaltFlat by the temperature gate in `below_sea_biome`), this restores the correct
+    /// ocean biome. Call after `generate()`.
+    pub fn apply_macro_ocean_mask(
+        &mut self,
+        mask: &MacroOceanMask,
+        origin_x: f64,
+        origin_y: f64,
+        world_size_x: f64,
+        world_size_y: f64,
+    ) {
+        let tile_w = self.width;
+        let tile_h = self.height;
+        // Sample biome.png at the centre of each 1-world-unit cell, not at every
+        // runtime pixel. biome.png is only 4 px/wu — sampling at individual runtime
+        // pixel coords near a coastline can straddle two biome.png pixels and produce
+        // a jagged split-ocean-land result within a single chunk. Snapping to
+        // (floor + 0.5) gives the same result as the compare tool, which also samples
+        // the centre of each 1×1 chunk cell.
+        for i in 0..tile_w * tile_h {
+            let px = i % tile_w;
+            let py = i / tile_w;
+            let wx = sample_world_coord(origin_x, world_size_x, tile_w, px);
+            let wy = sample_world_coord(origin_y, world_size_y, tile_h, py);
+            let wx_center = wx.floor() + 0.5;
+            let wy_center = wy.floor() + 0.5;
+            if mask.is_ocean_at_world(wx_center, wy_center) && !tile_has_fluid_surface(self.biomes[i]) {
+                let depth = SEA_LEVEL - self.continentalness[i];
+                self.biomes[i] = if depth > 0.25 {
+                    TileType::DeepOcean
+                } else if depth > 0.10 {
+                    TileType::Sea
+                } else {
+                    TileType::ShallowSea
+                };
+                self.vegetation_density[i] = 0.0;
+            }
+        }
     }
 
     /// Quick accessor — returns heightmap value at pixel (x, y).
