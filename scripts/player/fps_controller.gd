@@ -15,6 +15,8 @@ const SWIM_VERTICAL_SPEED  := 5.0
 const SWIM_GRAVITY         := 5.0
 const SWIM_BUOYANCY        := 3.0
 
+const DOUBLE_TAP_WINDOW := 0.3  # seconds
+
 enum MoveState { WALKING, FLYING, SWIMMING }
 
 @onready var _head: Node3D = $Head
@@ -22,9 +24,11 @@ enum MoveState { WALKING, FLYING, SWIMMING }
 var _scripted_motion_enabled := false
 var _scripted_direction := Vector3.ZERO
 var _scripted_speed := SPEED
+var _scripted_fly_vertical := 0.0
 
 var _move_state: MoveState = MoveState.WALKING
 var _jumped := false
+var _last_jump_press_msec := 0
 
 func _ready() -> void:
 	if _is_passive_agent_runtime_window():
@@ -75,6 +79,7 @@ func is_scripted_motion_active() -> bool:
 func toggle_fly() -> void:
 	if _move_state == MoveState.FLYING:
 		_move_state = MoveState.WALKING
+		_scripted_fly_vertical = 0.0
 	else:
 		_move_state = MoveState.FLYING
 		velocity.y = 0.0
@@ -83,6 +88,7 @@ func clear_scripted_motion() -> void:
 	_scripted_motion_enabled = false
 	_scripted_direction = Vector3.ZERO
 	_scripted_speed = SPEED
+	_scripted_fly_vertical = 0.0
 	velocity.x = 0.0
 	velocity.z = 0.0
 
@@ -117,13 +123,21 @@ func _is_submerged() -> bool:
 		return false
 	return position.y < float(VoxelMeshBuilder.SEA_LEVEL_Y)
 
+func set_scripted_fly_vertical(value: float) -> void:
+	_scripted_fly_vertical = clampf(value, -1.0, 1.0)
+
 func _physics_process(delta: float) -> void:
 	if not _scripted_motion_enabled and Input.is_action_just_pressed("jump"):
-		if _move_state == MoveState.FLYING:
-			_move_state = MoveState.WALKING
-		elif _move_state == MoveState.WALKING and _jumped and not is_on_floor():
-			_move_state = MoveState.FLYING
-			velocity.y = 0.0
+		var now := Time.get_ticks_msec()
+		var is_double_tap := (now - _last_jump_press_msec) < int(DOUBLE_TAP_WINDOW * 1000)
+		_last_jump_press_msec = now
+		if is_double_tap:
+			if _move_state == MoveState.FLYING:
+				_move_state = MoveState.WALKING
+				_scripted_fly_vertical = 0.0
+			elif _move_state == MoveState.WALKING and not is_on_floor():
+				_move_state = MoveState.FLYING
+				velocity.y = 0.0
 
 	if _move_state != MoveState.FLYING:
 		if _is_submerged():
@@ -165,10 +179,13 @@ func _process_walking(delta: float) -> void:
 
 func _process_flying(_delta: float) -> void:
 	var vert := 0.0
-	if Input.is_action_pressed("jump"):
-		vert += 1.0
-	if Input.is_action_pressed("sprint"):
-		vert -= 1.0
+	if not is_zero_approx(_scripted_fly_vertical):
+		vert = _scripted_fly_vertical
+	elif not _scripted_motion_enabled:
+		if Input.is_action_pressed("jump"):
+			vert += 1.0
+		if Input.is_action_pressed("sprint"):
+			vert -= 1.0
 	velocity.y = vert * FLY_VERTICAL_SPEED
 
 	if _scripted_motion_enabled:

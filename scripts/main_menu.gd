@@ -5,6 +5,7 @@ const MAP_SELECTOR_SCENE_PATH := "res://scenes/map_selector.tscn"
 const WorldScript = preload("res://scripts/world/world.gd")
 const AGENT_RUNTIME_QUICK_LAUNCH_ARG := "--agent-runtime-quick-launch"
 const AGENT_RUNTIME_SMOKE_ARG := "--agent-runtime-smoke-test"
+const FLY_SWIM_SMOKE_ARG := "--fly-swim-smoke-test"
 const AGENT_RUNTIME_WORLD_ORIGIN_ENV := "MG_AGENT_RUNTIME_WORLD_ORIGIN"
 const AGENT_RUNTIME_WORLD_ORIGIN_ARG_PREFIX := "--agent-runtime-world-origin="
 
@@ -53,7 +54,7 @@ func _wants_agent_runtime_quick_launch() -> bool:
 	var args: Array = []
 	args.append_array(OS.get_cmdline_args())
 	args.append_array(OS.get_cmdline_user_args())
-	return AGENT_RUNTIME_QUICK_LAUNCH_ARG in args or AGENT_RUNTIME_SMOKE_ARG in args
+	return AGENT_RUNTIME_QUICK_LAUNCH_ARG in args or AGENT_RUNTIME_SMOKE_ARG in args or FLY_SWIM_SMOKE_ARG in args
 
 func _agent_runtime_world_origin_override():
 	var env_value := OS.get_environment(AGENT_RUNTIME_WORLD_ORIGIN_ENV).strip_edges()

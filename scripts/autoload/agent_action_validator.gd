@@ -47,6 +47,8 @@ func validate_action(action_name: String, params: Dictionary) -> Dictionary:
 			return {"ok": true, "action": {"name": normalized_name, "params": {}}}
 		"toggle_fly":
 			return {"ok": true, "action": {"name": normalized_name, "params": {}}}
+		"set_fly_vertical":
+			return _validate_set_fly_vertical(params)
 		"get_move_state":
 			return {"ok": true, "action": {"name": normalized_name, "params": {}}}
 		_:
@@ -242,6 +244,18 @@ func _validate_wait_for_player_settled(params: Dictionary) -> Dictionary:
 				"stable_duration_seconds": maxf(0.0, float(params.get("stable_duration_seconds", DEFAULT_SETTLE_STABLE_DURATION))),
 				"require_on_floor": bool(params.get("require_on_floor", true)),
 				"timeout_seconds": maxf(0.1, float(params.get("timeout_seconds", DEFAULT_WAIT_FOR_SETTLE_TIMEOUT))),
+			},
+		},
+	}
+
+func _validate_set_fly_vertical(params: Dictionary) -> Dictionary:
+	var vertical := float(params.get("vertical", 0.0))
+	return {
+		"ok": true,
+		"action": {
+			"name": "set_fly_vertical",
+			"params": {
+				"vertical": clampf(vertical, -1.0, 1.0),
 			},
 		},
 	}

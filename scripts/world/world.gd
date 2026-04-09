@@ -120,6 +120,7 @@ func _process(_delta: float) -> void:
 			_player.position,
 			current_chunk,
 			_chunk_streamer.active_counts_by_lod(),
+			_player.rotation.y,
 			{
 				"pending": _chunk_streamer.pending_count(),
 				"prewarm_target": _chunk_streamer.prewarm_target_chunk(),

@@ -323,6 +323,8 @@ func _begin_action(action: Dictionary) -> Dictionary:
 			return _begin_move_to_block(action)
 		"toggle_fly":
 			return _complete_immediately(_handle_toggle_fly())
+		"set_fly_vertical":
+			return _complete_immediately(_handle_set_fly_vertical(action))
 		"get_move_state":
 			return _complete_immediately(_handle_get_move_state())
 		_:
@@ -376,6 +378,16 @@ func _handle_toggle_fly() -> Dictionary:
 		return _result("rejected", "toggle_fly", {}, "no_player", "Player not available or missing toggle_fly method.", "")
 	_player.call("toggle_fly")
 	return _result("completed", "toggle_fly", {"move_state": _read_move_state_name()})
+
+func _handle_set_fly_vertical(action: Dictionary) -> Dictionary:
+	if _player == null or not _player.has_method("set_scripted_fly_vertical"):
+		return _result("rejected", "set_fly_vertical", {}, "no_player", "Player not available or missing set_scripted_fly_vertical method.", "")
+	var move_state := _read_move_state_name()
+	if move_state != "FLYING":
+		return _result("rejected", "set_fly_vertical", {}, "not_flying", "set_fly_vertical requires FLYING state, currently %s." % move_state, "Use toggle_fly first.")
+	var vertical := float(action.get("params", {}).get("vertical", 0.0))
+	_player.call("set_scripted_fly_vertical", vertical)
+	return _result("completed", "set_fly_vertical", {"vertical": vertical, "move_state": move_state})
 
 func _handle_get_move_state() -> Dictionary:
 	if _player == null:
@@ -750,7 +762,7 @@ func _resolve_enabled() -> bool:
 	elif not OS.has_feature("editor"):
 		return false
 	var cmdline_args := _all_cmdline_args()
-	if ENABLE_ARG in cmdline_args or SMOKE_ARG in cmdline_args:
+	if ENABLE_ARG in cmdline_args or SMOKE_ARG in cmdline_args or FLY_SWIM_SMOKE_ARG in cmdline_args:
 		return true
 	var env_value := OS.get_environment(ENABLE_ENV).to_lower()
 	return env_value == "1" or env_value == "true" or env_value == "yes"
@@ -1252,6 +1264,49 @@ func _execute_fly_swim_smoke_test() -> Dictionary:
 		})
 	print("  [fly-swim] Flight Y drift: %.2f (< 1.0) ✓" % fly_y_drift)
 
+	# ── Phase 3b: altitude gain (set_fly_vertical +1) ────────────────
+	var ascend_step := await run_step("set_fly_vertical", {"vertical": 1.0})
+	if not _step_succeeded(ascend_step):
+		return _with_session_cleanup(false, "set_fly_vertical_ascend", ascend_step)
+	var pre_ascend_y: float = _player.position.y
+	wait_step = await run_step("wait_seconds", {
+		"duration_seconds": 1.0,
+		"timeout_seconds": 2.0,
+	})
+	if not _step_succeeded(wait_step):
+		return _with_session_cleanup(false, "ascend_wait", wait_step)
+	var post_ascend_y: float = _player.position.y
+	var ascend_delta := post_ascend_y - pre_ascend_y
+	if ascend_delta < 5.0:
+		return _with_session_cleanup(false, "altitude_gain", wait_step, {
+			"pre_y": pre_ascend_y, "post_y": post_ascend_y, "delta": ascend_delta,
+			"reason": "Player gained only %.1f altitude (expected >= 5.0)" % ascend_delta,
+		})
+	print("  [fly-swim] Altitude gain: %.2f (>= 5.0) ✓" % ascend_delta)
+
+	# ── Phase 3c: altitude loss (set_fly_vertical -1) ────────────────
+	var descend_step := await run_step("set_fly_vertical", {"vertical": -1.0})
+	if not _step_succeeded(descend_step):
+		return _with_session_cleanup(false, "set_fly_vertical_descend", descend_step)
+	var pre_descend_y: float = _player.position.y
+	wait_step = await run_step("wait_seconds", {
+		"duration_seconds": 1.0,
+		"timeout_seconds": 2.0,
+	})
+	if not _step_succeeded(wait_step):
+		return _with_session_cleanup(false, "descend_wait", wait_step)
+	var post_descend_y: float = _player.position.y
+	var descend_delta := pre_descend_y - post_descend_y
+	if descend_delta < 5.0:
+		return _with_session_cleanup(false, "altitude_loss", wait_step, {
+			"pre_y": pre_descend_y, "post_y": post_descend_y, "delta": descend_delta,
+			"reason": "Player lost only %.1f altitude (expected >= 5.0)" % descend_delta,
+		})
+	print("  [fly-swim] Altitude loss: %.2f (>= 5.0) ✓" % descend_delta)
+
+	# Stop vertical movement before toggling fly off
+	await run_step("set_fly_vertical", {"vertical": 0.0})
+
 	# ── Phase 4: toggle fly off, verify back to WALKING ───────────────
 	fly_step = await run_step("toggle_fly", {})
 	if not _step_succeeded(fly_step):
@@ -1329,7 +1384,7 @@ func _execute_fly_swim_smoke_test() -> Dictionary:
 
 	return {
 		"ok": true,
-		"phases": ["initial_walking", "toggle_fly_on", "fly_no_gravity", "toggle_fly_off", "swim_test"],
+		"phases": ["initial_walking", "toggle_fly_on", "fly_no_gravity", "altitude_gain", "altitude_loss", "toggle_fly_off", "swim_test"],
 		"water_found": water_block.x >= 0,
 	}
 

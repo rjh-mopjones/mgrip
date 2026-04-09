@@ -82,10 +82,11 @@ func refresh(
 		player_pos: Vector3,
 		current_chunk: Vector2i,
 		active_counts: Dictionary = {},
+		player_yaw: float = 0.0,
 		stream_debug: Dictionary = {}) -> void:
 	_debug_lines = _build_debug_lines(stream_debug)
 	if _hud:
-		_hud.text = _coord_text(player_pos, current_chunk, active_counts)
+		_hud.text = _coord_text(player_pos, current_chunk, active_counts, player_yaw)
 	if not visible:
 		return
 	_layout(player_pos, current_chunk)
@@ -143,21 +144,28 @@ func _layout(player_pos: Vector3, current_chunk: Vector2i) -> void:
 	_map_label.position = _hint_label.position + Vector2(0.0, hint_height + 8.0)
 	_map_label.text = _mode_text(player_pos, current_chunk)
 
-func _coord_text(p: Vector3, current_chunk: Vector2i, active_counts: Dictionary) -> String:
+func _coord_text(p: Vector3, current_chunk: Vector2i, active_counts: Dictionary, player_yaw: float = 0.0) -> String:
 	var local_block := GenerationManager.scene_block_to_local_block(p.x, p.z)
 	var world_origin := GenerationManager.chunk_coord_to_world_origin(current_chunk)
 	var wx := world_origin.x + float(local_block.x) / float(GenerationManager.BLOCKS_PER_CHUNK)
 	var wz := world_origin.y + float(local_block.y) / float(GenerationManager.BLOCKS_PER_CHUNK)
-	return "Chunk (%d, %d)   Block (%d, %d)   Y: %d   Active %s   World (%.3f, %.3f)" % [
+	return "Chunk (%d, %d)   Block (%d, %d)   Y: %d   %s   Active %s   World (%.3f, %.3f)" % [
 		current_chunk.x,
 		current_chunk.y,
 		local_block.x,
 		local_block.y,
 		int(p.y),
+		_compass_label(player_yaw),
 		_format_active_counts(active_counts),
 		wx,
 		wz,
 	]
+
+static func _compass_label(yaw_rad: float) -> String:
+	var deg := fmod(rad_to_deg(yaw_rad) + 360.0, 360.0)
+	const DIRS: Array[String] = ["N", "NW", "W", "SW", "S", "SE", "E", "NE"]
+	var idx := int(round(deg / 45.0)) % 8
+	return "Facing %s" % DIRS[idx]
 
 func _build_debug_lines(stream_debug: Dictionary) -> PackedStringArray:
 	if stream_debug.is_empty():
