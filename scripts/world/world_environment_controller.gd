@@ -25,15 +25,18 @@ func apply_runtime_presentation(runtime_presentation: Dictionary) -> void:
 	var light_level: float = clamp(float(runtime_presentation.get("average_light_level", 0.0)), 0.0, 1.0)
 	apply_sun_direction(light_level)
 	var profile: Dictionary = _profile_for(atmosphere_name, zone_name)
-	_environment.ambient_light_color = profile["ambient_color"]
-	_environment.ambient_light_energy = float(profile["ambient_energy"])
 	_environment.fog_enabled = true
 	_environment.fog_light_color = profile["fog_color"]
 	_environment.fog_density = float(profile["fog_density"])
+	var scatter: Dictionary = _scatter_profile_for(atmosphere_name)
+	var night_blend: float = 1.0 - clamp(light_level * 2.5, 0.0, 1.0)
+	var aurora_intensity: float = float(scatter["aurora_intensity_max"]) * (1.0 - clamp(light_level * 3.0, 0.0, 1.0))
+	# Aurora ground reflection: blend aurora colour into ambient when aurora is active.
+	# Strength is modest (max ~0.12 energy boost) so it tints without washing out the terrain.
+	var aurora_weight: float = aurora_intensity * night_blend * 0.18
+	_environment.ambient_light_color = (profile["ambient_color"] as Color).lerp(scatter["aurora_colour_a"], aurora_weight * 0.6)
+	_environment.ambient_light_energy = float(profile["ambient_energy"]) + aurora_weight * 0.12
 	if _sky_material != null:
-		var scatter: Dictionary = _scatter_profile_for(atmosphere_name)
-		var night_blend: float = 1.0 - clamp(light_level * 2.5, 0.0, 1.0)
-		var aurora_intensity: float = float(scatter["aurora_intensity_max"]) * (1.0 - clamp(light_level * 3.0, 0.0, 1.0))
 		_sky_material.set_shader_parameter("scatter_coeffs", Vector3(0.5, 1.2, 2.8))
 		_sky_material.set_shader_parameter("rayleigh_strength", float(scatter["rayleigh_strength"]))
 		_sky_material.set_shader_parameter("mie_strength", float(scatter["mie_strength"]))
