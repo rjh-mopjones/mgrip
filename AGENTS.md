@@ -147,8 +147,27 @@ When touching macro/runtime coherence, local maps, or Compare Generation:
 - The runtime local map, selector preview, and in-level `[M]` map should share
   the same LOD0 data-driven renderer. Do not let one path drift onto an older
   biome-export shortcut.
+- That renderer is `scripts/ui/runtime_chunk_preview_renderer.gd`. It does not
+  render the 3D scene. It rasterizes a top-down map from runtime `LOD0` chunk
+  data using:
+  - `block_heights(HEIGHT_SCALE)` for elevation
+  - `is_ocean_grid()` for water occupancy
+  - `export_layer_rgba("biome")` for biome identity colour
+- The runtime chunk source for those maps should come from
+  `GenerationManager.generate_runtime_chunk_for_lod_with_seed(..., "LOD0")`,
+  which currently means `512` resolution, `detail_level = 2`, `freq_scale = 8.0`.
+- Ocean in the local map should be derived from the runtime fluid mask and
+  rendered as readable blue water first. Land should be height/slope shaded and
+  only lightly tinted toward biome colour. Do not let the local map become a
+  disguised biome export or a fake scene render.
 - The runtime local map should read as terrain/ocean first. Water-biome drift
   belongs in compare diagnostics, not in the base ocean colour of the map.
+- In Compare Generation, keep `biome.png` as the visible macro context, but do
+  not score truth from its palette. Generate fresh macro semantic data at
+  `freq_scale=1.0`, then compare:
+  - macro biome via `export_layer_rgba("biome")`
+  - macro ocean via `is_ocean_grid()`
+  against the runtime `LOD0` biome/ocean data derived the same way.
 - `CoralReef` was removed because it repeatedly created misleading
   underwater-biome comparison output. Do not reintroduce a special reef biome
   casually without reconsidering compare semantics and map readability.

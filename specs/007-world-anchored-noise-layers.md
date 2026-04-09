@@ -211,6 +211,51 @@ Implemented outcome:
 - the compare modal now has a legend, and water-biome drift is rendered as a
   diagnostic hatch instead of a reef-looking fill
 
+Top-down local map implementation details:
+
+- the local map is not a camera render or a screenshot of the 3D scene
+- it is a data-driven raster built from the runtime `LOD0` chunk `MgBiomeMap`
+- the shared renderer lives in `scripts/ui/runtime_chunk_preview_renderer.gd`
+- chunk source data comes from
+  `GenerationManager.generate_runtime_chunk_for_lod_with_seed(seed, chunk_coord, "LOD0")`
+  which resolves to:
+  - resolution `512`
+  - `detail_level = 2`
+  - `freq_scale = 8.0`
+- the local-map image is built from three runtime data products taken from that
+  `MgBiomeMap`:
+  - `block_heights(HEIGHT_SCALE)` for terrain elevation
+  - `is_ocean_grid()` for fluid/ocean occupancy
+  - `export_layer_rgba("biome")` for biome identity colour
+- ocean pixels are identified from the runtime fluid mask, then coloured as a
+  blue water ramp derived from depth and hillshade
+- land pixels are coloured from height, slope, contour accents, and then
+  lightly tinted toward the runtime biome colour so the local map still reads
+  as terrain first
+- the same renderer output is reused by:
+  - the selector preview
+  - the compare runtime panel
+  - the in-level `[M]` local map overlay
+
+Macro linkage details:
+
+- the visible macro panel in compare remains a crop of `biome.png` from the
+  newest layers artifact because that is the user-facing macro representation
+  of the world
+- however, compare truth is not inferred from the PNG palette anymore
+- instead, the compare tool generates fresh macro semantic data with
+  `MgTerrainGen.generate_region(..., freq_scale = 1.0)` over the selected
+  world region
+- from that generated macro `MgBiomeMap`, compare derives:
+  - macro biome identity via `export_layer_rgba("biome")`
+  - macro ocean truth via `is_ocean_grid()`
+- runtime truth is derived from the runtime `LOD0` chunk data in the same way:
+  - runtime biome identity via `export_layer_rgba("biome")`
+  - runtime ocean truth via `is_ocean_grid()`
+- this means `biome.png` remains the visual macro context, but macro-vs-runtime
+  scoring now comes from generated semantic data on both sides instead of a
+  colour heuristic on one side and true data on the other
+
 Current interpretation:
 
 - ocean/land agreement is the strongest signal and the main receipt for this
