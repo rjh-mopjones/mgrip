@@ -64,19 +64,23 @@ enum Commands {
         #[command(subcommand)]
         kind: InspectKind,
     },
-    /// Compare macro-scale and micro-scale terrain for a grid of chunks.
-    /// Outputs macro.png, micro_grid.png, diff.png, and agreement.json.
+    /// Compare biome.png (macro world map) against per-chunk runtime terrain for a meso map.
+    /// Uses the same pixel sampling and ocean heuristic as the in-game Compare Generation UI.
+    /// Outputs macro.png (biome.png crop), micro_grid.png, diff.png, and agreement.json.
     CompareScale {
-        /// World seed
+        /// World seed (used for micro chunk generation)
         seed: u32,
-        /// Origin world X coordinate (top-left chunk)
-        world_x: f64,
-        /// Origin world Y coordinate (top-left chunk)
-        world_y: f64,
-        /// Grid size — NxN chunks to compare
+        /// Meso map X coordinate (world_x = meso_x * 8)
+        meso_x: i64,
+        /// Meso map Y coordinate (world_y = meso_y * 8)
+        meso_y: i64,
+        /// Grid size — NxN chunks to compare (default 8 for one meso map)
         grid_size: usize,
         /// Output directory for PNG and JSON files
         output_dir: String,
+        /// Layers artifact tag to source biome.png from (default: newest)
+        #[arg(long)]
+        layers_tag: Option<String>,
     },
 }
 
@@ -226,11 +230,12 @@ fn main() {
         },
         Commands::CompareScale {
             seed,
-            world_x,
-            world_y,
+            meso_x,
+            meso_y,
             grid_size,
             output_dir,
-        } => run_compare_scale(seed, world_x, world_y, grid_size, Path::new(&output_dir)),
+            layers_tag,
+        } => run_compare_scale(seed, meso_x, meso_y, grid_size, Path::new(&output_dir), layers_tag.as_deref()),
     }
 }
 
@@ -714,17 +719,74 @@ fn run_inspect_chunk_presentation(
 
 // ─── compare scale ───────────────────────────────────────────────────────────
 
+/// Returns true for any ocean biome pixel sampled from biome.png.
+/// Mirrors _pixel_is_ocean in compare_generation_view.gd exactly.
+///
+/// Blue-dominant biomes (Sea, ShallowSea, ContinentalShelf, DeepOcean, OceanTrench)
+/// are caught by the channel ratio check.  CoralReef[200,100,120] and OceanRidge[120,80,60]
+/// need exact matching because they are not blue-dominant.
+fn pixel_is_ocean_biome_png(r: u8, g: u8, b: u8) -> bool {
+    let rf = r as f64 / 255.0;
+    let bf = b as f64 / 255.0;
+    if bf - rf > 0.25 && bf > 0.35 {
+        return true;
+    }
+    // CoralReef: rgb(200, 100, 120)
+    if r == 200 && g == 100 && b == 120 {
+        return true;
+    }
+    // OceanRidge: rgb(120, 80, 60)
+    if r == 120 && g == 80 && b == 60 {
+        return true;
+    }
+    false
+}
+
+/// Discover the newest biome.png across all layers artifacts, mirroring the logic in
+/// map_selector.gd _load_macro_texture.  Returns (biome_png_path, world_width, world_height).
+fn find_newest_biome_png(store: &mg_artifacts::ArtifactStore) -> Option<(std::path::PathBuf, f64, f64)> {
+    let layers_dir = store.base_path().join("layers");
+    let entries = fs::read_dir(&layers_dir).ok()?;
+    let mut best: Option<(std::path::PathBuf, std::time::SystemTime, f64, f64)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let biome_png = path.join("images").join("biome.png");
+        if !biome_png.exists() {
+            continue;
+        }
+        let mtime = fs::metadata(&biome_png).ok()?.modified().ok()?;
+        let (ww, wh) = if let Some(manifest) = fs::read_to_string(path.join("manifest.ron"))
+            .ok()
+            .and_then(|s| ron::de::from_str::<mg_artifacts::LayerManifest>(&s).ok())
+        {
+            (manifest.world_width as f64, manifest.world_height as f64)
+        } else {
+            (WORLD_WIDTH, WORLD_HEIGHT)
+        };
+        if best.as_ref().map_or(true, |(_, t, _, _)| mtime > *t) {
+            best = Some((biome_png, mtime, ww, wh));
+        }
+    }
+    best.map(|(p, _, ww, wh)| (p, ww, wh))
+}
+
 fn run_compare_scale(
     seed: u32,
-    world_x: f64,
-    world_y: f64,
+    meso_x: i64,
+    meso_y: i64,
     grid_size: usize,
     output_dir: &Path,
+    layers_tag: Option<&str>,
 ) {
     const CELL_PX: usize = 64; // pixels per cell in output images
     const MICRO_RES: usize = 65; // LOD2 resolution
 
     let n = grid_size;
+    let world_x = (meso_x * n as i64) as f64;
+    let world_y = (meso_y * n as i64) as f64;
     let img_w = n * CELL_PX;
     let img_h = n * CELL_PX;
 
@@ -733,31 +795,69 @@ fn run_compare_scale(
         std::process::exit(1);
     });
 
-    println!(
-        "Comparing scale coherence — seed={seed}, origin=({world_x},{world_y}), grid={n}×{n}"
-    );
-    println!(
-        "  Note: macro uses GPU path (freq=1.0); discrepancies at coasts reflect real GPU/CPU divergence."
-    );
+    // ── Macro: load biome.png — same source as the in-game Compare Generation UI ─
+    let store = mg_artifacts::ArtifactStore::new().unwrap_or_else(|e| {
+        eprintln!("error: failed to open artifact store: {e}");
+        std::process::exit(1);
+    });
 
-    // ── Macro: one BiomeMap covering the full NxN region at freq_scale=1.0 ──
-    let pb = spinner("Generating macro region…");
-    let macro_map = BiomeMap::generate(
-        seed, world_x, world_y,
-        n as f64, n as f64,
-        img_w, img_h,
-        1, false, false, 1.0,
-    );
-    pb.finish_and_clear();
+    let (biome_png_path, world_w, world_h) = match layers_tag {
+        Some(tag) => {
+            let manifest = store.load_layer_manifest(tag).unwrap_or_else(|e| {
+                eprintln!("error: layers artifact '{tag}' not found: {e}");
+                std::process::exit(1);
+            });
+            let path = store.layer_image_path(tag, "biome.png");
+            (path, manifest.world_width as f64, manifest.world_height as f64)
+        }
+        None => find_newest_biome_png(&store).unwrap_or_else(|| {
+            eprintln!("error: no layers artifact with biome.png found in ~/.margins_grip/layers/");
+            eprintln!("  Run 'margins_grip generate layers <SEED> <TAG>' first, or pass --layers-tag.");
+            std::process::exit(1);
+        }),
+    };
 
-    let macro_path = output_dir.join("macro.png");
-    macro_map
-        .save_layer_png(NoiseLayer::Biome, &macro_path)
+    let biome_img = image::open(&biome_png_path)
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to load {}: {e}", biome_png_path.display());
+            std::process::exit(1);
+        })
+        .into_rgba8();
+
+    let tex_w = biome_img.width() as usize;
+    let tex_h = biome_img.height() as usize;
+
+    // Coordinate math — identical to _build_macro_crop in compare_generation_view.gd
+    let px_x = ((world_x / world_w * tex_w as f64) as usize).min(tex_w.saturating_sub(1));
+    let px_y = ((world_y / world_h * tex_h as f64) as usize).min(tex_h.saturating_sub(1));
+    let px_w = ((n as f64 / world_w * tex_w as f64) as usize).max(1).min(tex_w - px_x);
+    let px_h = ((n as f64 / world_h * tex_h as f64) as usize).max(1).min(tex_h - px_y);
+
+    println!(
+        "Comparing biome.png vs runtime — seed={seed}, meso=({meso_x},{meso_y}), world=({world_x},{world_y}), grid={n}×{n}"
+    );
+    println!("  biome.png: {}", biome_png_path.display());
+    println!("  crop: ({px_x},{px_y}) {px_w}×{px_h} px  →  {img_w}×{img_h} output");
+
+    // Build macro.png: biome.png crop nearest-neighbour scaled to img_w×img_h
+    let mut macro_rgba = vec![0u8; img_w * img_h * 4];
+    for py in 0..img_h {
+        for px in 0..img_w {
+            let sx = (px_x + px * px_w / img_w).min(tex_w - 1);
+            let sy = (px_y + py * px_h / img_h).min(tex_h - 1);
+            let [r, g, b, a] = biome_img.get_pixel(sx as u32, sy as u32).0;
+            let dst = (py * img_w + px) * 4;
+            macro_rgba[dst..dst + 4].copy_from_slice(&[r, g, b, a]);
+        }
+    }
+    RgbaImage::from_raw(img_w as u32, img_h as u32, macro_rgba.clone())
+        .expect("macro buffer is correct size")
+        .save(output_dir.join("macro.png"))
         .unwrap_or_else(|e| {
             eprintln!("error: failed to save macro.png: {e}");
             std::process::exit(1);
         });
-    println!("  macro.png ({img_w}×{img_h})");
+    println!("  macro.png  (biome.png crop)");
 
     // ── Micro grid: NxN individual chunks at freq_scale=8.0, LOD2 ────────────
     let pb = spinner(&format!("Generating {n}×{n} micro chunks…"));
@@ -780,9 +880,14 @@ fn run_compare_scale(
             let mc = MICRO_RES / 2;
             let micro_ocean = micro.is_ocean(mc, mc);
 
-            let mac_px = gx * CELL_PX + CELL_PX / 2;
-            let mac_py = gy * CELL_PX + CELL_PX / 2;
-            let macro_ocean = macro_map.is_ocean(mac_px, mac_py);
+            // Sample center pixel of this cell from the biome.png crop —
+            // identical to compare_generation_view.gd _generate()
+            let ci = gx * CELL_PX + CELL_PX / 2;
+            let cj = gy * CELL_PX + CELL_PX / 2;
+            let sx = (px_x + ci * px_w / img_w).min(tex_w - 1);
+            let sy = (px_y + cj * px_h / img_h).min(tex_h - 1);
+            let [r, g, b, _] = biome_img.get_pixel(sx as u32, sy as u32).0;
+            let macro_ocean = pixel_is_ocean_biome_png(r, g, b);
 
             let agree = macro_ocean == micro_ocean;
             if agree {
@@ -811,11 +916,7 @@ fn run_compare_scale(
             }
 
             // Diff cell — green = agree, red = disagree
-            let color: [u8; 4] = if agree {
-                [30, 200, 80, 255]
-            } else {
-                [210, 45, 45, 255]
-            };
+            let color: [u8; 4] = if agree { [30, 200, 80, 255] } else { [210, 45, 45, 255] };
             for py in 0..CELL_PX {
                 for px in 0..CELL_PX {
                     let dx = gx * CELL_PX + px;
@@ -851,8 +952,10 @@ fn run_compare_scale(
     let overall = agree_count as f64 / total as f64;
     let json = serde_json::json!({
         "seed": seed,
+        "meso": [meso_x, meso_y],
         "origin": [world_x as i64, world_y as i64],
         "grid_size": n,
+        "biome_png": biome_png_path.display().to_string(),
         "overall_agreement": overall,
         "cells": cells,
     });

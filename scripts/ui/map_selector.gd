@@ -268,13 +268,30 @@ func _set_selected_chunk(chunk_coord: Vector2i) -> void:
 	_update_chunk_rects()
 	_update_labels()
 
+func _snap_to_meso(chunk: Vector2i) -> Vector2i:
+	return Vector2i(
+		(chunk.x / COMPARE_GRID) * COMPARE_GRID,
+		(chunk.y / COMPARE_GRID) * COMPARE_GRID,
+	)
+
 func _update_labels() -> void:
-	var hover_text := "Hover: (%d, %d)" % [_hover_chunk.x, _hover_chunk.y] if _hover_chunk.x >= 0 else "Hover: none"
+	var hover_text: String
+	if _hover_chunk.x < 0:
+		hover_text = "Hover: none"
+	elif _compare_mode:
+		var mx := _hover_chunk.x / COMPARE_GRID
+		var my := _hover_chunk.y / COMPARE_GRID
+		hover_text = "Meso: (%d, %d)" % [mx, my]
+	else:
+		hover_text = "Hover: (%d, %d)" % [_hover_chunk.x, _hover_chunk.y]
+
 	var selected_text := "Selected: (%d, %d)" % [_selected_chunk.x, _selected_chunk.y] if _has_selection() else "Selected: none"
 	_selection_label.text = "%s    %s" % [hover_text, selected_text]
 
 func _refresh_hover_chunk(viewport_position: Vector2) -> void:
 	var hover_chunk := _chunk_from_viewport_pos(viewport_position)
+	if hover_chunk.x >= 0 and _compare_mode:
+		hover_chunk = _snap_to_meso(hover_chunk)
 	if hover_chunk == _hover_chunk:
 		return
 	_hover_chunk = hover_chunk
@@ -401,7 +418,7 @@ func _run_capture_probe(capture_dir: String) -> void:
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_mode_entered.png"))
 
-	_open_compare_view(Vector2i(197, 253))
+	_open_compare_view(Vector2i(192, 248))  # meso (24,31)
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_opened.png"))
 

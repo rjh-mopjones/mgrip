@@ -16,6 +16,7 @@ var _grid_size: int
 var _macro_texture: Texture2D
 var _macro_world_size: Vector2
 
+var _title_label: Label
 var _status_label: Label
 var _macro_rect: TextureRect
 var _micro_rect: TextureRect
@@ -41,11 +42,11 @@ func _ready() -> void:
 	vbox.add_theme_constant_override("separation", 8)
 	add_child(vbox)
 
-	var title := Label.new()
-	title.text = "Compare Generation"
-	title.add_theme_font_size_override("font_size", 18)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(title)
+	_title_label = Label.new()
+	_title_label.text = "Compare Generation"
+	_title_label.add_theme_font_size_override("font_size", 18)
+	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(_title_label)
 
 	_status_label = Label.new()
 	_status_label.text = "Initialising…"
@@ -98,9 +99,12 @@ func show_comparison(
 	_grid_size = grid_size
 	_macro_texture = macro_tex
 	_macro_world_size = macro_world
+	var mx := int(wx) / grid_size
+	var my := int(wy) / grid_size
+	_title_label.text = "Compare Generation — Meso (%d, %d)" % [mx, my]
 	_status_label.text = (
-		"Generating comparison — seed=%d, origin=(%d,%d), %dx%d grid…"
-		% [seed, int(wx), int(wy), grid_size, grid_size]
+		"Generating — meso (%d,%d)  seed=%d  world (%d,%d)…"
+		% [mx, my, seed, int(wx), int(wy)]
 	)
 	_agreement_label.text = ""
 	call_deferred("_generate")
@@ -160,11 +164,26 @@ func _generate() -> void:
 	_status_label.text = "Done. Red cells = biome.png shows ocean but runtime generates land (erosion gap)."
 
 
-## Ocean biomes in biome.png are distinctly blue (Sea, ShallowSea, DeepOcean, OceanTrench).
-## Heuristic: blue channel dominates red by >0.25 and is above 0.35.
-## This correctly excludes icy land tiles (IceSheet, Glacier, Snow) where B-R < 0.2.
+## Ocean biomes as defined by tile_has_fluid_surface() in Rust:
+##   Sea[0,191,255], ShallowSea[100,200,240], ContinentalShelf[70,150,200],
+##   DeepOcean[0,40,100], OceanTrench[0,51,102]  — blue-dominant, caught by heuristic
+##   OceanRidge[120,80,60]                        — brownish, NOT blue-dominant
+##   CoralReef[200,100,120]                       — pinkish, NOT blue-dominant
+## biome.png stores exact integer biome colors (nearest-neighbour, no blending), so we can
+## match non-blue ocean biomes with exact 8-bit integer comparisons.
 func _pixel_is_ocean(color: Color) -> bool:
-	return color.b - color.r > 0.25 and color.b > 0.35
+	if color.b - color.r > 0.25 and color.b > 0.35:
+		return true
+	var ri := roundi(color.r * 255)
+	var gi := roundi(color.g * 255)
+	var bi := roundi(color.b * 255)
+	# CoralReef: rgb(200, 100, 120)
+	if ri == 200 and gi == 100 and bi == 120:
+		return true
+	# OceanRidge: rgb(120, 80, 60)  — Scrubland(115,80,65) is 5 units away; exact match is safe
+	if ri == 120 and gi == 80 and bi == 60:
+		return true
+	return false
 
 
 func _build_macro_crop(n: int, img_w: int, img_h: int) -> Image:
