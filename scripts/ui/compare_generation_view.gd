@@ -4,7 +4,7 @@ extends Control
 ## Top-left: macro biome.png crop for world-scale context.
 ## Top-right: true top-down runtime local map built from LOD0 chunk data.
 ## Bottom-left: macro biome colours washed over runtime terrain.
-## Bottom-right: semantic ocean-mask drift overlay on runtime terrain.
+## Bottom-right: semantic biome/ocean drift overlay on runtime terrain.
 
 const CELL_PX := 128
 const GRID_LINE_COLOR := Color(1.0, 1.0, 1.0, 0.16)
@@ -13,6 +13,7 @@ const MACRO_WASH_STRENGTH := 0.34
 const MATCH_OCEAN_TINT := Color(0.18, 0.42, 0.63, 1.0)
 const MACRO_OCEAN_ONLY_TINT := Color(0.16, 0.86, 0.92, 1.0)
 const RUNTIME_OCEAN_ONLY_TINT := Color(0.95, 0.38, 0.16, 1.0)
+const BIOME_MISMATCH_TINT := Color(0.92, 0.22, 0.84, 1.0)
 const RUNTIME_CHUNK_PREVIEW_RENDERER := preload("res://scripts/ui/runtime_chunk_preview_renderer.gd")
 
 var _seed: int
@@ -76,7 +77,7 @@ func _ready() -> void:
 		"Macro Visual  (biome.png)",
 		"Runtime Local Map  (LOD0)",
 		"Macro Colours over Runtime",
-		"Delta  (Ocean Mask Drift)",
+		"Delta  (Biome + Ocean Drift)",
 	]:
 		var col := VBoxContainer.new()
 		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -100,7 +101,7 @@ func _ready() -> void:
 				_runtime_rect = rect
 			"Macro Colours over Runtime":
 				_wash_rect = rect
-			"Delta  (Ocean Mask Drift)":
+			"Delta  (Biome + Ocean Drift)":
 				_diff_rect = rect
 
 	_agreement_label = Label.new()
@@ -158,30 +159,50 @@ func _generate() -> void:
 	_draw_chunk_grid(runtime_img)
 	_runtime_rect.texture = ImageTexture.create_from_image(runtime_img)
 
+	var runtime_biome_img := _copy_image(region_preview.get("biome_image"))
+	runtime_biome_img.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
 	var runtime_mask_img := _copy_image(region_preview.get("ocean_mask_image"))
 	runtime_mask_img.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
 
 	var wash_img := _build_macro_wash_image(runtime_img, macro_img)
-	var diff_img := _build_diff_overlay_image(runtime_img, macro_mask_img, runtime_mask_img)
+	var diff_img := _build_diff_overlay_image(
+		runtime_img,
+		macro_img,
+		runtime_biome_img,
+		macro_mask_img,
+		runtime_mask_img
+	)
 	_draw_chunk_grid(wash_img)
 	_draw_chunk_grid(diff_img)
 	_wash_rect.texture = ImageTexture.create_from_image(wash_img)
 	_diff_rect.texture = ImageTexture.create_from_image(diff_img)
 
-	var stats := _compute_mask_stats(macro_mask_img, runtime_mask_img)
+	var stats := _compute_comparison_stats(macro_img, runtime_biome_img, macro_mask_img, runtime_mask_img)
 	var pixel_total := int(stats.get("pixel_total", 0))
-	var pixel_agree := int(stats.get("pixel_agree", 0))
+	var ocean_agree := int(stats.get("ocean_agree", 0))
+	var biome_agree := int(stats.get("biome_agree", 0))
+	var land_biome_agree := int(stats.get("land_biome_agree", 0))
+	var land_biome_total := int(stats.get("land_biome_total", 0))
 	var chunk_total := int(stats.get("chunk_total", 0))
 	var chunk_clean := int(stats.get("chunk_clean", 0))
 	var macro_ocean_only := int(stats.get("macro_ocean_only", 0))
 	var runtime_ocean_only := int(stats.get("runtime_ocean_only", 0))
-	var pct := 100.0 * float(pixel_agree) / float(maxi(pixel_total, 1))
+	var biome_mismatch := int(stats.get("biome_mismatch", 0))
+	var ocean_pct := 100.0 * float(ocean_agree) / float(maxi(pixel_total, 1))
+	var biome_pct := 100.0 * float(biome_agree) / float(maxi(pixel_total, 1))
+	var land_biome_pct := 100.0 * float(land_biome_agree) / float(maxi(land_biome_total, 1))
 	_status_label.text = (
-		"Done. Left panel keeps biome.png as macro world context; bottom-left washes those biome colours over the traversed runtime terrain; bottom-right compares biome.png ocean mask vs runtime LOD0 fluid mask across the full 8x8 region."
+		"Done. Left panel keeps biome.png as macro world context; bottom-left washes those biome colours over the traversed runtime terrain; bottom-right flags both ocean-mask drift and non-ocean biome colour drift against the runtime biome layer."
 	)
 	_agreement_label.text = (
-		"Pixel agreement: %d/%d (%.1f%%)    Clean chunks: %d/%d    Macro-ocean only: %d px    Runtime-ocean only: %d px"
-		% [pixel_agree, pixel_total, pct, chunk_clean, chunk_total, macro_ocean_only, runtime_ocean_only]
+		"Ocean: %d/%d (%.1f%%)    Biome: %d/%d (%.1f%%)    Land biome: %d/%d (%.1f%%)    Clean chunks: %d/%d    Macro-ocean only: %d px    Runtime-ocean only: %d px    Biome mismatch: %d px"
+		% [
+			ocean_agree, pixel_total, ocean_pct,
+			biome_agree, pixel_total, biome_pct,
+			land_biome_agree, land_biome_total, land_biome_pct,
+			chunk_clean, chunk_total,
+			macro_ocean_only, runtime_ocean_only, biome_mismatch
+		]
 	)
 
 func _build_macro_crop(n: int, img_w: int, img_h: int) -> Image:
@@ -231,11 +252,19 @@ func _build_macro_wash_image(runtime_img: Image, macro_img: Image) -> Image:
 	return image
 
 
-func _build_diff_overlay_image(runtime_img: Image, macro_mask_img: Image, runtime_mask_img: Image) -> Image:
+func _build_diff_overlay_image(
+	runtime_img: Image,
+	macro_img: Image,
+	runtime_biome_img: Image,
+	macro_mask_img: Image,
+	runtime_mask_img: Image
+) -> Image:
 	var image := _copy_image(runtime_img)
 	for py in range(image.get_height()):
 		for px in range(image.get_width()):
 			var base := image.get_pixel(px, py)
+			var macro_color := macro_img.get_pixel(px, py)
+			var runtime_biome_color := runtime_biome_img.get_pixel(px, py)
 			var macro_ocean := _mask_pixel_is_ocean(macro_mask_img.get_pixel(px, py))
 			var runtime_ocean := _mask_pixel_is_ocean(runtime_mask_img.get_pixel(px, py))
 			var overlay := base
@@ -245,15 +274,26 @@ func _build_diff_overlay_image(runtime_img: Image, macro_mask_img: Image, runtim
 				overlay = base.lerp(MACRO_OCEAN_ONLY_TINT, 0.82)
 			elif runtime_ocean and not macro_ocean:
 				overlay = base.lerp(RUNTIME_OCEAN_ONLY_TINT, 0.82)
+			elif not _colors_match(macro_color, runtime_biome_color):
+				overlay = base.lerp(BIOME_MISMATCH_TINT, 0.72)
 			image.set_pixel(px, py, overlay)
 	return image
 
 
-func _compute_mask_stats(macro_mask_img: Image, runtime_mask_img: Image) -> Dictionary:
+func _compute_comparison_stats(
+	macro_img: Image,
+	runtime_biome_img: Image,
+	macro_mask_img: Image,
+	runtime_mask_img: Image
+) -> Dictionary:
 	var pixel_total := macro_mask_img.get_width() * macro_mask_img.get_height()
-	var pixel_agree := 0
+	var ocean_agree := 0
+	var biome_agree := 0
+	var land_biome_agree := 0
+	var land_biome_total := 0
 	var macro_ocean_only := 0
 	var runtime_ocean_only := 0
+	var biome_mismatch := 0
 	var chunk_clean := 0
 	var chunk_total := _grid_size * _grid_size
 	for gy in range(_grid_size):
@@ -263,23 +303,38 @@ func _compute_mask_stats(macro_mask_img: Image, runtime_mask_img: Image) -> Dict
 			var start_y := gy * CELL_PX
 			for py in range(start_y, start_y + CELL_PX):
 				for px in range(start_x, start_x + CELL_PX):
+					var macro_color := macro_img.get_pixel(px, py)
+					var runtime_biome_color := runtime_biome_img.get_pixel(px, py)
 					var macro_ocean := _mask_pixel_is_ocean(macro_mask_img.get_pixel(px, py))
 					var runtime_ocean := _mask_pixel_is_ocean(runtime_mask_img.get_pixel(px, py))
 					if macro_ocean == runtime_ocean:
-						pixel_agree += 1
+						ocean_agree += 1
 					elif macro_ocean:
 						macro_ocean_only += 1
 						chunk_has_mismatch = true
 					else:
 						runtime_ocean_only += 1
 						chunk_has_mismatch = true
+					if _colors_match(macro_color, runtime_biome_color):
+						biome_agree += 1
+						if not macro_ocean and not runtime_ocean:
+							land_biome_agree += 1
+					else:
+						biome_mismatch += 1
+						chunk_has_mismatch = true
+					if not macro_ocean and not runtime_ocean:
+						land_biome_total += 1
 			if not chunk_has_mismatch:
 				chunk_clean += 1
 	return {
 		"pixel_total": pixel_total,
-		"pixel_agree": pixel_agree,
+		"ocean_agree": ocean_agree,
+		"biome_agree": biome_agree,
+		"land_biome_agree": land_biome_agree,
+		"land_biome_total": land_biome_total,
 		"macro_ocean_only": macro_ocean_only,
 		"runtime_ocean_only": runtime_ocean_only,
+		"biome_mismatch": biome_mismatch,
 		"chunk_total": chunk_total,
 		"chunk_clean": chunk_clean,
 	}
@@ -321,3 +376,11 @@ func _pixel_is_macro_ocean(color: Color) -> bool:
 	if bf - rf > 0.25 and bf > 0.35:
 		return true
 	return (r == 200 and g == 100 and b == 120) or (r == 120 and g == 80 and b == 60)
+
+
+func _colors_match(a: Color, b: Color) -> bool:
+	return (
+		int(round(a.r * 255.0)) == int(round(b.r * 255.0))
+		and int(round(a.g * 255.0)) == int(round(b.g * 255.0))
+		and int(round(a.b * 255.0)) == int(round(b.b * 255.0))
+	)

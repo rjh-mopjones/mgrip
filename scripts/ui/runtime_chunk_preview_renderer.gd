@@ -52,11 +52,13 @@ func render_biome_map_preview(
 	var fluid_mask: PackedByteArray = biome_map.is_ocean_grid()
 	var biome_rgba: PackedByteArray = biome_map.export_layer_rgba("biome")
 	var image: Image = _build_chunk_map_image(heights, fluid_mask, biome_rgba, texture_size)
+	var biome_image: Image = _build_biome_image(biome_rgba, texture_size)
 	var ocean_mask_image: Image = _build_ocean_mask_image(fluid_mask, texture_size)
 	var texture := ImageTexture.create_from_image(image)
 	var center := CHUNK_RESOLUTION / 2
 	return {
 		"image": image,
+		"biome_image": biome_image,
 		"ocean_mask_image": ocean_mask_image,
 		"texture": texture,
 		"micro_ocean": biome_map.is_ocean(center, center),
@@ -75,6 +77,7 @@ func render_chunk_grid_preview(
 		return _cache[key]
 
 	var image := Image.create(cell_size * grid_size, cell_size * grid_size, false, Image.FORMAT_RGBA8)
+	var biome_image := Image.create(cell_size * grid_size, cell_size * grid_size, false, Image.FORMAT_RGBA8)
 	var ocean_mask_image := Image.create(
 		cell_size * grid_size,
 		cell_size * grid_size,
@@ -87,9 +90,15 @@ func render_chunk_grid_preview(
 			var chunk_coord := origin_chunk + Vector2i(gx, gy)
 			var preview: Dictionary = render_chunk_preview(seed, chunk_coord, true, cell_size)
 			var chunk_image: Image = preview.get("image")
+			var chunk_biome_image: Image = preview.get("biome_image")
 			var chunk_ocean_mask: Image = preview.get("ocean_mask_image")
 			image.blit_rect(
 				chunk_image,
+				Rect2i(Vector2i.ZERO, Vector2i(cell_size, cell_size)),
+				Vector2i(gx * cell_size, gy * cell_size)
+			)
+			biome_image.blit_rect(
+				chunk_biome_image,
 				Rect2i(Vector2i.ZERO, Vector2i(cell_size, cell_size)),
 				Vector2i(gx * cell_size, gy * cell_size)
 			)
@@ -103,6 +112,7 @@ func render_chunk_grid_preview(
 	var texture := ImageTexture.create_from_image(image)
 	var result := {
 		"image": image,
+		"biome_image": biome_image,
 		"ocean_mask_image": ocean_mask_image,
 		"texture": texture,
 		"cell_ocean": cell_ocean,
@@ -125,6 +135,17 @@ func _build_chunk_map_image(
 			var index := sy * CHUNK_RESOLUTION + sx
 			var color := _sample_topdown_color(heights, fluid_mask, biome_rgba, sx, sy, index)
 			image.set_pixel(px, py, color)
+	return image
+
+
+func _build_biome_image(biome_rgba: PackedByteArray, texture_size: int) -> Image:
+	var image := Image.create(texture_size, texture_size, false, Image.FORMAT_RGBA8)
+	for py in range(texture_size):
+		var sy := _sample_coord(py, texture_size)
+		for px in range(texture_size):
+			var sx := _sample_coord(px, texture_size)
+			var index := sy * CHUNK_RESOLUTION + sx
+			image.set_pixel(px, py, _biome_color_at(biome_rgba, index))
 	return image
 
 
