@@ -12,7 +12,7 @@ use crate::biome_splines::BiomeSplines;
 use crate::derived;
 use crate::erosion_sim::{simulate_erosion, ErosionParams};
 use crate::rivers::{
-    generate_river_network, rasterize_from_network, RiverNetwork, LOD_THRESHOLD_MACRO,
+    RiverNetwork, LOD_THRESHOLD_MACRO,
 };
 use crate::strategy::{
     ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
@@ -390,17 +390,19 @@ impl BiomeMap {
 
         // ── Phase 4: River network (macro only) ───────────────────────────────
         if run_rivers {
-            let network = generate_river_network(
+            let network = RiverNetwork::generate(
                 &map.heightmap,
-                tile_w,
-                tile_h,
+                &map.rock_hardness,
+                &map.tectonic,
+                &map.continentalness,
                 &map.light_level,
                 &map.humidity,
                 &map.temperature,
-                LOD_THRESHOLD_MACRO,
+                tile_w,
+                tile_h,
+                SEA_LEVEL,
             );
-            let river_grid = rasterize_from_network(&network, tile_w, tile_h, LOD_THRESHOLD_MACRO);
-            map.rivers = river_grid;
+            map.rivers = network.to_flow_grid(tile_w, tile_h);
             map.river_network = Some(Arc::new(network));
         }
 
@@ -630,6 +632,29 @@ fn sample_world_step(world_size: f64, sample_count: usize) -> f64 {
         return world_size;
     }
     world_size / (sample_count - 1) as f64
+}
+
+/// Compute slope grid from heightmap using 3x3 finite differences.
+pub fn compute_slope_grid(heightmap: &[f64], width: usize, height: usize) -> Vec<f64> {
+    let total = width * height;
+    let mut slope = vec![0.0f64; total];
+    for y in 1..(height - 1) {
+        for x in 1..(width - 1) {
+            let idx = y * width + x;
+            let dzdx = (heightmap[idx + 1] - heightmap[idx - 1]) * 0.5;
+            let dzdy = (heightmap[idx + width] - heightmap[idx - width]) * 0.5;
+            slope[idx] = (dzdx * dzdx + dzdy * dzdy).sqrt();
+        }
+    }
+    for x in 0..width {
+        slope[x] = slope[width + x.clamp(1, width - 2)];
+        slope[(height - 1) * width + x] = slope[(height - 2) * width + x.clamp(1, width - 2)];
+    }
+    for y in 0..height {
+        slope[y * width] = slope[y * width + 1];
+        slope[y * width + width - 1] = slope[y * width + width - 2];
+    }
+    slope
 }
 
 fn apply_polar_ice_cap(

@@ -117,13 +117,7 @@ fn fill_depressions(
     sea_level: f64,
     _extra: Option<()>,
 ) -> Vec<f64> {
-    let mut h = elevation.to_vec();
-    crate::rivers::fill_depressions(&mut h, width, height);
-    // Re-apply sea level floor
-    for v in h.iter_mut() {
-        *v = v.max(sea_level - 1e-5);
-    }
-    h
+    crate::rivers::fill_depressions(elevation, width, height, sea_level, None)
 }
 
 pub fn simulate_erosion(

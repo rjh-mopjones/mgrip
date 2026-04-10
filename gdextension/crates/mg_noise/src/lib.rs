@@ -6,6 +6,7 @@ pub mod gpu;
 pub mod rivers;
 pub mod runtime_presentation;
 pub mod strategy;
+pub mod terrain_render;
 pub mod visualization;
 pub mod wrap;
 
@@ -18,8 +19,8 @@ pub use derived::{
 };
 pub use erosion_sim::{simulate_erosion, ErosionParams, ErosionResult};
 pub use rivers::{
-    rasterize_to_tile, RiverCharacter, RiverNetwork, RiverSegment, LOD_THRESHOLD_MACRO,
-    LOD_THRESHOLD_MESO, LOD_THRESHOLD_MICRO,
+    rasterize_from_network, rasterize_to_tile, RiverCharacter, RiverConstraint, RiverNetwork,
+    RiverSegment, LOD_THRESHOLD_MACRO, LOD_THRESHOLD_MESO, LOD_THRESHOLD_MICRO,
 };
 pub use runtime_presentation::{
     AtmosphereClass, LandformClass, PlanetZone, RuntimeChunkPresentation,
@@ -30,4 +31,5 @@ pub use strategy::{
     ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
     RockHardnessStrategy, TectonicPlatesStrategy,
 };
+pub use terrain_render::{render_terrain, NormalizationHints};
 pub use visualization::NoiseLayer;

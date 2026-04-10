@@ -1,8 +1,24 @@
-//! Two-tier river generation. Global D8 flow network computed once at macro scale.
+//! Two-tier river generation system (ported from Randlebrot).
+//!
+//! Rivers are computed once globally on a coarse heightmap, producing an immutable
+//! `RiverNetwork` tree. Tiles query this tree at any LOD level — they never compute
+//! rivers independently. This ensures river positions are identical at every zoom level.
+//!
+//! ## Architecture
+//!
+//! **Tier 1 — Global River Network** (runs once, immutable):
+//! Computed on the macro heightmap via geology-aware D8 flow accumulation.
+//! Produces a tree of `RiverSegment`s rooted at ocean outlets.
+//!
+//! **Tier 2 — LOD-Aware Tile Queries**:
+//! Tiles call `RiverNetwork::query_chunk()` which returns segments filtered
+//! by a drainage threshold that varies with LOD level.
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
+
+// ─── D8 Constants ────────────────────────────────────────────────────────────
 
 pub(crate) const D8_OFFSETS: [(i32, i32); 8] = [
     (0, -1),
@@ -28,9 +44,13 @@ pub(crate) const D8_DISTANCES: [f64; 8] = [
 
 pub(crate) const NO_FLOW: u8 = 255;
 
-pub const LOD_THRESHOLD_MACRO: f64 = 500.0;
-pub const LOD_THRESHOLD_MESO: f64 = 50.0;
-pub const LOD_THRESHOLD_MICRO: f64 = 5.0;
+// ─── LOD Drainage Thresholds ────────────────────────────────────────────────
+
+pub const LOD_THRESHOLD_MACRO: u32 = 150;
+pub const LOD_THRESHOLD_MESO: u32 = 50;
+pub const LOD_THRESHOLD_MICRO: u32 = 10;
+
+// ─── River Character ────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RiverCharacter {
@@ -55,26 +75,86 @@ impl RiverCharacter {
             RiverCharacter::DryWadi
         }
     }
+
+    pub fn width_multiplier(&self) -> f64 {
+        match self {
+            RiverCharacter::DryWadi => 0.3,
+            RiverCharacter::SeasonalFlow => 0.6,
+            RiverCharacter::Permanent => 1.0,
+            RiverCharacter::Frozen => 0.9,
+            RiverCharacter::BuriedIce => 0.0,
+        }
+    }
 }
+
+// ─── River Segment ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RiverSegment {
-    pub path: Vec<(usize, usize)>,
-    pub drainage_area: f64,
+    pub id: usize,
+    pub path: Vec<(f64, f64)>,
+    pub drainage_area: u32,
     pub downstream: Option<usize>,
     pub upstream: Vec<usize>,
     pub character: RiverCharacter,
+    pub meander_offsets: Vec<f64>,
     pub strahler_order: u32,
 }
 
-/// Global river network — computed once on the macro heightmap.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+// ─── Chunk Coordinate for Spatial Index ─────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+struct RiverChunkCoord {
+    x: i32,
+    y: i32,
+}
+
+// ─── River Constraint ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RiverConstraint {
+    pub path: Vec<(f64, f64)>,
+    pub drainage_area: u32,
+    pub character: RiverCharacter,
+    pub width: f64,
+    pub depth: f64,
+    pub strahler_order: u32,
+    pub river_id: usize,
+    pub segment_index: usize,
+}
+
+// ─── River Network ──────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize)]
 pub struct RiverNetwork {
     pub segments: Vec<RiverSegment>,
-    /// Map from (chunk_x, chunk_y) → segment indices that pass through
-    pub spatial_index: HashMap<(usize, usize), Vec<usize>>,
+    #[serde(skip)]
+    spatial_index: HashMap<RiverChunkCoord, Vec<usize>>,
     pub width: usize,
     pub height: usize,
+}
+
+impl std::fmt::Debug for RiverNetwork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RiverNetwork")
+            .field("segments", &self.segments.len())
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish()
+    }
+}
+
+impl Clone for RiverNetwork {
+    fn clone(&self) -> Self {
+        let mut cloned = Self {
+            segments: self.segments.clone(),
+            spatial_index: HashMap::new(),
+            width: self.width,
+            height: self.height,
+        };
+        cloned.rebuild_spatial_index();
+        cloned
+    }
 }
 
 impl RiverNetwork {
@@ -87,320 +167,752 @@ impl RiverNetwork {
         }
     }
 
-    /// Query flow accumulation at a pixel, using threshold appropriate for LOD.
-    pub fn flow_at(&self, _x: usize, _y: usize) -> f64 {
-        0.0
-    }
-}
+    /// Generate the global river network from terrain and geological data.
+    pub fn generate(
+        heightmap: &[f64],
+        rock_hardness: &[f64],
+        tectonic_stress: &[f64],
+        continentalness: &[f64],
+        light_level: &[f64],
+        humidity: &[f64],
+        temperature: &[f64],
+        width: usize,
+        height: usize,
+        sea_level: f64,
+    ) -> Self {
+        let total = width * height;
 
-/// Rasterize river network into a flow-value grid.
-/// Each cell gets the drainage_area of the largest segment passing through it.
-pub fn rasterize_from_network(
-    network: &RiverNetwork,
-    width: usize,
-    height: usize,
-    threshold: f64,
-) -> Vec<f64> {
-    let mut grid = vec![0.0f64; width * height];
-    for seg in &network.segments {
-        if seg.drainage_area < threshold {
-            continue;
-        }
-        for &(x, y) in &seg.path {
-            if x < width && y < height {
-                let idx = y * width + x;
-                if seg.drainage_area > grid[idx] {
-                    grid[idx] = seg.drainage_area;
-                }
-            }
-        }
-    }
-    grid
-}
+        // Step 0: Condition heightmap for coherent drainage
+        let conditioned = condition_heightmap_for_drainage(
+            heightmap, continentalness, tectonic_stress, width, height, sea_level,
+        );
 
-// ─── Priority-flood depression filling ───────────────────────────────────────
+        // Step 1: Fill depressions (Priority-Flood)
+        let filled = fill_depressions(&conditioned, width, height, sea_level, Some(continentalness));
 
-#[derive(PartialEq)]
-struct HeapEntry(f64, usize);
+        // Step 2: Geology-aware D8 flow direction
+        let flow_dir = compute_geology_aware_flow(
+            &filled, rock_hardness, tectonic_stress, width, height, sea_level, Some(continentalness),
+        );
 
-impl Eq for HeapEntry {}
+        // Step 3: Flow accumulation
+        let accumulation = compute_flow_accumulation(&flow_dir, &filled, width, height);
 
-impl Ord for HeapEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other.0.partial_cmp(&self.0).unwrap_or(Ordering::Equal)
-    }
-}
+        // Step 4: Build river tree
+        let min_accumulation = ((total as f64) * 0.0002).max(15.0) as u32;
+        let mut segments = build_river_tree(
+            &flow_dir, &accumulation, continentalness, width, height, sea_level, min_accumulation,
+        );
 
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Fill topographic depressions using Priority-Flood (Wang & Liu 2006).
-pub fn fill_depressions(elevation: &mut Vec<f64>, width: usize, height: usize) {
-    let total = width * height;
-    let epsilon = 1e-5;
-    let mut open: BinaryHeap<HeapEntry> = BinaryHeap::new();
-    let mut closed = vec![false; total];
-
-    // Seed with all border cells
-    for y in 0..height {
-        for x in 0..width {
-            if x == 0 || x == width - 1 || y == 0 || y == height - 1 {
-                let idx = y * width + x;
-                open.push(HeapEntry(elevation[idx], idx));
-                closed[idx] = true;
-            }
-        }
-    }
-
-    while let Some(HeapEntry(elev, idx)) = open.pop() {
-        let x = idx % width;
-        let y = idx / width;
-        for &(dx, dy) in &D8_OFFSETS {
-            let nx = x as i32 + dx;
-            let ny = y as i32 + dy;
-            if nx < 0 || nx >= width as i32 || ny < 0 || ny >= height as i32 {
+        // Step 5: Classify river character at each segment midpoint
+        for seg in &mut segments {
+            if seg.path.is_empty() {
                 continue;
             }
-            let nidx = ny as usize * width + nx as usize;
-            if closed[nidx] {
-                continue;
-            }
-            closed[nidx] = true;
-            if elevation[nidx] < elev + epsilon {
-                elevation[nidx] = elev + epsilon;
-            }
-            open.push(HeapEntry(elevation[nidx], nidx));
+            let mid_idx = seg.path.len() / 2;
+            let (mx, my) = seg.path[mid_idx];
+            let px = (mx as usize).min(width - 1);
+            let py = (my as usize).min(height - 1);
+            let idx = py * width + px;
+            let light = light_level.get(idx).copied().unwrap_or(0.5);
+            let humid = humidity.get(idx).copied().unwrap_or(0.5);
+            let temp = temperature.get(idx).copied().unwrap_or(15.0);
+            seg.character = RiverCharacter::classify(light, humid, temp);
         }
-    }
-}
 
-/// Compute D8 flow directions and accumulation.
-pub fn compute_flow_accumulation(
-    elevation: &[f64],
-    width: usize,
-    height: usize,
-) -> (Vec<u8>, Vec<u32>) {
-    let total = width * height;
-    let mut flow_dir = vec![NO_FLOW; total];
-    let mut accumulation = vec![1u32; total];
+        // Step 5.5: Compute Strahler stream orders
+        compute_strahler_orders(&mut segments);
 
-    // Compute D8 flow directions
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            let h = elevation[idx];
-            let mut best_slope = 0.0;
-            let mut best_dir = NO_FLOW;
-
-            for (d, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
-                let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
-                let ny = y as i32 + dy;
-                if ny < 0 || ny >= height as i32 {
-                    continue;
-                }
-                let nidx = ny as usize * width + nx;
-                let slope = (h - elevation[nidx]) / D8_DISTANCES[d];
-                if slope > best_slope {
-                    best_slope = slope;
-                    best_dir = d as u8;
-                }
-            }
-            flow_dir[idx] = best_dir;
+        // Step 6: Smooth paths to remove D8 staircase
+        for seg in &mut segments {
+            seg.path = chaikin_smooth(&seg.path, 2);
+            seg.meander_offsets = vec![0.0; seg.path.len()];
         }
+
+        // Diagnostics
+        {
+            let max_drainage = segments.iter().map(|s| s.drainage_area).max().unwrap_or(0);
+            let segs_above_500 = segments.iter().filter(|s| s.drainage_area >= 500).count();
+            let segs_above_100 = segments.iter().filter(|s| s.drainage_area >= 100).count();
+            eprintln!(
+                "[rivers] {} segments, max drainage {max_drainage}, >=500: {segs_above_500}, >=100: {segs_above_100}",
+                segments.len()
+            );
+        }
+
+        // Step 7: Build spatial index
+        let spatial_index = build_spatial_index(&segments);
+
+        Self { segments, spatial_index, width, height }
     }
 
-    // Sort cells high-to-low, accumulate drainage
-    let mut order: Vec<usize> = (0..total).collect();
-    order.sort_unstable_by(|&a, &b| {
-        elevation[b]
-            .partial_cmp(&elevation[a])
-            .unwrap_or(Ordering::Equal)
-    });
-
-    for &idx in &order {
-        let dir = flow_dir[idx];
-        if dir == NO_FLOW {
-            continue;
-        }
-        let x = (idx % width) as i32;
-        let y = (idx / width) as i32;
-        let (dx, dy) = D8_OFFSETS[dir as usize];
-        let nx = crate::wrap::wrap_grid_x(x + dx, width) as usize;
-        let ny = y + dy;
-        if ny >= 0 && (ny as usize) < height {
-            let nidx = ny as usize * width + nx;
-            accumulation[nidx] += accumulation[idx];
-        }
+    pub fn rebuild_spatial_index(&mut self) {
+        self.spatial_index = build_spatial_index(&self.segments);
     }
 
-    (flow_dir, accumulation)
-}
+    /// Query river segments intersecting rectangular bounds.
+    pub fn query_chunk(
+        &self,
+        min_x: f64, min_y: f64,
+        max_x: f64, max_y: f64,
+        lod_drainage_threshold: u32,
+    ) -> Vec<RiverConstraint> {
+        let ix_min = min_x.floor() as i32;
+        let iy_min = min_y.floor() as i32;
+        let ix_max = max_x.ceil() as i32;
+        let iy_max = max_y.ceil() as i32;
 
-/// Box blur for smoothing drainage area maps (used by erosion sim).
-pub fn box_blur(input: &[f64], width: usize, height: usize, radius: usize) -> Vec<f64> {
-    let mut output = vec![0.0f64; width * height];
-    for y in 0..height {
-        for x in 0..width {
-            let mut sum = 0.0;
-            let mut count = 0;
-            for dy in -(radius as i32)..=(radius as i32) {
-                for dx in -(radius as i32)..=(radius as i32) {
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-                    if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
-                        sum += input[ny as usize * width + nx as usize];
-                        count += 1;
+        let mut seen = vec![false; self.segments.len()];
+        let mut constraints = Vec::new();
+
+        for iy in iy_min..=iy_max {
+            for ix in ix_min..=ix_max {
+                let coord = RiverChunkCoord { x: ix, y: iy };
+                if let Some(ids) = self.spatial_index.get(&coord) {
+                    for &id in ids {
+                        if id >= self.segments.len() || seen[id] {
+                            continue;
+                        }
+                        seen[id] = true;
+                        let seg = &self.segments[id];
+                        if seg.drainage_area < lod_drainage_threshold {
+                            continue;
+                        }
+                        let clipped: Vec<(f64, f64)> = seg.path.iter()
+                            .filter(|&&(px, py)| px >= min_x - 1.0 && px <= max_x + 1.0 && py >= min_y - 1.0 && py <= max_y + 1.0)
+                            .copied()
+                            .collect();
+                        if clipped.is_empty() {
+                            continue;
+                        }
+                        constraints.push(RiverConstraint {
+                            path: clipped,
+                            drainage_area: seg.drainage_area,
+                            character: seg.character,
+                            width: compute_river_width(seg.drainage_area, seg.character),
+                            depth: compute_river_depth(seg.drainage_area),
+                            strahler_order: seg.strahler_order,
+                            river_id: seg.id,
+                            segment_index: id,
+                        });
                     }
                 }
             }
+        }
+        constraints
+    }
+
+    /// Convert to a flat flow grid using smooth rasterisation.
+    pub fn to_flow_grid(&self, width: usize, height: usize) -> Vec<f64> {
+        let mut grid = vec![0.0f64; width * height];
+        let max_drainage = self.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
+        for seg in &self.segments {
+            if seg.character == RiverCharacter::BuriedIce || seg.path.len() < 2 {
+                continue;
+            }
+            let drainage_per_point = vec![seg.drainage_area; seg.path.len()];
+            let max_half_width = 3.0 * seg.character.width_multiplier();
+            rasterise_smooth_line(
+                &mut grid, width, height,
+                &seg.path, &drainage_per_point, max_drainage, max_half_width,
+            );
+        }
+        grid
+    }
+
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+}
+
+// ─── Width & Depth ──────────────────────────────────────────────────────────
+
+fn compute_river_width(drainage_area: u32, character: RiverCharacter) -> f64 {
+    (drainage_area as f64).sqrt() * 0.1 * character.width_multiplier()
+}
+
+fn compute_river_depth(drainage_area: u32) -> f64 {
+    (drainage_area as f64).log10().max(0.0) * 0.5
+}
+
+// ─── Depression Filling (Priority-Flood) ────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct FloodCell {
+    elevation: f64,
+    index: usize,
+}
+
+impl PartialEq for FloodCell {
+    fn eq(&self, other: &Self) -> bool { self.index == other.index }
+}
+impl Eq for FloodCell {}
+impl PartialOrd for FloodCell {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for FloodCell {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.elevation.partial_cmp(&self.elevation).unwrap_or(Ordering::Equal)
+    }
+}
+
+pub(crate) fn fill_depressions(
+    elevation: &[f64], width: usize, height: usize, sea_level: f64,
+    continentalness: Option<&[f64]>,
+) -> Vec<f64> {
+    let epsilon = 1e-4;
+    let mut filled = elevation.to_vec();
+    let mut resolved = vec![false; width * height];
+    let mut heap = BinaryHeap::new();
+
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y * width + x;
+            let is_boundary = y == 0 || y == height - 1;
+            let is_ocean = if let Some(cont) = continentalness {
+                cont[idx] <= sea_level
+            } else {
+                elevation[idx] <= sea_level
+            };
+            if is_ocean || is_boundary {
+                heap.push(FloodCell { elevation: elevation[idx], index: idx });
+                resolved[idx] = true;
+            }
+        }
+    }
+
+    while let Some(cell) = heap.pop() {
+        let x = cell.index % width;
+        let y = cell.index / width;
+        for &(dx, dy) in &D8_OFFSETS {
+            let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width);
+            let ny = y as i32 + dy;
+            if ny < 0 || ny >= height as i32 { continue; }
+            let nidx = ny as usize * width + nx as usize;
+            if resolved[nidx] { continue; }
+            resolved[nidx] = true;
+            let new_elev = if elevation[nidx] <= filled[cell.index] {
+                filled[cell.index] + epsilon
+            } else {
+                elevation[nidx]
+            };
+            filled[nidx] = new_elev;
+            heap.push(FloodCell { elevation: new_elev, index: nidx });
+        }
+    }
+    filled
+}
+
+// ─── Heightmap Drainage Conditioning ────────────────────────────────────────
+
+fn condition_heightmap_for_drainage(
+    heightmap: &[f64], continentalness: &[f64], tectonic_stress: &[f64],
+    width: usize, height: usize, sea_level: f64,
+) -> Vec<f64> {
+    let total = width * height;
+    let smoothed = box_blur(heightmap, width, height, 48);
+    let blend = 0.80;
+    let mut conditioned = Vec::with_capacity(total);
+    for idx in 0..total {
+        conditioned.push(heightmap[idx] * (1.0 - blend) + smoothed[idx] * blend);
+    }
+    let beta = 0.05;
+    for idx in 0..total {
+        if continentalness[idx] > sea_level {
+            conditioned[idx] += tectonic_stress[idx] * beta;
+        }
+    }
+    conditioned
+}
+
+pub(crate) fn box_blur(data: &[f64], width: usize, height: usize, radius: usize) -> Vec<f64> {
+    let mut temp = data.to_vec();
+    let mut output = data.to_vec();
+
+    // Horizontal pass
+    for y in 0..height {
+        let mut sum = 0.0;
+        let mut count = 0;
+        for x in 0..=radius.min(width - 1) {
+            sum += data[y * width + x];
+            count += 1;
+        }
+        for x in 0..width {
+            temp[y * width + x] = sum / count as f64;
+            let right = x + radius + 1;
+            if right < width { sum += data[y * width + right]; count += 1; }
+            if x >= radius { sum -= data[y * width + (x - radius)]; count -= 1; }
+        }
+    }
+
+    // Vertical pass
+    for x in 0..width {
+        let mut sum = 0.0;
+        let mut count = 0;
+        for y in 0..=radius.min(height - 1) {
+            sum += temp[y * width + x];
+            count += 1;
+        }
+        for y in 0..height {
             output[y * width + x] = sum / count as f64;
+            let bottom = y + radius + 1;
+            if bottom < height { sum += temp[bottom * width + x]; count += 1; }
+            if y >= radius { sum -= temp[(y - radius) * width + x]; count -= 1; }
         }
     }
     output
 }
 
-/// Generate the global river network from a post-erosion heightmap.
-pub fn generate_river_network(
-    heightmap: &[f64],
-    width: usize,
-    height: usize,
-    light_level: &[f64],
-    humidity: &[f64],
-    temperature: &[f64],
-    threshold: f64,
-) -> RiverNetwork {
-    let mut elev = heightmap.to_vec();
-    fill_depressions(&mut elev, width, height);
-    let (flow_dir, accumulation) = compute_flow_accumulation(&elev, width, height);
+// ─── Geology-Aware D8 Flow Direction ────────────────────────────────────────
 
-    let mut network = RiverNetwork::empty(width, height);
-    let mut spatial_index: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-
-    // Extract segments where accumulation exceeds threshold
-    // Simple extraction: each cell above threshold is a river segment of length 1
+fn compute_geology_aware_flow(
+    elevation: &[f64], rock_hardness: &[f64], tectonic_stress: &[f64],
+    width: usize, height: usize, sea_level: f64,
+    continentalness: Option<&[f64]>,
+) -> Vec<u8> {
+    let mut flow_dir = vec![NO_FLOW; width * height];
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
-            let drain = accumulation[idx] as f64;
-            if drain < threshold {
-                continue;
-            }
+            let is_ocean = if let Some(cont) = continentalness {
+                cont[idx] <= sea_level
+            } else {
+                elevation[idx] <= sea_level
+            };
+            if is_ocean { continue; }
 
-            let light = if idx < light_level.len() {
-                light_level[idx]
-            } else {
-                0.5
-            };
-            let humid = if idx < humidity.len() {
-                humidity[idx]
-            } else {
-                0.5
-            };
-            let temp = if idx < temperature.len() {
-                temperature[idx]
-            } else {
-                15.0
-            };
-            let character = RiverCharacter::classify(light, humid, temp);
-
-            // Find downstream cell
-            let downstream_seg = if flow_dir[idx] != NO_FLOW {
-                let (dx, dy) = D8_OFFSETS[flow_dir[idx] as usize];
+            let mut max_slope = 0.0;
+            let mut best_dir = NO_FLOW;
+            for (dir, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
                 let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
                 let ny = y as i32 + dy;
-                if ny >= 0 && (ny as usize) < height {
-                    Some(ny as usize * width + nx)
-                } else {
-                    None
+                if ny < 0 || ny >= height as i32 { continue; }
+                let nidx = ny as usize * width + nx;
+                let base_slope = (elevation[idx] - elevation[nidx]) / D8_DISTANCES[dir];
+                let geo_factor = (1.0
+                    - rock_hardness.get(nidx).copied().unwrap_or(0.5) * 0.5
+                    + tectonic_stress.get(nidx).copied().unwrap_or(0.0) * 0.4)
+                    .clamp(0.1, 2.0);
+                let adjusted = base_slope * geo_factor;
+                if adjusted > max_slope {
+                    max_slope = adjusted;
+                    best_dir = dir as u8;
                 }
-            } else {
-                None
-            };
+            }
+            flow_dir[idx] = best_dir;
+        }
+    }
+    flow_dir
+}
 
-            let seg_id = network.segments.len();
-            spatial_index.entry((x, y)).or_default().push(seg_id);
+// ─── Flow Accumulation ──────────────────────────────────────────────────────
 
-            network.segments.push(RiverSegment {
-                path: vec![(x, y)],
-                drainage_area: drain,
-                downstream: downstream_seg,
-                upstream: Vec::new(),
-                character,
-                strahler_order: 1,
-            });
+pub(crate) fn compute_flow_accumulation(
+    flow_dir: &[u8], elevation: &[f64], width: usize, height: usize,
+) -> Vec<u32> {
+    let total = width * height;
+    let mut accumulation = vec![1u32; total];
+    let mut sorted: Vec<usize> = (0..total).collect();
+    sorted.sort_by(|&a, &b| elevation[b].partial_cmp(&elevation[a]).unwrap_or(Ordering::Equal));
+    for &idx in &sorted {
+        if flow_dir[idx] == NO_FLOW { continue; }
+        let x = idx % width;
+        let y = idx / width;
+        let (dx, dy) = D8_OFFSETS[flow_dir[idx] as usize];
+        let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
+        let ny = (y as i32 + dy) as usize;
+        if ny < height {
+            let target = ny * width + nx;
+            accumulation[target] = accumulation[target].saturating_add(accumulation[idx]);
+        }
+    }
+    accumulation
+}
+
+// ─── River Tree Building ────────────────────────────────────────────────────
+
+fn build_river_tree(
+    flow_dir: &[u8], accumulation: &[u32], continentalness: &[f64],
+    width: usize, height: usize, sea_level: f64, min_accumulation: u32,
+) -> Vec<RiverSegment> {
+    let total = width * height;
+    let is_river: Vec<bool> = accumulation.iter().map(|&a| a >= min_accumulation).collect();
+
+    // Count river-cell inflows
+    let mut inflow_count = vec![0u32; total];
+    for idx in 0..total {
+        if !is_river[idx] || flow_dir[idx] == NO_FLOW { continue; }
+        let x = idx % width;
+        let y = idx / width;
+        let (dx, dy) = D8_OFFSETS[flow_dir[idx] as usize];
+        let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
+        let ny = y as i32 + dy;
+        if ny >= 0 && (ny as usize) < height {
+            let nidx = ny as usize * width + nx;
+            if is_river[nidx] { inflow_count[nidx] += 1; }
         }
     }
 
-    network.spatial_index = spatial_index;
-    network
+    // Find segment start points: headwaters (inflow=0) and confluences (inflow>=2)
+    let mut starts: Vec<usize> = Vec::new();
+    for idx in 0..total {
+        if !is_river[idx] { continue; }
+        if inflow_count[idx] == 0 || inflow_count[idx] >= 2 {
+            starts.push(idx);
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+
+    let mut segment_id_at: Vec<Option<usize>> = vec![None; total];
+    let mut segments: Vec<RiverSegment> = Vec::new();
+
+    for &start in &starts {
+        if segment_id_at[start].is_some() && inflow_count[start] == 0 { continue; }
+
+        let mut path = Vec::new();
+        let mut current = start;
+
+        loop {
+            if current != start && segment_id_at[current].is_some() { break; }
+            if current != start && inflow_count[current] >= 2 { break; }
+
+            path.push(((current % width) as f64, (current / width) as f64));
+
+            if continentalness.get(current).copied().unwrap_or(0.0) < sea_level { break; }
+            if flow_dir[current] == NO_FLOW { break; }
+
+            let x = current % width;
+            let y = current / width;
+            let (dx, dy) = D8_OFFSETS[flow_dir[current] as usize];
+            let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
+            let ny = y as i32 + dy;
+            if ny < 0 || ny >= height as i32 { break; }
+            current = ny as usize * width + nx;
+        }
+
+        if path.len() < 2 { continue; }
+
+        let seg_id = segments.len();
+        let last = path.last().unwrap();
+        let last_idx = last.1 as usize * width + last.0 as usize;
+        let drainage = accumulation.get(last_idx).copied().unwrap_or(0);
+
+        for &(px, py) in &path {
+            let idx = py as usize * width + px as usize;
+            if segment_id_at[idx].is_none() { segment_id_at[idx] = Some(seg_id); }
+        }
+
+        segments.push(RiverSegment {
+            id: seg_id,
+            meander_offsets: vec![0.0; path.len()],
+            path,
+            drainage_area: drainage,
+            downstream: None,
+            upstream: Vec::new(),
+            character: RiverCharacter::Permanent,
+            strahler_order: 1,
+        });
+    }
+
+    // Link segments downstream
+    for i in 0..segments.len() {
+        let last = *segments[i].path.last().unwrap();
+        let last_idx = last.1 as usize * width + last.0 as usize;
+        if flow_dir[last_idx] == NO_FLOW { continue; }
+        let x = last_idx % width;
+        let y = last_idx / width;
+        let (dx, dy) = D8_OFFSETS[flow_dir[last_idx] as usize];
+        let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
+        let ny = y as i32 + dy;
+        if ny < 0 || ny >= height as i32 { continue; }
+        let next_idx = ny as usize * width + nx;
+        if let Some(ds) = segment_id_at[next_idx] {
+            if ds != i { segments[i].downstream = Some(ds); }
+        }
+    }
+
+    // Build upstream links
+    let downstream_links: Vec<(usize, Option<usize>)> = segments.iter().map(|s| (s.id, s.downstream)).collect();
+    for (seg_id, downstream) in downstream_links {
+        if let Some(ds) = downstream {
+            if ds < segments.len() { segments[ds].upstream.push(seg_id); }
+        }
+    }
+
+    segments
 }
 
-/// Rasterize the global river network (in macro pixel coords) into a meso tile buffer.
-///
-/// Each macro segment pixel's world footprint is projected onto the tile's pixel grid.
-/// One macro pixel covers `(macro_world_w / network.width)` × `(macro_world_h / network.height)`
-/// world units, which expands to an N×M footprint at meso resolution.
-pub fn rasterize_to_tile(
-    network: &RiverNetwork,
-    tile_w: usize,
-    tile_h: usize,
-    tile_world_x: f64,
-    tile_world_y: f64,
-    tile_world_w: f64,
-    tile_world_h: f64,
-    macro_world_w: f64,
-    macro_world_h: f64,
-    threshold: f64,
-) -> Vec<f64> {
-    let macro_px_w = macro_world_w / network.width as f64;
-    let macro_px_h = macro_world_h / network.height as f64;
-    let meso_ppw = tile_w as f64 / tile_world_w; // meso pixels per world unit X
-    let meso_pph = tile_h as f64 / tile_world_h; // meso pixels per world unit Y
+// ─── Strahler Stream Order ──────────────────────────────────────────────────
 
-    let mut grid = vec![0.0f64; tile_w * tile_h];
+fn compute_strahler_orders(segments: &mut [RiverSegment]) {
+    if segments.is_empty() { return; }
+    let mut order: Vec<Option<u32>> = vec![None; segments.len()];
+    let mut stack: Vec<usize> = Vec::new();
 
-    for seg in &network.segments {
-        if seg.drainage_area < threshold {
-            continue;
+    for i in 0..segments.len() {
+        if segments[i].upstream.is_empty() {
+            order[i] = Some(1);
+            stack.push(i);
         }
-        for &(mx, my) in &seg.path {
-            // World bounding box of this macro pixel
-            let wx0 = mx as f64 * macro_px_w;
-            let wy0 = my as f64 * macro_px_h;
-            let wx1 = wx0 + macro_px_w;
-            let wy1 = wy0 + macro_px_h;
-            // Clip to this tile's world extent
-            let rx0 = (wx0 - tile_world_x).max(0.0);
-            let ry0 = (wy0 - tile_world_y).max(0.0);
-            let rx1 = (wx1 - tile_world_x).min(tile_world_w);
-            let ry1 = (wy1 - tile_world_y).min(tile_world_h);
-            if rx0 >= rx1 || ry0 >= ry1 {
-                continue;
-            }
-            // Convert to meso pixel ranges
-            let px0 = (rx0 * meso_ppw) as usize;
-            let py0 = (ry0 * meso_pph) as usize;
-            let px1 = ((rx1 * meso_ppw) as usize + 1).min(tile_w);
-            let py1 = ((ry1 * meso_pph) as usize + 1).min(tile_h);
-            for py in py0..py1 {
-                for px in px0..px1 {
-                    let idx = py * tile_w + px;
-                    if seg.drainage_area > grid[idx] {
-                        grid[idx] = seg.drainage_area;
-                    }
+    }
+
+    while let Some(seg_idx) = stack.pop() {
+        let Some(downstream_id) = segments[seg_idx].downstream else { continue };
+        if downstream_id >= segments.len() { continue; }
+
+        let all_computed = segments[downstream_id].upstream.iter()
+            .all(|&u| u >= segments.len() || order[u].is_some());
+        if !all_computed { continue; }
+
+        let upstream_orders: Vec<u32> = segments[downstream_id].upstream.iter()
+            .filter_map(|&u| if u < segments.len() { order[u] } else { None })
+            .collect();
+
+        let new_order = if upstream_orders.is_empty() {
+            1
+        } else {
+            let max_order = *upstream_orders.iter().max().unwrap();
+            let count_max = upstream_orders.iter().filter(|&&o| o == max_order).count();
+            if count_max >= 2 { max_order + 1 } else { max_order }
+        };
+
+        order[downstream_id] = Some(new_order);
+        stack.push(downstream_id);
+    }
+
+    for (i, seg) in segments.iter_mut().enumerate() {
+        seg.strahler_order = order[i].unwrap_or(1);
+    }
+}
+
+// ─── Path Smoothing ─────────────────────────────────────────────────────────
+
+fn chaikin_smooth(path: &[(f64, f64)], passes: usize) -> Vec<(f64, f64)> {
+    if path.len() < 3 { return path.to_vec(); }
+    let mut current = path.to_vec();
+    for _ in 0..passes {
+        let n = current.len();
+        if n < 3 { break; }
+        let mut smoothed = Vec::with_capacity(n * 2);
+        smoothed.push(current[0]);
+        for i in 0..n - 1 {
+            let (ax, ay) = current[i];
+            let (bx, by) = current[i + 1];
+            if i > 0 { smoothed.push((0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by)); }
+            if i + 1 < n - 1 { smoothed.push((0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by)); }
+        }
+        smoothed.push(current[n - 1]);
+        current = smoothed;
+    }
+    current
+}
+
+fn subdivide_to_spacing(path: &[(f64, f64)], target: f64) -> Vec<(f64, f64)> {
+    if path.len() < 2 || target <= 0.0 { return path.to_vec(); }
+    let max_len = path.windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .fold(0.0f64, f64::max);
+    if max_len <= target { return path.to_vec(); }
+    let passes = ((max_len / target).log2().ceil() as usize).min(8);
+    if passes == 0 { return path.to_vec(); }
+    chaikin_smooth(path, passes)
+}
+
+fn interpolate_drainage(original: &[u32], new_len: usize) -> Vec<u32> {
+    if original.len() == new_len || original.is_empty() { return original.to_vec(); }
+    if original.len() == 1 { return vec![original[0]; new_len]; }
+    let mut result = Vec::with_capacity(new_len);
+    let scale = (original.len() - 1) as f64 / (new_len - 1).max(1) as f64;
+    for i in 0..new_len {
+        let t = i as f64 * scale;
+        let lo = (t as usize).min(original.len() - 1);
+        let hi = (lo + 1).min(original.len() - 1);
+        let frac = t - lo as f64;
+        result.push((original[lo] as f64 * (1.0 - frac) + original[hi] as f64 * frac) as u32);
+    }
+    result
+}
+
+// ─── Graduated Width Rasterisation ──────────────────────────────────────────
+
+pub fn rasterise_smooth_line(
+    grid: &mut [f64], width: usize, height: usize,
+    path: &[(f64, f64)], drainage_per_point: &[u32],
+    max_drainage: u32, max_half_width: f64,
+) {
+    if path.len() < 2 || max_drainage == 0 { return; }
+    let max_drain_f = max_drainage as f64;
+
+    for i in 0..path.len() - 1 {
+        let (x0, y0) = path[i];
+        let (x1, y1) = path[i + 1];
+        let d0 = drainage_per_point[i] as f64;
+        let d1 = drainage_per_point[i + 1] as f64;
+
+        let seg_dx = x1 - x0;
+        let seg_dy = y1 - y0;
+        let seg_len = (seg_dx * seg_dx + seg_dy * seg_dy).sqrt();
+        if seg_len < 0.001 { continue; }
+
+        let perp_x = -seg_dy / seg_len;
+        let perp_y = seg_dx / seg_len;
+
+        let steps = (seg_len / 0.5).ceil() as usize;
+        for s in 0..=steps {
+            let t = s as f64 / steps as f64;
+            let cx = x0 + seg_dx * t;
+            let cy = y0 + seg_dy * t;
+            let drainage = d0 + (d1 - d0) * t;
+
+            let norm_drain = (drainage / max_drain_f).sqrt();
+            let half_width = (norm_drain * max_half_width).max(0.7);
+            let value = norm_drain.max(0.15);
+
+            let hw_ceil = half_width.ceil() as i32;
+            let px_center = cx.round() as i32;
+            let py_center = cy.round() as i32;
+
+            for dy in -hw_ceil..=hw_ceil {
+                for dx in -hw_ceil..=hw_ceil {
+                    let px = px_center + dx;
+                    let py = py_center + dy;
+                    if px < 0 || px >= width as i32 || py < 0 || py >= height as i32 { continue; }
+
+                    let rel_x = px as f64 - cx;
+                    let rel_y = py as f64 - cy;
+                    let perp_dist = (rel_x * perp_x + rel_y * perp_y).abs();
+                    if perp_dist > half_width { continue; }
+
+                    let falloff = (1.0 - (perp_dist / half_width)).powi(2);
+                    let idx = py as usize * width + px as usize;
+                    grid[idx] = grid[idx].max(value * falloff);
                 }
             }
         }
+    }
+}
+
+// ─── Rasterize from Global Network ──────────────────────────────────────────
+
+/// Rasterize rivers from the global network onto a tile grid.
+/// Queries segments, applies Chaikin subdivision, then graduated rendering.
+pub fn rasterize_from_network(
+    network: &RiverNetwork,
+    world_x: f64, world_y: f64, world_size: f64,
+    output_size: usize,
+    lod_drainage_threshold: u32,
+) -> Vec<f64> {
+    let mut grid = vec![0.0f64; output_size * output_size];
+
+    let margin = 2.0;
+    let constraints = network.query_chunk(
+        world_x - margin, world_y - margin,
+        world_x + world_size + margin, world_y + world_size + margin,
+        lod_drainage_threshold,
+    );
+    if constraints.is_empty() { return grid; }
+
+    let global_max = network.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
+    let scale = output_size as f64 / world_size;
+    let pixels_per_wu = scale;
+
+    for constraint in &constraints {
+        if constraint.character == RiverCharacter::BuriedIce { continue; }
+
+        let target_spacing = 6.0 / pixels_per_wu;
+        let subdivided = subdivide_to_spacing(&constraint.path, target_spacing);
+
+        let pixel_path: Vec<(f64, f64)> = subdivided.iter()
+            .map(|&(wx, wy)| ((wx - world_x) * scale, (wy - world_y) * scale))
+            .collect();
+        if pixel_path.len() < 2 { continue; }
+
+        let drainage_per_point = vec![constraint.drainage_area; pixel_path.len()];
+        let max_half_width = (3.0 * scale * constraint.character.width_multiplier())
+            .min(output_size as f64 * 0.25);
+
+        rasterise_smooth_line(
+            &mut grid, output_size, output_size,
+            &pixel_path, &drainage_per_point,
+            global_max, max_half_width,
+        );
     }
     grid
 }
 
-/// Constraint used when generating chunk-level rivers locked to the global network.
-pub struct RiverConstraint {
-    pub x: usize,
-    pub y: usize,
-    pub flow_value: f64,
+// ─── Legacy rasterize_to_tile (uses rasterize_from_network) ────────────────
+
+/// Rasterize rivers onto a meso tile (backward-compatible interface).
+pub fn rasterize_to_tile(
+    network: &RiverNetwork,
+    tile_w: usize, tile_h: usize,
+    tile_world_x: f64, tile_world_y: f64,
+    tile_world_w: f64, tile_world_h: f64,
+    _macro_world_w: f64, _macro_world_h: f64,
+    threshold: f64,
+) -> Vec<f64> {
+    // Delegate to rasterize_from_network for the square case.
+    // For non-square tiles, use the max dimension.
+    let size = tile_w.max(tile_h);
+    let world_size = tile_world_w.max(tile_world_h);
+    let grid = rasterize_from_network(network, tile_world_x, tile_world_y, world_size, size, threshold as u32);
+
+    // If tile is square and matches output, return directly.
+    if tile_w == size && tile_h == size { return grid; }
+
+    // Otherwise crop to tile dimensions.
+    let mut result = vec![0.0f64; tile_w * tile_h];
+    for y in 0..tile_h.min(size) {
+        for x in 0..tile_w.min(size) {
+            result[y * tile_w + x] = grid[y * size + x];
+        }
+    }
+    result
+}
+
+// ─── Spatial Index ──────────────────────────────────────────────────────────
+
+fn build_spatial_index(segments: &[RiverSegment]) -> HashMap<RiverChunkCoord, Vec<usize>> {
+    let mut index: HashMap<RiverChunkCoord, Vec<usize>> = HashMap::new();
+    for seg in segments {
+        for &(x, y) in &seg.path {
+            let coord = RiverChunkCoord { x: x.floor() as i32, y: y.floor() as i32 };
+            index.entry(coord).or_default().push(seg.id);
+        }
+    }
+    for ids in index.values_mut() {
+        ids.sort_unstable();
+        ids.dedup();
+    }
+    index
+}
+
+// ─── Legacy API (generate_river_network) ────────────────────────────────────
+
+/// Legacy entry point — generates a RiverNetwork using the full pipeline.
+pub fn generate_river_network(
+    heightmap: &[f64], width: usize, height: usize,
+    light_level: &[f64], humidity: &[f64], temperature: &[f64],
+    _threshold: f64,
+) -> RiverNetwork {
+    // Use zeros for missing geological layers — the conditioning will still work
+    // from the heightmap smoothing alone.
+    let rock_hardness = vec![0.5; width * height];
+    let tectonic_stress = vec![0.0; width * height];
+    let continentalness = heightmap.to_vec(); // approximate: use heightmap as continentalness
+    let sea_level = crate::biome_map::SEA_LEVEL;
+
+    RiverNetwork::generate(
+        heightmap, &rock_hardness, &tectonic_stress, &continentalness,
+        light_level, humidity, temperature,
+        width, height, sea_level,
+    )
+}
+
+/// Legacy flat-grid rasterization.
+pub fn rasterize_from_network_flat(
+    network: &RiverNetwork, width: usize, height: usize, _threshold: f64,
+) -> Vec<f64> {
+    network.to_flow_grid(width, height)
 }

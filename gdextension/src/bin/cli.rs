@@ -338,8 +338,15 @@ fn run_generate_layers(seed: u32, tag: &str) {
                 TILE_WORLD_SIZE,
                 WORLD_WIDTH,
                 WORLD_HEIGHT,
-                LOD_THRESHOLD_MACRO,
+                LOD_THRESHOLD_MACRO as f64,
             );
+
+            // Override land biomes to River where macro rivers flow over wet zones.
+            for i in 0..TILE_PX * TILE_PX {
+                if tile.rivers[i] > 0.1 && !mg_noise::tile_has_fluid_surface(tile.biomes[i]) && tile.aridity[i] < 0.7 {
+                    tile.biomes[i] = mg_core::TileType::River;
+                }
+            }
 
             // Blit each layer from this tile into the full image
             for (li, &layer) in NoiseLayer::all().iter().enumerate() {
@@ -352,6 +359,20 @@ fn run_generate_layers(seed: u32, tag: &str) {
                         let src_idx = (py * TILE_PX + px) * 4;
                         let dst_idx = ((oy + py) * FULL_W + (ox + px)) * 4;
                         dst[dst_idx..dst_idx + 4].copy_from_slice(&rgba[src_idx..src_idx + 4]);
+                    }
+                }
+            }
+
+            // Also blit composited terrain render for the terrain.png output
+            {
+                let terrain_rgba = mg_noise::render_terrain(&tile, None);
+                let ox = tx * TILE_PX;
+                let oy = ty * TILE_PX;
+                for py in 0..TILE_PX {
+                    for px in 0..TILE_PX {
+                        let src_idx = (py * TILE_PX + px) * 4;
+                        let dst_idx = ((oy + py) * FULL_W + (ox + px)) * 4;
+                        terrain_buf[dst_idx..dst_idx + 4].copy_from_slice(&terrain_rgba[src_idx..src_idx + 4]);
                     }
                 }
             }
