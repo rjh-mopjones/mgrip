@@ -67,7 +67,7 @@ enum Commands {
     /// Compare the macro artifact against per-chunk runtime terrain for a meso map.
     /// Uses macromap.png for visible macro context and macro_biome.bin for
     /// ocean-mask/scoring semantics.
-    /// Outputs macro.png (macro artifact crop), micro_grid.png, diff.png, and agreement.json.
+    /// Outputs macro.png, micro_grid.png, diff.png, river comparison PNGs, and agreement.json.
     CompareScale {
         /// World seed (used for micro chunk generation)
         seed: u32,
@@ -1018,6 +1018,31 @@ fn load_compare_layers(
     }
 }
 
+fn sample_map_value_at_world(
+    values: &[f64],
+    map_w: usize,
+    map_h: usize,
+    world_w: f64,
+    world_h: f64,
+    wx: f64,
+    wy: f64,
+) -> f64 {
+    if map_w == 0 || map_h == 0 || values.is_empty() {
+        return 0.0;
+    }
+    let px = ((wx / world_w * map_w as f64) as usize).min(map_w - 1);
+    let py = ((wy / world_h * map_h as f64) as usize).min(map_h - 1);
+    values.get(py * map_w + px).copied().unwrap_or(0.0)
+}
+
+fn river_debug_rgba(strength: f64) -> [u8; 4] {
+    if strength <= 0.0 {
+        return [16, 16, 18, 255];
+    }
+    let t = (strength / 2000.0).clamp(0.12, 1.0);
+    [0, (95.0 + 160.0 * t) as u8, 255, 255]
+}
+
 fn run_compare_scale(
     seed: u32,
     meso_x: i64,
@@ -1102,12 +1127,50 @@ fn run_compare_scale(
     // same override as the in-game generate_chunk_lod path.
     let macro_ocean_mask = mg_noise::MacroOceanMask::from_biome_map(&macro_map);
 
+    // Build macro river receipt from saved macro semantics.
+    let mut macro_river_rgba = vec![0u8; img_w * img_h * 4];
+    let mut macro_river_mask = vec![false; img_w * img_h];
+    let mut macro_river_present = 0usize;
+    for py in 0..img_h {
+        for px in 0..img_w {
+            let wx = world_x + ((px as f64 + 0.5) / img_w as f64) * n as f64;
+            let wy = world_y + ((py as f64 + 0.5) / img_h as f64) * n as f64;
+            let river = sample_map_value_at_world(
+                &macro_map.rivers,
+                macro_map.width,
+                macro_map.height,
+                macro_map.world_width,
+                macro_map.world_height,
+                wx,
+                wy,
+            );
+            let idx = py * img_w + px;
+            if river > 0.0 {
+                macro_river_present += 1;
+                macro_river_mask[idx] = true;
+            }
+            let dst = idx * 4;
+            macro_river_rgba[dst..dst + 4].copy_from_slice(&river_debug_rgba(river));
+        }
+    }
+    RgbaImage::from_raw(img_w as u32, img_h as u32, macro_river_rgba.clone())
+        .expect("macro river buffer is correct size")
+        .save(output_dir.join("macro_rivers.png"))
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to save macro_rivers.png: {e}");
+            std::process::exit(1);
+        });
+    println!("  macro_rivers.png");
+
     // ── Micro grid: NxN individual chunks at freq_scale=8.0, LOD2 ────────────
     let pb = spinner(&format!("Generating {n}×{n} micro chunks…"));
     let mut micro_rgba = vec![0u8; img_w * img_h * 4];
+    let mut runtime_river_rgba = vec![0u8; img_w * img_h * 4];
+    let mut runtime_river_mask = vec![false; img_w * img_h];
     let mut diff_rgba = vec![0u8; img_w * img_h * 4];
     let mut cells = Vec::with_capacity(n * n);
     let mut agree_count = 0usize;
+    let mut runtime_river_present = 0usize;
 
     for gy in 0..n {
         for gx in 0..n {
@@ -1132,6 +1195,8 @@ fn run_compare_scale(
             let mc = MICRO_RES / 2;
             let micro_ocean = micro.is_ocean(mc, mc);
             let macro_ocean = macro_ocean_mask.is_ocean_at_world(cx + 0.5, cy + 0.5);
+            let mut cell_macro_river_present = false;
+            let mut cell_runtime_river_present = false;
 
             let agree = macro_ocean == micro_ocean;
             if agree {
@@ -1143,6 +1208,8 @@ fn run_compare_scale(
                 "macro_ocean": macro_ocean,
                 "micro_ocean": micro_ocean,
                 "agree": agree,
+                "macro_river_present": false,
+                "runtime_river_present": false,
             }));
 
             // Blit micro biome RGBA into grid (nearest-neighbour scale MICRO_RES → CELL_PX)
@@ -1156,7 +1223,27 @@ fn run_compare_scale(
                     let dy = gy * CELL_PX + py;
                     let dst = (dy * img_w + dx) * 4;
                     micro_rgba[dst..dst + 4].copy_from_slice(&biome[src..src + 4]);
+                    let river = micro.rivers[sy * MICRO_RES + sx];
+                    if river > 0.0 {
+                        runtime_river_present += 1;
+                        cell_runtime_river_present = true;
+                        runtime_river_mask[dy * img_w + dx] = true;
+                    }
+                    if macro_river_mask[dy * img_w + dx] {
+                        cell_macro_river_present = true;
+                    }
+                    runtime_river_rgba[dst..dst + 4].copy_from_slice(&river_debug_rgba(river));
                 }
+            }
+            if let Some(cell) = cells.last_mut().and_then(|value| value.as_object_mut()) {
+                cell.insert(
+                    "macro_river_present".to_string(),
+                    serde_json::Value::Bool(cell_macro_river_present),
+                );
+                cell.insert(
+                    "runtime_river_present".to_string(),
+                    serde_json::Value::Bool(cell_runtime_river_present),
+                );
             }
 
             // Diff cell — green = agree, red = disagree
@@ -1187,6 +1274,54 @@ fn run_compare_scale(
         });
     println!("  micro_grid.png");
 
+    RgbaImage::from_raw(img_w as u32, img_h as u32, runtime_river_rgba)
+        .expect("runtime river buffer is correct size")
+        .save(output_dir.join("runtime_rivers.png"))
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to save runtime_rivers.png: {e}");
+            std::process::exit(1);
+        });
+    println!("  runtime_rivers.png");
+
+    let mut river_diff_rgba = vec![0u8; img_w * img_h * 4];
+    let mut river_agree = 0usize;
+    let mut macro_river_only = 0usize;
+    let mut runtime_river_only = 0usize;
+    let mut both_river = 0usize;
+    for idx in 0..img_w * img_h {
+        let macro_river = macro_river_mask[idx];
+        let runtime_river = runtime_river_mask[idx];
+        let color = match (macro_river, runtime_river) {
+            (true, true) => {
+                river_agree += 1;
+                both_river += 1;
+                [45, 170, 255, 255]
+            }
+            (true, false) => {
+                macro_river_only += 1;
+                [20, 220, 230, 255]
+            }
+            (false, true) => {
+                runtime_river_only += 1;
+                [240, 110, 35, 255]
+            }
+            (false, false) => {
+                river_agree += 1;
+                [28, 30, 32, 255]
+            }
+        };
+        let dst = idx * 4;
+        river_diff_rgba[dst..dst + 4].copy_from_slice(&color);
+    }
+    RgbaImage::from_raw(img_w as u32, img_h as u32, river_diff_rgba)
+        .expect("river diff buffer is correct size")
+        .save(output_dir.join("river_diff.png"))
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to save river_diff.png: {e}");
+            std::process::exit(1);
+        });
+    println!("  river_diff.png");
+
     RgbaImage::from_raw(img_w as u32, img_h as u32, diff_rgba)
         .expect("diff buffer is correct size")
         .save(output_dir.join("diff.png"))
@@ -1197,6 +1332,7 @@ fn run_compare_scale(
     println!("  diff.png");
 
     let total = n * n;
+    let river_total = img_w * img_h;
     let overall = agree_count as f64 / total as f64;
     let json = serde_json::json!({
         "seed": seed,
@@ -1206,6 +1342,16 @@ fn run_compare_scale(
         "layers_tag": resolved_layers_tag,
         "macro_semantics": "macro_biome.bin",
         "overall_agreement": overall,
+        "river_agreement": river_agree as f64 / river_total as f64,
+        "river_pixels": {
+            "macro_present": macro_river_present,
+            "runtime_present": runtime_river_present,
+            "both_present": both_river,
+            "macro_only": macro_river_only,
+            "runtime_only": runtime_river_only,
+            "agree": river_agree,
+            "total": river_total,
+        },
         "cells": cells,
     });
     fs::write(
@@ -1220,6 +1366,14 @@ fn run_compare_scale(
     println!(
         "\n  agreement: {agree_count}/{total} ({:.1}%)",
         overall * 100.0
+    );
+    println!(
+        "  river pixels: macro={} runtime={} macro_only={} runtime_only={} both={}",
+        macro_river_present,
+        runtime_river_present,
+        macro_river_only,
+        runtime_river_only,
+        both_river,
     );
     println!("  output: {}", output_dir.display());
 }
