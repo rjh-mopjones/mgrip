@@ -36,6 +36,9 @@ pub struct GpuNoiseContext {
 impl GpuNoiseContext {
     /// Get (or lazily initialise) the global GPU context. Returns `None` if no GPU.
     pub fn global() -> Option<&'static GpuNoiseContext> {
+        if std::env::var_os("MG_NOISE_FORCE_CPU").is_some() {
+            return None;
+        }
         GPU_CONTEXT
             .get_or_init(|| {
                 let result = pollster::block_on(Self::new());
