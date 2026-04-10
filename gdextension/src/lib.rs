@@ -33,9 +33,7 @@ fn get_macro_ocean_mask() -> Option<&'static MacroOceanMask> {
         .as_ref()
 }
 
-fn newest_biome_png(
-    store: &mg_artifacts::ArtifactStore,
-) -> Option<(std::path::PathBuf, f64, f64)> {
+fn newest_biome_png(store: &mg_artifacts::ArtifactStore) -> Option<(std::path::PathBuf, f64, f64)> {
     let layers = store.list_layers().ok()?;
     let mut best: Option<(std::path::PathBuf, std::time::SystemTime, f64, f64)> = None;
     for (tag, manifest) in &layers {

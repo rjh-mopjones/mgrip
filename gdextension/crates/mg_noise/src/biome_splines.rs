@@ -107,6 +107,78 @@ impl BiomeSplines {
         Self { sea_level }
     }
 
+    pub fn evaluate_dithered_with_light(
+        &self,
+        continentalness: f64,
+        temperature: f64,
+        tectonic: f64,
+        erosion: f64,
+        peaks_valleys: f64,
+        humidity: f64,
+        aridity: f64,
+        rock_hardness: f64,
+        px: usize,
+        py: usize,
+        light_level: f64,
+    ) -> TileType {
+        // Keep some material-driven breakup, but avoid turning every local
+        // rock/hill variation into a biome-scale patch.
+        let rock_perturb = (rock_hardness - 0.5) * 10.0;
+        let pv_perturb = peaks_valleys * 4.0;
+        let combined = rock_perturb * 0.7 + pv_perturb * 0.5;
+
+        let biome_temp = if temperature > 45.0 {
+            temperature
+        } else if temperature > 30.0 {
+            let warming_fade = ((45.0 - temperature) / 15.0).clamp(0.0, 1.0);
+            let safe = if combined > 0.0 {
+                combined * warming_fade
+            } else {
+                combined
+            };
+            temperature + safe
+        } else {
+            temperature + combined
+        };
+
+        let humid_perturb = peaks_valleys * 0.06 + (rock_hardness - 0.5) * 0.04;
+        let biome_humidity = (humidity + humid_perturb).clamp(0.0, 1.0);
+
+        let base = self.evaluate_with_light(
+            continentalness,
+            biome_temp,
+            tectonic,
+            erosion,
+            peaks_valleys,
+            biome_humidity,
+            aridity,
+            rock_hardness,
+            light_level,
+        );
+
+        let hash = (((px.wrapping_mul(374_761_393)) ^ (py.wrapping_mul(668_265_263))) & 0xFFFF)
+            as f64
+            / 65_535.0;
+
+        let alt = self.evaluate_with_light(
+            continentalness + (hash - 0.5) * 0.01,
+            biome_temp + (hash - 0.5) * 2.0,
+            tectonic,
+            erosion,
+            peaks_valleys,
+            (biome_humidity + (hash - 0.5) * 0.03).clamp(0.0, 1.0),
+            aridity,
+            rock_hardness,
+            light_level,
+        );
+
+        if alt != base && hash > 0.72 {
+            alt
+        } else {
+            base
+        }
+    }
+
     pub fn evaluate_with_light(
         &self,
         continentalness: f64,
@@ -198,13 +270,13 @@ impl BiomeSplines {
     }
 
     fn ocean_biome(&self, elevation: f64, temp: f64, tectonic: f64) -> TileType {
+        let depth = self.sea_level - elevation;
         if temp < -15.0 {
             return TileType::White;
         }
-        if temp > 80.0 {
+        if temp > 88.0 || (temp > 72.0 && depth < 0.18) {
             return TileType::SaltFlat;
         }
-        let depth = self.sea_level - elevation;
         if tectonic < 0.2 && depth > 0.3 {
             return TileType::OceanTrench;
         }
@@ -233,12 +305,18 @@ impl BiomeSplines {
             };
         }
 
-        if light_level > 0.58 || temp > 35.0 {
-            return if temp > 95.0 || depth > 0.16 {
-                TileType::ScorchedRock
-            } else {
-                TileType::SaltFlat
-            };
+        if light_level > 0.62 || temp > 42.0 {
+            let scorched = temp > 100.0 || light_level > 0.85;
+            let evaporation_depth = if scorched { 0.14 } else { 0.08 };
+            let stays_evaporative = temp > 68.0 && light_level > 0.70;
+            let shallow_hot_basin = temp > 55.0 && light_level > 0.64 && depth < 0.16;
+            if depth < evaporation_depth || stays_evaporative || shallow_hot_basin {
+                return if scorched || depth > 0.11 {
+                    TileType::ScorchedRock
+                } else {
+                    TileType::SaltFlat
+                };
+            }
         }
 
         self.ocean_biome(elevation, temp, tectonic)

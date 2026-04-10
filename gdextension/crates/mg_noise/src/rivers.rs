@@ -46,9 +46,15 @@ pub(crate) const NO_FLOW: u8 = 255;
 
 // ─── LOD Drainage Thresholds ────────────────────────────────────────────────
 
-pub const LOD_THRESHOLD_MACRO: u32 = 150;
-pub const LOD_THRESHOLD_MESO: u32 = 50;
-pub const LOD_THRESHOLD_MICRO: u32 = 10;
+pub const LOD_THRESHOLD_MACRO: u32 = 60;
+pub const LOD_THRESHOLD_MESO: u32 = 35;
+pub const LOD_THRESHOLD_MICRO: u32 = 5;
+
+const MAX_RIVER_WORLD_HALF_WIDTH: f64 = 4.0;
+const FLOW_GRID_MAX_HALF_WIDTH: f64 = 2.0;
+const TILE_RIVER_MAX_HALF_WIDTH_RATIO: f64 = 0.015;
+const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00012;
+const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 12.0;
 
 // ─── River Character ────────────────────────────────────────────────────────
 
@@ -74,6 +80,25 @@ impl RiverCharacter {
         } else {
             RiverCharacter::DryWadi
         }
+    }
+
+    fn outside_surface_band(y: usize, height: usize) -> Self {
+        if y < height / 3 {
+            RiverCharacter::BuriedIce
+        } else {
+            RiverCharacter::DryWadi
+        }
+    }
+
+    fn is_visible_channel(&self) -> bool {
+        matches!(
+            self,
+            RiverCharacter::DryWadi
+                | RiverCharacter::SeasonalFlow
+                | RiverCharacter::Permanent
+                | RiverCharacter::Frozen
+                | RiverCharacter::BuriedIce
+        )
     }
 
     pub fn width_multiplier(&self) -> f64 {
@@ -199,7 +224,8 @@ impl RiverNetwork {
         let accumulation = compute_flow_accumulation(&flow_dir, &filled, width, height);
 
         // Step 4: Build river tree
-        let min_accumulation = ((total as f64) * 0.0002).max(15.0) as u32;
+        let min_accumulation =
+            ((total as f64) * MIN_RIVER_ACCUMULATION_RATIO).max(MIN_RIVER_ACCUMULATION_FLOOR) as u32;
         let mut segments = build_river_tree(
             &flow_dir, &accumulation, continentalness, width, height, sea_level, min_accumulation,
         );
@@ -217,7 +243,11 @@ impl RiverNetwork {
             let light = light_level.get(idx).copied().unwrap_or(0.5);
             let humid = humidity.get(idx).copied().unwrap_or(0.5);
             let temp = temperature.get(idx).copied().unwrap_or(15.0);
-            seg.character = RiverCharacter::classify(light, humid, temp);
+            seg.character = if py < height / 3 || py >= (height * 2) / 3 {
+                RiverCharacter::outside_surface_band(py, height)
+            } else {
+                RiverCharacter::classify(light, humid, temp)
+            };
         }
 
         // Step 5.5: Compute Strahler stream orders
@@ -307,11 +337,12 @@ impl RiverNetwork {
         let mut grid = vec![0.0f64; width * height];
         let max_drainage = self.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
         for seg in &self.segments {
-            if seg.character == RiverCharacter::BuriedIce || seg.path.len() < 2 {
+            if !seg.character.is_visible_channel() || seg.path.len() < 2 {
                 continue;
             }
             let drainage_per_point = vec![seg.drainage_area; seg.path.len()];
-            let max_half_width = 3.0 * seg.character.width_multiplier();
+            let max_half_width =
+                (2.0 * seg.character.width_multiplier()).min(FLOW_GRID_MAX_HALF_WIDTH);
             rasterise_smooth_line(
                 &mut grid, width, height,
                 &seg.path, &drainage_per_point, max_drainage, max_half_width,
@@ -328,7 +359,8 @@ impl RiverNetwork {
 // ─── Width & Depth ──────────────────────────────────────────────────────────
 
 fn compute_river_width(drainage_area: u32, character: RiverCharacter) -> f64 {
-    (drainage_area as f64).sqrt() * 0.1 * character.width_multiplier()
+    ((drainage_area as f64).sqrt() * 0.075 * character.width_multiplier())
+        .min(MAX_RIVER_WORLD_HALF_WIDTH)
 }
 
 fn compute_river_depth(drainage_area: u32) -> f64 {
@@ -766,7 +798,7 @@ pub fn rasterise_smooth_line(
             let drainage = d0 + (d1 - d0) * t;
 
             let norm_drain = (drainage / max_drain_f).sqrt();
-            let half_width = (norm_drain * max_half_width).max(0.7);
+            let half_width = (norm_drain * max_half_width).max(0.65);
             let value = norm_drain.max(0.15);
 
             let hw_ceil = half_width.ceil() as i32;
@@ -818,7 +850,7 @@ pub fn rasterize_from_network(
     let pixels_per_wu = scale;
 
     for constraint in &constraints {
-        if constraint.character == RiverCharacter::BuriedIce { continue; }
+        if !constraint.character.is_visible_channel() { continue; }
 
         let target_spacing = 6.0 / pixels_per_wu;
         let subdivided = subdivide_to_spacing(&constraint.path, target_spacing);
@@ -829,8 +861,8 @@ pub fn rasterize_from_network(
         if pixel_path.len() < 2 { continue; }
 
         let drainage_per_point = vec![constraint.drainage_area; pixel_path.len()];
-        let max_half_width = (3.0 * scale * constraint.character.width_multiplier())
-            .min(output_size as f64 * 0.25);
+        let max_half_width = (1.5 * scale * constraint.character.width_multiplier())
+            .min(output_size as f64 * TILE_RIVER_MAX_HALF_WIDTH_RATIO);
 
         rasterise_smooth_line(
             &mut grid, output_size, output_size,

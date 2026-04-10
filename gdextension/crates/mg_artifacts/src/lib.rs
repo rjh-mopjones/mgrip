@@ -8,6 +8,7 @@
 //! │       ├── macro_biome.bin
 //! │       ├── river_network.bin
 //! │       └── images/
+//! │           ├── macromap.png
 //! │           ├── biome.png
 //! │           └── ...
 //! └── levels/

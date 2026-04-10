@@ -183,7 +183,9 @@ pub struct TectonicPlatesStrategy {
 
 impl TectonicPlatesStrategy {
     pub fn new(seed: u32) -> Self {
-        let plate_scale = 0.004;
+        // Slightly denser plate lattice to avoid four giant wrapped sectors
+        // dominating the macro relief and biome read.
+        let plate_scale = 0.0049;
         Self {
             seed,
             warp1_x: OpenSimplex::new(seed.wrapping_add(100)),
@@ -376,7 +378,10 @@ impl TectonicPlatesStrategy {
                 .map(|p| p.age)
                 .unwrap_or(0.5)
                 * 0.7;
-        let stress = (boundary_stress + interior * age_damping).clamp(0.0, 1.0);
+        let raw_stress = (boundary_stress + interior * age_damping).clamp(0.0, 1.0);
+        // Compress mid-strength tectonic influence so only sharper boundary zones
+        // stay dominant in downstream relief and biome classification.
+        let stress = raw_stress.powf(1.35);
 
         TectonicSample {
             plate_id,

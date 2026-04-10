@@ -1,7 +1,7 @@
 extends Control
 
 ## Four-panel comparison tool.
-## Top-left: macro biome.png crop for world-scale context.
+## Top-left: macro artifact crop for world-scale context.
 ## Top-right: true top-down runtime local map built from LOD0 chunk data.
 ## Bottom-left: macro biome colours washed over runtime terrain.
 ## Bottom-right: semantic biome/ocean drift overlay on runtime terrain.
@@ -107,7 +107,7 @@ func _ready() -> void:
 	vbox.add_child(_panels_grid)
 
 	for panel_label in [
-		"Macro Visual  (biome.png)",
+		"Macro Visual  (macro artifact)",
 		"Runtime Local Map  (LOD0)",
 		"Macro Colours over Runtime",
 		"Delta  (Biome + Ocean Drift)",
@@ -130,7 +130,7 @@ func _ready() -> void:
 		_panels_grid.add_child(col)
 		_panel_rects.append(rect)
 		match panel_label:
-			"Macro Visual  (biome.png)":
+			"Macro Visual  (macro artifact)":
 				_macro_rect = rect
 			"Runtime Local Map  (LOD0)":
 				_runtime_rect = rect
@@ -234,7 +234,7 @@ func _generate() -> void:
 	var biome_pct := 100.0 * float(biome_agree) / float(maxi(pixel_total, 1))
 	var land_biome_pct := 100.0 * float(land_biome_agree) / float(maxi(land_biome_total, 1))
 	_status_label.text = (
-		"Done. Macro = biome.png context. Wash = macro colours on runtime. Delta = ocean plus land and water biome drift."
+		"Done. Macro = macro artifact context. Wash = macro colours on runtime. Delta = ocean plus land and water biome drift."
 	)
 	_agreement_label.text = (
 		"Ocean: %d/%d (%.1f%%)    Biome: %d/%d (%.1f%%)    Land biome: %d/%d (%.1f%%)\nClean chunks: %d/%d    Macro-ocean only: %d px    Runtime-ocean only: %d px    Water-biome mismatch: %d px    Land-biome mismatch: %d px    Total biome mismatch: %d px"

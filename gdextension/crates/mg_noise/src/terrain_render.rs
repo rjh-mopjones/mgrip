@@ -76,7 +76,7 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                         pixel = lerp_rgb(pixel, [130, 140, 160], cold * 0.2);
                     }
                     if soil > 0.2 {
-                        pixel = lerp_rgb(pixel, [120, 140, 80], (soil - 0.2) * 0.3);
+                        pixel = lerp_rgb(pixel, [126, 126, 94], (soil - 0.2) * 0.3);
                     }
                     if sl > 0.02 {
                         let ridge = ((sl - 0.02) / 0.08).clamp(0.0, 1.0);
@@ -162,7 +162,7 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                         let humid = map.humidity[idx];
                         let coast_color = if temp < 0.0 { [210, 220, 235] }
                         else if rock > 0.6 { [130, 115, 100] }
-                        else if humid > 0.6 && temp > 20.0 { [140, 160, 100] }
+                        else if humid > 0.6 && temp > 20.0 { [144, 146, 110] }
                         else { [210, 190, 150] };
                         pixel = lerp_rgb(pixel, coast_color, coast * 0.4);
                     }
@@ -170,8 +170,24 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
 
                 // River corridors
                 let river = map.rivers[idx];
+                let temp_here = map.temperature[idx];
                 if river > 0.02 {
-                    pixel = lerp_rgb(pixel, [80, 130, 180], (river.sqrt() * 0.6).min(0.9));
+                    let arid = map.aridity[idx];
+                    let light = map.light_level[idx];
+                    let river_strength = (river.sqrt() * 0.6).min(0.9);
+                    let corridor_color = if temp_here < -1.0 || light < 0.12 {
+                        [160, 190, 210]
+                    } else if arid > 0.7 || temp_here > 55.0 || light > 0.82 {
+                        [128, 104, 78]
+                    } else {
+                        [80, 130, 180]
+                    };
+                    let corridor_strength = if arid > 0.7 || temp_here > 55.0 || light > 0.82 {
+                        river_strength * 0.55
+                    } else {
+                        river_strength
+                    };
+                    pixel = lerp_rgb(pixel, corridor_color, corridor_strength);
                 }
                 if !map.sediment.is_empty() && river > 0.01 {
                     let sed = map.sediment[idx];
@@ -180,11 +196,10 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                     }
                 }
                 let rmoist = map.water_table[idx];
-                let temp_here = map.temperature[idx];
                 if rmoist > 0.05 && river <= 0.02 && temp_here < 45.0 {
                     let base_strength = if is_desert_biome(biome) { 0.35 } else { 0.25 };
-                    let green_tint = ((rmoist - 0.05) * base_strength).clamp(0.0, 0.2);
-                    pixel = lerp_rgb(pixel, [60, 160, 60], green_tint);
+                    let riparian_tint = ((rmoist - 0.05) * base_strength).clamp(0.0, 0.2);
+                    pixel = lerp_rgb(pixel, [96, 122, 92], riparian_tint);
                 }
 
                 // Snowpack overlay
@@ -208,26 +223,29 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                     if is_forest_biome(biome) {
                         let humid = map.humidity[idx];
                         let base_g = (veg * 100.0 + 80.0).min(255.0) as u8;
-                        let green_target = if humid > 0.6 { [30, base_g, 20] }
-                        else { [60, (base_g as f64 * 0.85) as u8, 40] };
-                        pixel = lerp_rgb(pixel, green_target, veg * 0.5);
+                        let canopy_target = if humid > 0.6 {
+                            [66, (base_g as f64 * 0.78) as u8, 58]
+                        } else {
+                            [96, (base_g as f64 * 0.68) as u8, 72]
+                        };
+                        pixel = lerp_rgb(pixel, canopy_target, veg * 0.42);
                     } else if is_grassland_biome(biome) {
                         let arid = map.aridity[idx];
-                        let green_target = if arid > 0.4 {
-                            lerp_rgb([80, 170, 50], [180, 170, 90], ((arid - 0.4) / 0.4).clamp(0.0, 1.0))
+                        let steppe_target = if arid > 0.4 {
+                            lerp_rgb([126, 142, 82], [184, 168, 104], ((arid - 0.4) / 0.4).clamp(0.0, 1.0))
                         } else {
-                            [80, (veg * 120.0 + 80.0).min(255.0) as u8, 50]
+                            [118, (veg * 58.0 + 108.0).min(255.0) as u8, 84]
                         };
-                        pixel = lerp_rgb(pixel, green_target, veg * 0.45);
+                        pixel = lerp_rgb(pixel, steppe_target, veg * 0.38);
                     } else if is_wetland_biome(biome) {
                         let wt = map.water_table[idx];
                         let teal = ((wt - 0.2) / 0.6).clamp(0.0, 1.0);
-                        let wet_target = lerp_rgb([50, 110, 40], [40, 100, 80], teal);
-                        pixel = lerp_rgb(pixel, wet_target, veg * 0.5);
+                        let wet_target = lerp_rgb([88, 112, 72], [62, 104, 96], teal);
+                        pixel = lerp_rgb(pixel, wet_target, veg * 0.42);
                     } else {
-                        let green_target = [40, (veg * 120.0 + 60.0).min(255.0) as u8, 30];
+                        let surface_target = [94, (veg * 52.0 + 94.0).min(255.0) as u8, 72];
                         let strength = if is_desert_biome(biome) { 0.3 } else { 0.5 };
-                        pixel = lerp_rgb(pixel, green_target, veg * strength);
+                        pixel = lerp_rgb(pixel, surface_target, veg * strength * 0.75);
                     }
                 }
 
