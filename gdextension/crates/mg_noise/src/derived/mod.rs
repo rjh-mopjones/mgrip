@@ -95,10 +95,11 @@ pub fn derive_micro_heightmap(
 }
 
 pub fn derive_peaks_valleys(base_pv: f64, tectonic: f64, rock_hardness: f64) -> f64 {
-    // Cubic envelope: plate interiors get ~8% amplitude, boundaries get 100%
+    // Keep tectonic boundaries important without letting them dominate the
+    // whole macro relief field as broad wedge-shaped ridges.
     let stress = 1.0 - tectonic;
     let stress_envelope = stress * stress * stress;
-    let amplitude = 0.08 + stress_envelope * 0.92;
+    let amplitude = 0.14 + stress_envelope * 0.58;
     let hardness_factor = 0.7 + rock_hardness * 0.3;
     (base_pv * amplitude * hardness_factor).clamp(-1.0, 1.0)
 }
