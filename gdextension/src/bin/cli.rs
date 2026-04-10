@@ -2,8 +2,8 @@
 //!
 //! Commands:
 //!   generate layers <SEED> <TAG>
-//!       Run the full macro pipeline (512×512, erosion + rivers).
-//!       Saves BiomeMap, RiverNetwork, and all debug PNGs to
+//!       Run the full macro pipeline (macro pass + tiled macromap render).
+//!       Saves BiomeMap, RiverNetwork, macromap.png, and debug PNG layers to
 //!       ~/.margins_grip/layers/<TAG>/
 //!
 //!   generate level <LAYERS_TAG> <X> <Y> <LEVEL_TAG>
@@ -29,14 +29,14 @@ use image::RgbaImage;
 use indicatif::{ProgressBar, ProgressStyle};
 use mg_artifacts::{ArtifactStore, LayerManifest, LevelManifest};
 use mg_noise::{
-    rasterize_to_tile, BiomeMap, NoiseLayer, RiverNetwork, RuntimeChunkPresentation,
-    RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids, LOD_THRESHOLD_MACRO,
+    rasterize_to_tile, render_terrain, BiomeMap, NoiseLayer, NormalizationHints, RiverNetwork,
+    RuntimeChunkPresentation, RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids,
+    LOD_THRESHOLD_MACRO,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 // ─── CLI definition ───────────────────────────────────────────────────────────
@@ -64,9 +64,10 @@ enum Commands {
         #[command(subcommand)]
         kind: InspectKind,
     },
-    /// Compare biome.png (macro world map) against per-chunk runtime terrain for a meso map.
-    /// Uses the same pixel sampling and ocean heuristic as the in-game Compare Generation UI.
-    /// Outputs macro.png (biome.png crop), micro_grid.png, diff.png, and agreement.json.
+    /// Compare the macro artifact against per-chunk runtime terrain for a meso map.
+    /// Uses macromap.png for visible macro context and biome.png for the legacy
+    /// ocean-mask/scoring heuristic.
+    /// Outputs macro.png (macro artifact crop), micro_grid.png, diff.png, and agreement.json.
     CompareScale {
         /// World seed (used for micro chunk generation)
         seed: u32,
@@ -78,7 +79,7 @@ enum Commands {
         grid_size: usize,
         /// Output directory for PNG and JSON files
         output_dir: String,
-        /// Layers artifact tag to source biome.png from (default: newest)
+        /// Layers artifact tag to source the macro artifact from (default: newest)
         #[arg(long)]
         layers_tag: Option<String>,
     },
@@ -235,7 +236,14 @@ fn main() {
             grid_size,
             output_dir,
             layers_tag,
-        } => run_compare_scale(seed, meso_x, meso_y, grid_size, Path::new(&output_dir), layers_tag.as_deref()),
+        } => run_compare_scale(
+            seed,
+            meso_x,
+            meso_y,
+            grid_size,
+            Path::new(&output_dir),
+            layers_tag.as_deref(),
+        ),
     }
 }
 
@@ -244,28 +252,195 @@ fn main() {
 // World layout constants (matching biome_map.rs and spec)
 const WORLD_WIDTH: f64 = 1024.0;
 const WORLD_HEIGHT: f64 = 512.0;
-// Tile grid: 16×8 macro tiles of 64×64 world units each, rendered at 256px.
-// Gives 4096×2048 final image at 0.25 world-units/pixel.
-// 128 total dispatches vs 8192 for 32px tiles — critical for GPU efficiency.
+const MACRO_MAP_W: usize = 1024;
+const MACRO_MAP_H: usize = 512;
+// Tile grid: 16×8 macro tiles of 64×64 world units each.
+// We render at 512px, then box-downscale each tile to 256px before stitching.
+// This is equivalent to stitching an 8192×4096 intermediate and downscaling
+// 2x to the final 4096×2048 artifact, without holding the full intermediate
+// in memory.
 const TILE_WORLD_SIZE: f64 = 64.0;
-const TILE_PX: usize = 256;
+const TILE_RENDER_PX: usize = 512;
+const TILE_OUTPUT_PX: usize = TILE_RENDER_PX / 2;
 const TILES_X: usize = (WORLD_WIDTH / TILE_WORLD_SIZE) as usize; // 16
 const TILES_Y: usize = (WORLD_HEIGHT / TILE_WORLD_SIZE) as usize; // 8
-const FULL_W: usize = TILES_X * TILE_PX; // 4096
-const FULL_H: usize = TILES_Y * TILE_PX; // 2048
+const FULL_RENDER_W: usize = TILES_X * TILE_RENDER_PX; // 8192
+const FULL_RENDER_H: usize = TILES_Y * TILE_RENDER_PX; // 4096
+const FULL_W: usize = TILES_X * TILE_OUTPUT_PX; // 4096
+const FULL_H: usize = TILES_Y * TILE_OUTPUT_PX; // 2048
 const MICRO_CHUNK_WORLD_SIZE: f64 = 1.0;
 const MICRO_TILE_RESOLUTION: usize = 512;
 const MICRO_DETAIL_LEVEL: u32 = 2;
 const MICRO_FREQUENCY_SCALE: f64 = 8.0;
 
+fn sample_macro_tile_world_coord(origin: f64, index: usize) -> f64 {
+    if TILE_RENDER_PX <= 1 {
+        return origin;
+    }
+    origin + (index as f64 / (TILE_RENDER_PX - 1) as f64) * TILE_WORLD_SIZE
+}
+
+fn generate_macro_tile(
+    macro_map: &BiomeMap,
+    seed: u32,
+    river_network: &RiverNetwork,
+    wx: f64,
+    wy: f64,
+) -> BiomeMap {
+    let mut tile = BiomeMap::generate(
+        seed,
+        wx,
+        wy,
+        TILE_WORLD_SIZE,
+        TILE_WORLD_SIZE,
+        TILE_RENDER_PX,
+        TILE_RENDER_PX,
+        1,
+        false,
+        false,
+        1.0,
+    );
+
+    if !macro_map.heightmap.is_empty() {
+        let splines = mg_noise::BiomeSplines::new(mg_noise::SEA_LEVEL);
+        for py in 0..TILE_RENDER_PX {
+            for px in 0..TILE_RENDER_PX {
+                let idx = py * TILE_RENDER_PX + px;
+                let sample_x = sample_macro_tile_world_coord(wx, px);
+                let sample_y = sample_macro_tile_world_coord(wy, py);
+                let macro_hm = macro_map.sample_heightmap_at(sample_x, sample_y);
+
+                let stress = 1.0 - tile.tectonic[idx];
+                let above_sea = (macro_hm - mg_noise::SEA_LEVEL).max(0.0);
+                let mountain_intensity = (stress * above_sea * 3.0).min(1.0);
+                let mountain_detail = tile.peaks_valleys[idx] * mountain_intensity * 0.2;
+                let hm = (macro_hm + mountain_detail).clamp(-1.0, 1.0);
+                tile.heightmap[idx] = hm;
+
+                let cont = tile.continentalness[idx];
+                let humid = tile.humidity[idx];
+                let rock = tile.rock_hardness[idx];
+                let tect = tile.tectonic[idx];
+                let light = tile.light_level[idx];
+                let peaks = tile.peaks_valleys[idx];
+
+                let temp = mg_noise::derive_temperature(light, hm, humid, cont);
+                let eros = mg_noise::derive_erosion(hm, rock, humid);
+                let arid = mg_noise::derive_aridity(temp, humid);
+                let precip = mg_noise::derive_precipitation_type(temp, humid, hm);
+                let snow = mg_noise::derive_snowpack(precip, temp, hm, light);
+
+                tile.temperature[idx] = temp;
+                tile.erosion[idx] = eros;
+                tile.aridity[idx] = arid;
+                tile.precipitation_type[idx] = precip;
+                tile.snowpack[idx] = snow;
+                tile.resource_richness[idx] = mg_noise::derive_resource_richness(tect, rock, eros);
+                tile.biomes[idx] = splines.evaluate_dithered_with_light(
+                    cont, temp, tect, eros, peaks, humid, arid, rock, px, py, light,
+                );
+            }
+        }
+    }
+
+    tile.rivers = rasterize_to_tile(
+        river_network,
+        TILE_RENDER_PX,
+        TILE_RENDER_PX,
+        wx,
+        wy,
+        TILE_WORLD_SIZE,
+        TILE_WORLD_SIZE,
+        WORLD_WIDTH,
+        WORLD_HEIGHT,
+        LOD_THRESHOLD_MACRO as f64,
+    );
+
+    for i in 0..TILE_RENDER_PX * TILE_RENDER_PX {
+        tile.water_table[i] = mg_noise::derive_water_table(
+            tile.rivers[i],
+            tile.humidity[i],
+            tile.heightmap[i],
+            tile.precipitation_type[i],
+            tile.continentalness[i],
+        );
+        if tile.rivers[i] > 0.1
+            && !mg_noise::tile_has_fluid_surface(tile.biomes[i])
+            && tile.aridity[i] < 0.7
+        {
+            tile.biomes[i] = mg_core::TileType::River;
+        }
+        tile.vegetation_density[i] =
+            mg_noise::derive_vegetation_density(tile.biomes[i], tile.water_table[i]);
+        tile.soil_type[i] =
+            mg_noise::derive_soil_type(tile.biomes[i], tile.erosion[i], tile.rock_hardness[i]);
+    }
+
+    tile
+}
+
+fn downscale_rgba_2x_box(src: &[u8], src_w: usize, src_h: usize) -> Vec<u8> {
+    debug_assert_eq!(src_w % 2, 0);
+    debug_assert_eq!(src_h % 2, 0);
+    let dst_w = src_w / 2;
+    let dst_h = src_h / 2;
+    let mut dst = vec![0u8; dst_w * dst_h * 4];
+
+    for dy in 0..dst_h {
+        for dx in 0..dst_w {
+            let mut sums = [0u16; 4];
+            for sy in 0..2 {
+                for sx in 0..2 {
+                    let src_x = dx * 2 + sx;
+                    let src_y = dy * 2 + sy;
+                    let src_idx = (src_y * src_w + src_x) * 4;
+                    sums[0] += src[src_idx] as u16;
+                    sums[1] += src[src_idx + 1] as u16;
+                    sums[2] += src[src_idx + 2] as u16;
+                    sums[3] += src[src_idx + 3] as u16;
+                }
+            }
+            let dst_idx = (dy * dst_w + dx) * 4;
+            dst[dst_idx] = (sums[0] / 4) as u8;
+            dst[dst_idx + 1] = (sums[1] / 4) as u8;
+            dst[dst_idx + 2] = (sums[2] / 4) as u8;
+            dst[dst_idx + 3] = (sums[3] / 4) as u8;
+        }
+    }
+
+    dst
+}
+
+fn blit_rgba_tile(
+    dst: &mut [u8],
+    dst_w: usize,
+    tile_rgba: &[u8],
+    tile_w: usize,
+    tile_h: usize,
+    ox: usize,
+    oy: usize,
+) {
+    for py in 0..tile_h {
+        let src_row = py * tile_w * 4;
+        let dst_row = ((oy + py) * dst_w + ox) * 4;
+        dst[dst_row..dst_row + tile_w * 4]
+            .copy_from_slice(&tile_rgba[src_row..src_row + tile_w * 4]);
+    }
+}
+
 fn run_generate_layers(seed: u32, tag: &str) {
+    let previous_force_cpu = std::env::var_os("MG_NOISE_FORCE_CPU");
+    std::env::set_var("MG_NOISE_FORCE_CPU", "1");
+
     let store = ArtifactStore::new().unwrap_or_else(|e| {
         eprintln!("error: failed to open artifact store: {e}");
         std::process::exit(1);
     });
 
     println!("Generating world — seed={seed}, tag={tag}");
-    println!("  output:  {FULL_W}×{FULL_H} ({TILES_X}×{TILES_Y} tiles of {TILE_PX}px)");
+    println!(
+        "  output:  {FULL_W}×{FULL_H} (via {FULL_RENDER_W}×{FULL_RENDER_H} intermediate, {TILES_X}×{TILES_Y} tiles of {TILE_RENDER_PX}px)"
+    );
 
     let t0 = Instant::now();
 
@@ -278,8 +453,8 @@ fn run_generate_layers(seed: u32, tag: &str) {
         0.0,
         WORLD_WIDTH,
         WORLD_HEIGHT,
-        512,
-        256,
+        MACRO_MAP_W,
+        MACRO_MAP_H,
         0,
         true,
         true,
@@ -292,18 +467,12 @@ fn run_generate_layers(seed: u32, tag: &str) {
         .river_network
         .as_ref()
         .map(|arc| arc.as_ref().clone())
-        .unwrap_or_else(|| RiverNetwork::empty(512, 256));
+        .unwrap_or_else(|| RiverNetwork::empty(MACRO_MAP_W, MACRO_MAP_H));
 
-    // ── Step 2: Tile the world at meso detail → 4096×2048 ────────────────────
-    let pb = spinner("Tiling world (128×64 tiles)…");
-
-    // Allocate full RGBA buffers per layer (stitched in place)
-    let n_pixels = FULL_W * FULL_H;
-    let mut layer_bufs: Vec<Vec<u8>> = NoiseLayer::all()
-        .iter()
-        .map(|_| vec![0u8; n_pixels * 4])
-        .collect();
-
+    // ── Step 2: Scan global height range for shared normalization ────────────
+    let pb = spinner("Scanning tile height ranges for shared normalization…");
+    let mut global_min = f64::INFINITY;
+    let mut global_max = f64::NEG_INFINITY;
     let total_tiles = TILES_X * TILES_Y;
     let mut tiles_done = 0usize;
 
@@ -311,84 +480,100 @@ fn run_generate_layers(seed: u32, tag: &str) {
         for tx in 0..TILES_X {
             let wx = tx as f64 * TILE_WORLD_SIZE;
             let wy = ty as f64 * TILE_WORLD_SIZE;
+            let tile = generate_macro_tile(&macro_map, seed, &river_network, wx, wy);
 
-            let mut tile = BiomeMap::generate(
-                seed,
-                wx,
-                wy,
-                TILE_WORLD_SIZE,
-                TILE_WORLD_SIZE,
-                TILE_PX,
-                TILE_PX,
-                1,
-                false,
-                false,
-                1.0,
-            );
-
-            // Project the macro river network onto this tile's rivers layer.
-            // Each macro pixel (2 world units wide) expands to an 8×8 meso pixel footprint.
-            tile.rivers = rasterize_to_tile(
-                &river_network,
-                TILE_PX,
-                TILE_PX,
-                wx,
-                wy,
-                TILE_WORLD_SIZE,
-                TILE_WORLD_SIZE,
-                WORLD_WIDTH,
-                WORLD_HEIGHT,
-                LOD_THRESHOLD_MACRO as f64,
-            );
-
-            // Override land biomes to River where macro rivers flow over wet zones.
-            for i in 0..TILE_PX * TILE_PX {
-                if tile.rivers[i] > 0.1 && !mg_noise::tile_has_fluid_surface(tile.biomes[i]) && tile.aridity[i] < 0.7 {
-                    tile.biomes[i] = mg_core::TileType::River;
-                }
-            }
-
-            // Blit each layer from this tile into the full image
-            for (li, &layer) in NoiseLayer::all().iter().enumerate() {
-                let rgba = tile.layer_to_rgba(layer);
-                let dst = &mut layer_bufs[li];
-                let ox = tx * TILE_PX;
-                let oy = ty * TILE_PX;
-                for py in 0..TILE_PX {
-                    for px in 0..TILE_PX {
-                        let src_idx = (py * TILE_PX + px) * 4;
-                        let dst_idx = ((oy + py) * FULL_W + (ox + px)) * 4;
-                        dst[dst_idx..dst_idx + 4].copy_from_slice(&rgba[src_idx..src_idx + 4]);
-                    }
-                }
-            }
-
-            // Also blit composited terrain render for the terrain.png output
-            {
-                let terrain_rgba = mg_noise::render_terrain(&tile, None);
-                let ox = tx * TILE_PX;
-                let oy = ty * TILE_PX;
-                for py in 0..TILE_PX {
-                    for px in 0..TILE_PX {
-                        let src_idx = (py * TILE_PX + px) * 4;
-                        let dst_idx = ((oy + py) * FULL_W + (ox + px)) * 4;
-                        terrain_buf[dst_idx..dst_idx + 4].copy_from_slice(&terrain_rgba[src_idx..src_idx + 4]);
-                    }
-                }
+            for &height in &tile.heightmap {
+                global_min = global_min.min(height);
+                global_max = global_max.max(height);
             }
 
             tiles_done += 1;
-            if tiles_done % 512 == 0 {
-                pb.set_message(format!("Tiling world… {tiles_done}/{total_tiles} tiles"));
+            if tiles_done % TILES_X == 0 || tiles_done == total_tiles {
+                pb.set_message(format!(
+                    "Scanning tile height ranges… {tiles_done}/{total_tiles} tiles"
+                ));
             }
         }
     }
     pb.finish_and_clear();
-    println!("  tiling: {:.1}s", t0.elapsed().as_secs_f64());
 
-    // ── Step 3: Build images HashMap and manifest ─────────────────────────────
+    let normalization_hints = NormalizationHints {
+        heightmap_min: global_min,
+        heightmap_max: global_max,
+    };
+
+    // ── Step 3: Tile the world at meso detail → final 4096×2048 artifact ───
+    let pb = spinner("Rendering macromap tiles…");
+
+    // Allocate final RGBA buffers per layer after per-tile 2x box downscale.
+    let n_pixels = FULL_W * FULL_H;
+    let mut layer_bufs: Vec<Vec<u8>> = NoiseLayer::all()
+        .iter()
+        .map(|_| vec![0u8; n_pixels * 4])
+        .collect();
+    let mut macromap_buf = vec![0u8; n_pixels * 4];
+
+    tiles_done = 0;
+
+    for ty in 0..TILES_Y {
+        for tx in 0..TILES_X {
+            let wx = tx as f64 * TILE_WORLD_SIZE;
+            let wy = ty as f64 * TILE_WORLD_SIZE;
+            let tile = generate_macro_tile(&macro_map, seed, &river_network, wx, wy);
+
+            let ox = tx * TILE_OUTPUT_PX;
+            let oy = ty * TILE_OUTPUT_PX;
+
+            // Stitch debug layers after local 2x box downscale. This is equivalent
+            // to stitching the 8192×4096 intermediate and then downscaling 2x.
+            for (li, &layer) in NoiseLayer::all().iter().enumerate() {
+                let rgba = tile.layer_to_rgba(layer);
+                let rgba_downscaled = downscale_rgba_2x_box(&rgba, TILE_RENDER_PX, TILE_RENDER_PX);
+                let dst = &mut layer_bufs[li];
+                blit_rgba_tile(
+                    dst,
+                    FULL_W,
+                    &rgba_downscaled,
+                    TILE_OUTPUT_PX,
+                    TILE_OUTPUT_PX,
+                    ox,
+                    oy,
+                );
+            }
+
+            // The authoritative macro artifact follows the Randlebrot shape:
+            // composited terrain render with shared global normalization.
+            let macromap_rgba = render_terrain(&tile, Some(&normalization_hints));
+            let macromap_downscaled =
+                downscale_rgba_2x_box(&macromap_rgba, TILE_RENDER_PX, TILE_RENDER_PX);
+            blit_rgba_tile(
+                &mut macromap_buf,
+                FULL_W,
+                &macromap_downscaled,
+                TILE_OUTPUT_PX,
+                TILE_OUTPUT_PX,
+                ox,
+                oy,
+            );
+
+            tiles_done += 1;
+            if tiles_done % TILES_X == 0 || tiles_done == total_tiles {
+                pb.set_message(format!(
+                    "Rendering macromap tiles… {tiles_done}/{total_tiles} tiles"
+                ));
+            }
+        }
+    }
+    pb.finish_and_clear();
+    println!("  tile render: {:.1}s", t0.elapsed().as_secs_f64());
+
+    // ── Step 4: Build images HashMap and manifest ────────────────────────────
     let pb = spinner("Saving artifact…");
     let mut images: HashMap<String, (u32, u32, Vec<u8>)> = HashMap::new();
+    images.insert(
+        "macromap.png".to_string(),
+        (FULL_W as u32, FULL_H as u32, macromap_buf),
+    );
     for (layer, buf) in NoiseLayer::all().iter().zip(layer_bufs.into_iter()) {
         images.insert(
             format!("{}.png", layer.name()),
@@ -396,10 +581,12 @@ fn run_generate_layers(seed: u32, tag: &str) {
         );
     }
 
-    let layer_images: Vec<String> = NoiseLayer::all()
-        .iter()
-        .map(|l| format!("{}.png", l.name()))
-        .collect();
+    let mut layer_images = vec!["macromap.png".to_string()];
+    layer_images.extend(
+        NoiseLayer::all()
+            .iter()
+            .map(|l| format!("{}.png", l.name())),
+    );
 
     let manifest = LayerManifest {
         seed,
@@ -420,11 +607,14 @@ fn run_generate_layers(seed: u32, tag: &str) {
     pb.finish_and_clear();
 
     println!("Saved to {}/layers/{tag}/", store.base_path().display());
-    println!(
-        "  {FULL_W}×{FULL_H} PNGs, {} layers written",
-        NoiseLayer::all().len()
-    );
+    println!("  {FULL_W}×{FULL_H} PNGs, {} layers written", images.len());
     println!("  total: {:.1}s", t0.elapsed().as_secs_f64());
+
+    if let Some(value) = previous_force_cpu {
+        std::env::set_var("MG_NOISE_FORCE_CPU", value);
+    } else {
+        std::env::remove_var("MG_NOISE_FORCE_CPU");
+    }
 }
 
 // ─── generate level ───────────────────────────────────────────────────────────
@@ -746,9 +936,12 @@ fn pixel_is_ocean_biome_png(r: u8, g: u8, b: u8) -> bool {
     mg_noise::pixel_is_ocean_rgb(r, g, b)
 }
 
-/// Discover the newest biome.png across all layers artifacts, mirroring the logic in
-/// map_selector.gd _load_macro_texture.  Returns (biome_png_path, world_width, world_height).
-fn find_newest_biome_png(store: &mg_artifacts::ArtifactStore) -> Option<(std::path::PathBuf, f64, f64)> {
+/// Discover the newest named layer image across all layers artifacts, mirroring the
+/// map_selector.gd macro-texture lookup. Returns (image_path, world_width, world_height).
+fn find_newest_layer_image(
+    store: &mg_artifacts::ArtifactStore,
+    image_name: &str,
+) -> Option<(std::path::PathBuf, f64, f64)> {
     let layers_dir = store.base_path().join("layers");
     let entries = fs::read_dir(&layers_dir).ok()?;
     let mut best: Option<(std::path::PathBuf, std::time::SystemTime, f64, f64)> = None;
@@ -757,11 +950,11 @@ fn find_newest_biome_png(store: &mg_artifacts::ArtifactStore) -> Option<(std::pa
         if !path.is_dir() {
             continue;
         }
-        let biome_png = path.join("images").join("biome.png");
-        if !biome_png.exists() {
+        let layer_image = path.join("images").join(image_name);
+        if !layer_image.exists() {
             continue;
         }
-        let mtime = fs::metadata(&biome_png).ok()?.modified().ok()?;
+        let mtime = fs::metadata(&layer_image).ok()?.modified().ok()?;
         let (ww, wh) = if let Some(manifest) = fs::read_to_string(path.join("manifest.ron"))
             .ok()
             .and_then(|s| ron::de::from_str::<mg_artifacts::LayerManifest>(&s).ok())
@@ -771,7 +964,7 @@ fn find_newest_biome_png(store: &mg_artifacts::ArtifactStore) -> Option<(std::pa
             (WORLD_WIDTH, WORLD_HEIGHT)
         };
         if best.as_ref().map_or(true, |(_, t, _, _)| mtime > *t) {
-            best = Some((biome_png, mtime, ww, wh));
+            best = Some((layer_image, mtime, ww, wh));
         }
     }
     best.map(|(p, _, ww, wh)| (p, ww, wh))
@@ -795,31 +988,73 @@ fn run_compare_scale(
     let img_h = n * CELL_PX;
 
     fs::create_dir_all(output_dir).unwrap_or_else(|e| {
-        eprintln!("error: could not create output dir {}: {e}", output_dir.display());
+        eprintln!(
+            "error: could not create output dir {}: {e}",
+            output_dir.display()
+        );
         std::process::exit(1);
     });
 
-    // ── Macro: load biome.png — same source as the in-game Compare Generation UI ─
+    // ── Macro: load visual macro artifact and legacy biome semantics ─────────
     let store = mg_artifacts::ArtifactStore::new().unwrap_or_else(|e| {
         eprintln!("error: failed to open artifact store: {e}");
         std::process::exit(1);
     });
 
-    let (biome_png_path, world_w, world_h) = match layers_tag {
+    let (macro_visual_path, biome_png_path, world_w, world_h) = match layers_tag {
         Some(tag) => {
             let manifest = store.load_layer_manifest(tag).unwrap_or_else(|e| {
                 eprintln!("error: layers artifact '{tag}' not found: {e}");
                 std::process::exit(1);
             });
-            let path = store.layer_image_path(tag, "biome.png");
-            (path, manifest.world_width as f64, manifest.world_height as f64)
+            let macro_visual_path = {
+                let preferred = store.layer_image_path(tag, "macromap.png");
+                if preferred.exists() {
+                    preferred
+                } else {
+                    store.layer_image_path(tag, "biome.png")
+                }
+            };
+            let biome_png_path = store.layer_image_path(tag, "biome.png");
+            (
+                macro_visual_path,
+                biome_png_path,
+                manifest.world_width as f64,
+                manifest.world_height as f64,
+            )
         }
-        None => find_newest_biome_png(&store).unwrap_or_else(|| {
-            eprintln!("error: no layers artifact with biome.png found in ~/.margins_grip/layers/");
-            eprintln!("  Run 'margins_grip generate layers <SEED> <TAG>' first, or pass --layers-tag.");
-            std::process::exit(1);
-        }),
+        None => {
+            let (macro_visual_path, world_w, world_h) = find_newest_layer_image(&store, "macromap.png")
+                .or_else(|| find_newest_layer_image(&store, "biome.png"))
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "error: no layers artifact with macromap.png or biome.png found in ~/.margins_grip/layers/"
+                    );
+                    eprintln!(
+                        "  Run 'margins_grip generate layers <SEED> <TAG>' first, or pass --layers-tag."
+                    );
+                    std::process::exit(1);
+                });
+            let (biome_png_path, _, _) = find_newest_layer_image(&store, "biome.png")
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "error: no layers artifact with biome.png found for compare semantics."
+                    );
+                    eprintln!(
+                        "  Compare-scale still needs biome.png for legacy ocean-mask scoring."
+                    );
+                    std::process::exit(1);
+                });
+            (macro_visual_path, biome_png_path, world_w, world_h)
+        }
     };
+
+    let macro_visual_img = image::open(&macro_visual_path)
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to load {}: {e}", macro_visual_path.display());
+            std::process::exit(1);
+        })
+        .into_rgba8();
 
     let biome_img = image::open(&biome_png_path)
         .unwrap_or_else(|e| {
@@ -828,28 +1063,45 @@ fn run_compare_scale(
         })
         .into_rgba8();
 
-    let tex_w = biome_img.width() as usize;
-    let tex_h = biome_img.height() as usize;
+    let tex_w = macro_visual_img.width() as usize;
+    let tex_h = macro_visual_img.height() as usize;
+    let biome_tex_w = biome_img.width() as usize;
+    let biome_tex_h = biome_img.height() as usize;
 
     // Coordinate math — identical to _build_macro_crop in compare_generation_view.gd
     let px_x = ((world_x / world_w * tex_w as f64) as usize).min(tex_w.saturating_sub(1));
     let px_y = ((world_y / world_h * tex_h as f64) as usize).min(tex_h.saturating_sub(1));
-    let px_w = ((n as f64 / world_w * tex_w as f64) as usize).max(1).min(tex_w - px_x);
-    let px_h = ((n as f64 / world_h * tex_h as f64) as usize).max(1).min(tex_h - px_y);
+    let px_w = ((n as f64 / world_w * tex_w as f64) as usize)
+        .max(1)
+        .min(tex_w - px_x);
+    let px_h = ((n as f64 / world_h * tex_h as f64) as usize)
+        .max(1)
+        .min(tex_h - px_y);
+    let biome_px_x =
+        ((world_x / world_w * biome_tex_w as f64) as usize).min(biome_tex_w.saturating_sub(1));
+    let biome_px_y =
+        ((world_y / world_h * biome_tex_h as f64) as usize).min(biome_tex_h.saturating_sub(1));
+    let biome_px_w = ((n as f64 / world_w * biome_tex_w as f64) as usize)
+        .max(1)
+        .min(biome_tex_w - biome_px_x);
+    let biome_px_h = ((n as f64 / world_h * biome_tex_h as f64) as usize)
+        .max(1)
+        .min(biome_tex_h - biome_px_y);
 
     println!(
-        "Comparing biome.png vs runtime — seed={seed}, meso=({meso_x},{meso_y}), world=({world_x},{world_y}), grid={n}×{n}"
+        "Comparing macro artifact vs runtime — seed={seed}, meso=({meso_x},{meso_y}), world=({world_x},{world_y}), grid={n}×{n}"
     );
-    println!("  biome.png: {}", biome_png_path.display());
+    println!("  macro artifact: {}", macro_visual_path.display());
+    println!("  biome semantics: {}", biome_png_path.display());
     println!("  crop: ({px_x},{px_y}) {px_w}×{px_h} px  →  {img_w}×{img_h} output");
 
-    // Build macro.png: biome.png crop nearest-neighbour scaled to img_w×img_h
+    // Build macro.png: macro artifact crop nearest-neighbour scaled to img_w×img_h
     let mut macro_rgba = vec![0u8; img_w * img_h * 4];
     for py in 0..img_h {
         for px in 0..img_w {
             let sx = (px_x + px * px_w / img_w).min(tex_w - 1);
             let sy = (px_y + py * px_h / img_h).min(tex_h - 1);
-            let [r, g, b, a] = biome_img.get_pixel(sx as u32, sy as u32).0;
+            let [r, g, b, a] = macro_visual_img.get_pixel(sx as u32, sy as u32).0;
             let dst = (py * img_w + px) * 4;
             macro_rgba[dst..dst + 4].copy_from_slice(&[r, g, b, a]);
         }
@@ -861,7 +1113,7 @@ fn run_compare_scale(
             eprintln!("error: failed to save macro.png: {e}");
             std::process::exit(1);
         });
-    println!("  macro.png  (biome.png crop)");
+    println!("  macro.png  (macro artifact crop)");
 
     // Build macro ocean mask from the already-loaded biome image so the CLI
     // applies the same override as the in-game generate_chunk_lod path.
@@ -882,9 +1134,17 @@ fn run_compare_scale(
             let cy = world_y + gy as f64;
 
             let mut micro = BiomeMap::generate(
-                seed, cx, cy, 1.0, 1.0,
-                MICRO_RES, MICRO_RES,
-                0, false, false, MICRO_FREQUENCY_SCALE,
+                seed,
+                cx,
+                cy,
+                1.0,
+                1.0,
+                MICRO_RES,
+                MICRO_RES,
+                0,
+                false,
+                false,
+                MICRO_FREQUENCY_SCALE,
             );
             if let Some(ref mask) = macro_ocean_mask {
                 micro.apply_macro_ocean_mask(mask, cx, cy, 1.0, 1.0);
@@ -893,12 +1153,12 @@ fn run_compare_scale(
             let mc = MICRO_RES / 2;
             let micro_ocean = micro.is_ocean(mc, mc);
 
-            // Sample center pixel of this cell from the biome.png crop —
-            // identical to compare_generation_view.gd _generate()
+            // Sample center pixel of this cell from the biome.png crop for
+            // legacy compare-scale ocean semantics.
             let ci = gx * CELL_PX + CELL_PX / 2;
             let cj = gy * CELL_PX + CELL_PX / 2;
-            let sx = (px_x + ci * px_w / img_w).min(tex_w - 1);
-            let sy = (px_y + cj * px_h / img_h).min(tex_h - 1);
+            let sx = (biome_px_x + ci * biome_px_w / img_w).min(biome_tex_w - 1);
+            let sy = (biome_px_y + cj * biome_px_h / img_h).min(biome_tex_h - 1);
             let [r, g, b, _] = biome_img.get_pixel(sx as u32, sy as u32).0;
             let macro_ocean = pixel_is_ocean_biome_png(r, g, b);
 
@@ -929,7 +1189,11 @@ fn run_compare_scale(
             }
 
             // Diff cell — green = agree, red = disagree
-            let color: [u8; 4] = if agree { [30, 200, 80, 255] } else { [210, 45, 45, 255] };
+            let color: [u8; 4] = if agree {
+                [30, 200, 80, 255]
+            } else {
+                [210, 45, 45, 255]
+            };
             for py in 0..CELL_PX {
                 for px in 0..CELL_PX {
                     let dx = gx * CELL_PX + px;

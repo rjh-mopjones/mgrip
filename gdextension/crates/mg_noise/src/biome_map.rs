@@ -527,6 +527,18 @@ impl BiomeMap {
         self.biomes[y * self.width + x]
     }
 
+    /// Sample the heightmap at world coordinates using wrapped nearest-neighbor.
+    /// This preserves sharp macro erosion features when meso tiles inherit macro height.
+    pub fn sample_heightmap_at(&self, wx: f64, wy: f64) -> f64 {
+        if self.heightmap.is_empty() {
+            return 0.0;
+        }
+        let wrapped_x = crate::wrap::wrap_x(wx, self.world_width);
+        let x = (wrapped_x.round() as usize).min(self.width - 1);
+        let y = (wy.clamp(0.0, self.world_height - 1.0).round() as usize).min(self.height - 1);
+        self.heightmap[y * self.width + x]
+    }
+
     pub fn temperature_at(&self, x: usize, y: usize) -> f64 {
         self.temperature[y * self.width + x]
     }

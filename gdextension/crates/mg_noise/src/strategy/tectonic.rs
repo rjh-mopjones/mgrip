@@ -237,12 +237,27 @@ impl TectonicPlatesStrategy {
     }
 
     fn warp_coordinates(&self, x: f64, y: f64) -> (f64, f64) {
-        let wx = x
-            + self.warp1_x.get([x * 0.002, y * 0.002]) * 120.0
-            + self.warp2_x.get([x * 0.008, y * 0.008]) * 40.0;
-        let wy = y
-            + self.warp1_y.get([x * 0.002 + 43.7, y * 0.002 + 17.3]) * 120.0
-            + self.warp2_y.get([x * 0.008 + 91.2, y * 0.008 + 55.8]) * 40.0;
+        let (w1x, w1y, w2x, w2y) = if self.world_width > 0.0 {
+            let [cx1, cz1, cy1] =
+                crate::wrap::cylindrical_noise_coords(x, y, 1.0, 0.002, self.world_width);
+            let [cx2, cz2, cy2] =
+                crate::wrap::cylindrical_noise_coords(x, y, 1.0, 0.008, self.world_width);
+            (
+                self.warp1_x.get([cx1, cz1, cy1]) * 120.0,
+                self.warp1_y.get([cx1 + 43.7, cz1 + 17.3, cy1]) * 120.0,
+                self.warp2_x.get([cx2, cz2, cy2]) * 40.0,
+                self.warp2_y.get([cx2 + 91.2, cz2 + 55.8, cy2]) * 40.0,
+            )
+        } else {
+            (
+                self.warp1_x.get([x * 0.002, y * 0.002]) * 120.0,
+                self.warp1_y.get([x * 0.002 + 43.7, y * 0.002 + 17.3]) * 120.0,
+                self.warp2_x.get([x * 0.008, y * 0.008]) * 40.0,
+                self.warp2_y.get([x * 0.008 + 91.2, y * 0.008 + 55.8]) * 40.0,
+            )
+        };
+        let wx = x + w1x + w2x;
+        let wy = y + w1y + w2y;
         (wx * self.plate_scale, wy * self.plate_scale)
     }
 
@@ -280,9 +295,6 @@ impl TectonicPlatesStrategy {
         let mut second_dist = f64::MAX;
         let mut nearest_cell = (0i32, 0i32);
         let mut second_cell = (0i32, 0i32);
-        let mut nearest_center = (0.0f64, 0.0f64);
-        let mut second_center = (0.0f64, 0.0f64);
-
         for dx in -2..=2 {
             for dy in -2..=2 {
                 let cell_x = ix + dx;
@@ -305,14 +317,11 @@ impl TectonicPlatesStrategy {
                 if dist < min_dist {
                     second_dist = min_dist;
                     second_cell = nearest_cell;
-                    second_center = nearest_center;
                     min_dist = dist;
                     nearest_cell = (cell_x, cell_y);
-                    nearest_center = (cx, cy);
                 } else if dist < second_dist {
                     second_dist = dist;
                     second_cell = (cell_x, cell_y);
-                    second_center = (cx, cy);
                 }
             }
         }
@@ -326,7 +335,13 @@ impl TectonicPlatesStrategy {
         let plate_id = self.plate_id_hash(nearest_cell.0, nearest_cell.1);
 
         let f2_minus_f1 = second_dist - min_dist;
-        let perturb = self.boundary_perturb.get([x * 0.015, y * 0.015]) * 0.15;
+        let perturb = if self.world_width > 0.0 {
+            let [cx, cz, cy] =
+                crate::wrap::cylindrical_noise_coords(x, y, 1.0, 0.015, self.world_width);
+            self.boundary_perturb.get([cx, cz, cy]) * 0.15
+        } else {
+            self.boundary_perturb.get([x * 0.015, y * 0.015]) * 0.15
+        };
         let perturbed_dist = f2_minus_f1 + perturb;
 
         let (boundary_type, boundary_tangent) = if plate_a_idx == plate_b_idx {
