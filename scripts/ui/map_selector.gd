@@ -475,12 +475,9 @@ func _load_macro_texture() -> Texture2D:
 	var newest_time := -1
 	for entry in dir.get_directories():
 		var entry_dir := layers_dir.path_join(entry)
-		var image_path := ""
-		for candidate in ["macromap.png", "biome.png"]:
-			var candidate_path := entry_dir.path_join("images").path_join(candidate)
-			if FileAccess.file_exists(candidate_path):
-				image_path = candidate_path
-				break
+		var image_path := entry_dir.path_join("images").path_join("macromap.png")
+		if not FileAccess.file_exists(image_path):
+			image_path = ""
 		if image_path.is_empty():
 			continue
 		var mtime := FileAccess.get_modified_time(image_path)

@@ -11,9 +11,7 @@ use std::sync::Arc;
 use crate::biome_splines::BiomeSplines;
 use crate::derived;
 use crate::erosion_sim::{simulate_erosion, ErosionParams};
-use crate::rivers::{
-    RiverNetwork, LOD_THRESHOLD_MACRO,
-};
+use crate::rivers::{RiverNetwork, LOD_THRESHOLD_MACRO};
 use crate::strategy::{
     ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
     RockHardnessStrategy, TectonicPlatesStrategy,
@@ -34,21 +32,8 @@ pub fn tile_has_fluid_surface(tile: TileType) -> bool {
     )
 }
 
-/// Identifies ocean pixels from legacy biome.png RGB values.
-/// Used by macro-ocean-mask loading and older comparison paths that still rely
-/// on biome image artifacts rather than semantic chunk data.
-pub fn pixel_is_ocean_rgb(r: u8, g: u8, b: u8) -> bool {
-    let rf = r as f64 / 255.0;
-    let bf = b as f64 / 255.0;
-    // Blue-dominant biomes: Sea, ShallowSea, ContinentalShelf, DeepOcean, OceanTrench
-    if bf - rf > 0.25 && bf > 0.35 {
-        return true;
-    }
-    // OceanRidge: rgb(120, 80, 60)
-    r == 120 && g == 80 && b == 60
-}
-
-/// Ocean mask derived from biome.png — authoritative ocean/land from the macro pipeline.
+/// Ocean mask derived from the macro biome artifact — authoritative ocean/land
+/// from the macro pipeline.
 ///
 /// The macro pipeline runs 120-iteration erosion and classifies biomes at world scale.
 /// Where its classification differs from the runtime micro pipeline (e.g. dayside cells
@@ -63,18 +48,24 @@ pub struct MacroOceanMask {
 }
 
 impl MacroOceanMask {
-    /// Load from a biome.png file produced by `BiomeMap::save_layer_png(NoiseLayer::Biome, ...)`.
-    pub fn load(path: &std::path::Path, world_width: f64, world_height: f64) -> Result<Self, String> {
-        let img = image::open(path)
-            .map_err(|e| format!("failed to load {}: {e}", path.display()))?
-            .into_rgb8();
-        let width = img.width() as usize;
-        let height = img.height() as usize;
-        let pixels = img.pixels().map(|p| pixel_is_ocean_rgb(p[0], p[1], p[2])).collect();
-        Ok(Self { pixels, width, height, world_width, world_height })
+    /// Build from saved macro biome semantics (`macro_biome.bin`).
+    pub fn from_biome_map(map: &BiomeMap) -> Self {
+        let pixels = map
+            .biomes
+            .iter()
+            .copied()
+            .map(tile_has_fluid_surface)
+            .collect();
+        Self {
+            pixels,
+            width: map.width,
+            height: map.height,
+            world_width: map.world_width,
+            world_height: map.world_height,
+        }
     }
 
-    /// Returns true if the world position maps to an ocean pixel in biome.png.
+    /// Returns true if the world position maps to an ocean cell in the macro mask.
     pub fn is_ocean_at_world(&self, wx: f64, wy: f64) -> bool {
         if self.width == 0 || self.height == 0 {
             return false;
@@ -268,7 +259,7 @@ impl BiomeMap {
 
         // Two-way dispatch:
         //   GPU (available) — all layers from GPU at true world coords. Biome classification
-        //     (ocean/land boundary, zone, palette) is therefore identical to biome.png for
+        //     (ocean/land boundary, zone, palette) is therefore stable macro truth for
         //     any freq_scale. Micro-scale terrain variety comes from derive_micro_heightmap
         //     at detail_level >= 2, not from scaled noise layers.
         //   CPU fallback (no GPU) — all layers from CPU at true world coords (wx, wy).
@@ -475,10 +466,10 @@ impl BiomeMap {
         map
     }
 
-    /// Override biome classification for cells where the macro biome.png says ocean.
+    /// Override biome classification for cells where the macro biome artifact says ocean.
     ///
-    /// The macro world map is authoritative for ocean placement. Where biome.png shows
-    /// ocean but the noise pipeline classified as land (e.g. dayside cells demoted to
+    /// The macro world map is authoritative for ocean placement. Where the saved macro
+    /// biome semantics show ocean but the noise pipeline classified as land (e.g. dayside cells demoted to
     /// SaltFlat by the temperature gate in `below_sea_biome`), this restores the correct
     /// ocean biome. Call after `generate()`.
     pub fn apply_macro_ocean_mask(
@@ -491,12 +482,9 @@ impl BiomeMap {
     ) {
         let tile_w = self.width;
         let tile_h = self.height;
-        // Sample biome.png at the centre of each 1-world-unit cell, not at every
-        // runtime pixel. biome.png is only 4 px/wu — sampling at individual runtime
-        // pixel coords near a coastline can straddle two biome.png pixels and produce
-        // a jagged split-ocean-land result within a single chunk. Snapping to
-        // (floor + 0.5) gives the same result as the compare tool, which also samples
-        // the centre of each 1×1 chunk cell.
+        // Sample macro truth at the centre of each 1-world-unit cell, not at every
+        // runtime pixel. This keeps coastline overrides chunk-stable and matches the
+        // compare tool, which also samples the centre of each 1×1 chunk cell.
         for i in 0..tile_w * tile_h {
             let px = i % tile_w;
             let py = i / tile_w;

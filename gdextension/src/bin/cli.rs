@@ -65,8 +65,8 @@ enum Commands {
         kind: InspectKind,
     },
     /// Compare the macro artifact against per-chunk runtime terrain for a meso map.
-    /// Uses macromap.png for visible macro context and biome.png for the legacy
-    /// ocean-mask/scoring heuristic.
+    /// Uses macromap.png for visible macro context and macro_biome.bin for
+    /// ocean-mask/scoring semantics.
     /// Outputs macro.png (macro artifact crop), micro_grid.png, diff.png, and agreement.json.
     CompareScale {
         /// World seed (used for micro chunk generation)
@@ -505,9 +505,16 @@ fn run_generate_layers(seed: u32, tag: &str) {
     // ── Step 3: Tile the world at meso detail → final 4096×2048 artifact ───
     let pb = spinner("Rendering macromap tiles…");
 
-    // Allocate final RGBA buffers per layer after per-tile 2x box downscale.
+    // Allocate final RGBA buffers per debug layer after per-tile 2x box downscale.
+    // Biome semantics are persisted as macro_biome.bin; biome.png is no longer
+    // emitted as a presentation artifact.
+    let debug_layers: Vec<NoiseLayer> = NoiseLayer::all()
+        .iter()
+        .copied()
+        .filter(|layer| *layer != NoiseLayer::Biome)
+        .collect();
     let n_pixels = FULL_W * FULL_H;
-    let mut layer_bufs: Vec<Vec<u8>> = NoiseLayer::all()
+    let mut layer_bufs: Vec<Vec<u8>> = debug_layers
         .iter()
         .map(|_| vec![0u8; n_pixels * 4])
         .collect();
@@ -526,7 +533,7 @@ fn run_generate_layers(seed: u32, tag: &str) {
 
             // Stitch debug layers after local 2x box downscale. This is equivalent
             // to stitching the 8192×4096 intermediate and then downscaling 2x.
-            for (li, &layer) in NoiseLayer::all().iter().enumerate() {
+            for (li, &layer) in debug_layers.iter().enumerate() {
                 let rgba = tile.layer_to_rgba(layer);
                 let rgba_downscaled = downscale_rgba_2x_box(&rgba, TILE_RENDER_PX, TILE_RENDER_PX);
                 let dst = &mut layer_bufs[li];
@@ -574,7 +581,7 @@ fn run_generate_layers(seed: u32, tag: &str) {
         "macromap.png".to_string(),
         (FULL_W as u32, FULL_H as u32, macromap_buf),
     );
-    for (layer, buf) in NoiseLayer::all().iter().zip(layer_bufs.into_iter()) {
+    for (layer, buf) in debug_layers.iter().zip(layer_bufs.into_iter()) {
         images.insert(
             format!("{}.png", layer.name()),
             (FULL_W as u32, FULL_H as u32, buf),
@@ -582,11 +589,7 @@ fn run_generate_layers(seed: u32, tag: &str) {
     }
 
     let mut layer_images = vec!["macromap.png".to_string()];
-    layer_images.extend(
-        NoiseLayer::all()
-            .iter()
-            .map(|l| format!("{}.png", l.name())),
-    );
+    layer_images.extend(debug_layers.iter().map(|l| format!("{}.png", l.name())));
 
     let manifest = LayerManifest {
         seed,
@@ -930,31 +933,29 @@ fn run_inspect_chunk_presentation(
 
 // ─── compare scale ───────────────────────────────────────────────────────────
 
-/// Returns true for any ocean biome pixel sampled from biome.png.
-/// Delegates to `mg_noise::pixel_is_ocean_rgb` so the logic stays in one place.
-fn pixel_is_ocean_biome_png(r: u8, g: u8, b: u8) -> bool {
-    mg_noise::pixel_is_ocean_rgb(r, g, b)
-}
-
 /// Discover the newest named layer image across all layers artifacts, mirroring the
-/// map_selector.gd macro-texture lookup. Returns (image_path, world_width, world_height).
+/// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
 fn find_newest_layer_image(
     store: &mg_artifacts::ArtifactStore,
     image_name: &str,
-) -> Option<(std::path::PathBuf, f64, f64)> {
+) -> Option<(String, std::path::PathBuf, f64, f64)> {
     let layers_dir = store.base_path().join("layers");
     let entries = fs::read_dir(&layers_dir).ok()?;
-    let mut best: Option<(std::path::PathBuf, std::time::SystemTime, f64, f64)> = None;
+    let mut best: Option<(String, std::path::PathBuf, std::time::SystemTime, f64, f64)> = None;
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
+        let tag = entry.file_name().to_string_lossy().to_string();
         let layer_image = path.join("images").join(image_name);
         if !layer_image.exists() {
             continue;
         }
-        let mtime = fs::metadata(&layer_image).ok()?.modified().ok()?;
+        let mtime = match fs::metadata(&layer_image).and_then(|metadata| metadata.modified()) {
+            Ok(mtime) => mtime,
+            Err(_) => continue,
+        };
         let (ww, wh) = if let Some(manifest) = fs::read_to_string(path.join("manifest.ron"))
             .ok()
             .and_then(|s| ron::de::from_str::<mg_artifacts::LayerManifest>(&s).ok())
@@ -963,11 +964,58 @@ fn find_newest_layer_image(
         } else {
             (WORLD_WIDTH, WORLD_HEIGHT)
         };
-        if best.as_ref().map_or(true, |(_, t, _, _)| mtime > *t) {
-            best = Some((layer_image, mtime, ww, wh));
+        if best.as_ref().map_or(true, |(_, _, t, _, _)| mtime > *t) {
+            best = Some((tag, layer_image, mtime, ww, wh));
         }
     }
-    best.map(|(p, _, ww, wh)| (p, ww, wh))
+    best.map(|(tag, p, _, ww, wh)| (tag, p, ww, wh))
+}
+
+fn load_compare_layers(
+    store: &mg_artifacts::ArtifactStore,
+    layers_tag: Option<&str>,
+) -> (String, std::path::PathBuf, f64, f64, BiomeMap) {
+    match layers_tag {
+        Some(tag) => {
+            let manifest = store.load_layer_manifest(tag).unwrap_or_else(|e| {
+                eprintln!("error: layers artifact '{tag}' not found: {e}");
+                std::process::exit(1);
+            });
+            let macro_visual_path = store.layer_image_path(tag, "macromap.png");
+            if !macro_visual_path.exists() {
+                eprintln!("error: layers artifact '{tag}' has no macromap.png. Regenerate layers.");
+                std::process::exit(1);
+            }
+            let (macro_map, _) = store.load_layers_data(tag).unwrap_or_else(|e| {
+                eprintln!("error: could not load macro_biome.bin for '{tag}': {e}");
+                std::process::exit(1);
+            });
+            (
+                tag.to_string(),
+                macro_visual_path,
+                manifest.world_width as f64,
+                manifest.world_height as f64,
+                macro_map,
+            )
+        }
+        None => {
+            let (tag, macro_visual_path, world_w, world_h) =
+                find_newest_layer_image(store, "macromap.png").unwrap_or_else(|| {
+                    eprintln!(
+                        "error: no layers artifact with macromap.png found in ~/.margins_grip/layers/"
+                    );
+                    eprintln!(
+                        "  Run 'margins_grip generate layers <SEED> <TAG>' first, or pass --layers-tag."
+                    );
+                    std::process::exit(1);
+                });
+            let (macro_map, _) = store.load_layers_data(&tag).unwrap_or_else(|e| {
+                eprintln!("error: could not load macro_biome.bin for '{tag}': {e}");
+                std::process::exit(1);
+            });
+            (tag, macro_visual_path, world_w, world_h, macro_map)
+        }
+    }
 }
 
 fn run_compare_scale(
@@ -995,59 +1043,14 @@ fn run_compare_scale(
         std::process::exit(1);
     });
 
-    // ── Macro: load visual macro artifact and legacy biome semantics ─────────
+    // ── Macro: load visual macro artifact and semantic macro biome truth ─────
     let store = mg_artifacts::ArtifactStore::new().unwrap_or_else(|e| {
         eprintln!("error: failed to open artifact store: {e}");
         std::process::exit(1);
     });
 
-    let (macro_visual_path, biome_png_path, world_w, world_h) = match layers_tag {
-        Some(tag) => {
-            let manifest = store.load_layer_manifest(tag).unwrap_or_else(|e| {
-                eprintln!("error: layers artifact '{tag}' not found: {e}");
-                std::process::exit(1);
-            });
-            let macro_visual_path = {
-                let preferred = store.layer_image_path(tag, "macromap.png");
-                if preferred.exists() {
-                    preferred
-                } else {
-                    store.layer_image_path(tag, "biome.png")
-                }
-            };
-            let biome_png_path = store.layer_image_path(tag, "biome.png");
-            (
-                macro_visual_path,
-                biome_png_path,
-                manifest.world_width as f64,
-                manifest.world_height as f64,
-            )
-        }
-        None => {
-            let (macro_visual_path, world_w, world_h) = find_newest_layer_image(&store, "macromap.png")
-                .or_else(|| find_newest_layer_image(&store, "biome.png"))
-                .unwrap_or_else(|| {
-                    eprintln!(
-                        "error: no layers artifact with macromap.png or biome.png found in ~/.margins_grip/layers/"
-                    );
-                    eprintln!(
-                        "  Run 'margins_grip generate layers <SEED> <TAG>' first, or pass --layers-tag."
-                    );
-                    std::process::exit(1);
-                });
-            let (biome_png_path, _, _) = find_newest_layer_image(&store, "biome.png")
-                .unwrap_or_else(|| {
-                    eprintln!(
-                        "error: no layers artifact with biome.png found for compare semantics."
-                    );
-                    eprintln!(
-                        "  Compare-scale still needs biome.png for legacy ocean-mask scoring."
-                    );
-                    std::process::exit(1);
-                });
-            (macro_visual_path, biome_png_path, world_w, world_h)
-        }
-    };
+    let (resolved_layers_tag, macro_visual_path, world_w, world_h, macro_map) =
+        load_compare_layers(&store, layers_tag);
 
     let macro_visual_img = image::open(&macro_visual_path)
         .unwrap_or_else(|e| {
@@ -1056,17 +1059,8 @@ fn run_compare_scale(
         })
         .into_rgba8();
 
-    let biome_img = image::open(&biome_png_path)
-        .unwrap_or_else(|e| {
-            eprintln!("error: failed to load {}: {e}", biome_png_path.display());
-            std::process::exit(1);
-        })
-        .into_rgba8();
-
     let tex_w = macro_visual_img.width() as usize;
     let tex_h = macro_visual_img.height() as usize;
-    let biome_tex_w = biome_img.width() as usize;
-    let biome_tex_h = biome_img.height() as usize;
 
     // Coordinate math — identical to _build_macro_crop in compare_generation_view.gd
     let px_x = ((world_x / world_w * tex_w as f64) as usize).min(tex_w.saturating_sub(1));
@@ -1077,22 +1071,11 @@ fn run_compare_scale(
     let px_h = ((n as f64 / world_h * tex_h as f64) as usize)
         .max(1)
         .min(tex_h - px_y);
-    let biome_px_x =
-        ((world_x / world_w * biome_tex_w as f64) as usize).min(biome_tex_w.saturating_sub(1));
-    let biome_px_y =
-        ((world_y / world_h * biome_tex_h as f64) as usize).min(biome_tex_h.saturating_sub(1));
-    let biome_px_w = ((n as f64 / world_w * biome_tex_w as f64) as usize)
-        .max(1)
-        .min(biome_tex_w - biome_px_x);
-    let biome_px_h = ((n as f64 / world_h * biome_tex_h as f64) as usize)
-        .max(1)
-        .min(biome_tex_h - biome_px_y);
-
     println!(
         "Comparing macro artifact vs runtime — seed={seed}, meso=({meso_x},{meso_y}), world=({world_x},{world_y}), grid={n}×{n}"
     );
     println!("  macro artifact: {}", macro_visual_path.display());
-    println!("  biome semantics: {}", biome_png_path.display());
+    println!("  macro semantics: macro_biome.bin ({resolved_layers_tag})");
     println!("  crop: ({px_x},{px_y}) {px_w}×{px_h} px  →  {img_w}×{img_h} output");
 
     // Build macro.png: macro artifact crop nearest-neighbour scaled to img_w×img_h
@@ -1115,11 +1098,9 @@ fn run_compare_scale(
         });
     println!("  macro.png  (macro artifact crop)");
 
-    // Build macro ocean mask from the already-loaded biome image so the CLI
-    // applies the same override as the in-game generate_chunk_lod path.
-    let macro_ocean_mask = mg_noise::MacroOceanMask::load(&biome_png_path, world_w, world_h)
-        .map_err(|e| eprintln!("[compare-scale] macro ocean mask: {e}"))
-        .ok();
+    // Build macro ocean mask from saved biome semantics so the CLI applies the
+    // same override as the in-game generate_chunk_lod path.
+    let macro_ocean_mask = mg_noise::MacroOceanMask::from_biome_map(&macro_map);
 
     // ── Micro grid: NxN individual chunks at freq_scale=8.0, LOD2 ────────────
     let pb = spinner(&format!("Generating {n}×{n} micro chunks…"));
@@ -1146,21 +1127,11 @@ fn run_compare_scale(
                 false,
                 MICRO_FREQUENCY_SCALE,
             );
-            if let Some(ref mask) = macro_ocean_mask {
-                micro.apply_macro_ocean_mask(mask, cx, cy, 1.0, 1.0);
-            }
+            micro.apply_macro_ocean_mask(&macro_ocean_mask, cx, cy, 1.0, 1.0);
 
             let mc = MICRO_RES / 2;
             let micro_ocean = micro.is_ocean(mc, mc);
-
-            // Sample center pixel of this cell from the biome.png crop for
-            // legacy compare-scale ocean semantics.
-            let ci = gx * CELL_PX + CELL_PX / 2;
-            let cj = gy * CELL_PX + CELL_PX / 2;
-            let sx = (biome_px_x + ci * biome_px_w / img_w).min(biome_tex_w - 1);
-            let sy = (biome_px_y + cj * biome_px_h / img_h).min(biome_tex_h - 1);
-            let [r, g, b, _] = biome_img.get_pixel(sx as u32, sy as u32).0;
-            let macro_ocean = pixel_is_ocean_biome_png(r, g, b);
+            let macro_ocean = macro_ocean_mask.is_ocean_at_world(cx + 0.5, cy + 0.5);
 
             let agree = macro_ocean == micro_ocean;
             if agree {
@@ -1232,7 +1203,8 @@ fn run_compare_scale(
         "meso": [meso_x, meso_y],
         "origin": [world_x as i64, world_y as i64],
         "grid_size": n,
-        "biome_png": biome_png_path.display().to_string(),
+        "layers_tag": resolved_layers_tag,
+        "macro_semantics": "macro_biome.bin",
         "overall_agreement": overall,
         "cells": cells,
     });

@@ -25,31 +25,28 @@ fn get_macro_ocean_mask() -> Option<&'static MacroOceanMask> {
     MACRO_OCEAN_MASK
         .get_or_init(|| {
             let store = mg_artifacts::ArtifactStore::new().ok()?;
-            let (path, ww, wh) = newest_biome_png(&store)?;
-            MacroOceanMask::load(&path, ww, wh)
-                .map_err(|e| eprintln!("[mg] macro ocean mask load failed: {e}"))
-                .ok()
+            let macro_map = newest_macro_biome(&store)?;
+            Some(MacroOceanMask::from_biome_map(&macro_map))
         })
         .as_ref()
 }
 
-fn newest_biome_png(store: &mg_artifacts::ArtifactStore) -> Option<(std::path::PathBuf, f64, f64)> {
+fn newest_macro_biome(store: &mg_artifacts::ArtifactStore) -> Option<BiomeMap> {
     let layers = store.list_layers().ok()?;
-    let mut best: Option<(std::path::PathBuf, std::time::SystemTime, f64, f64)> = None;
-    for (tag, manifest) in &layers {
-        let path = store.layer_image_path(tag, "biome.png");
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+    for (tag, _manifest) in &layers {
+        let path = store.layer_image_path(tag, "macromap.png");
         if !path.exists() {
             continue;
         }
         if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
-            let ww = manifest.world_width as f64;
-            let wh = manifest.world_height as f64;
-            if best.as_ref().map_or(true, |(_, t, _, _)| mtime > *t) {
-                best = Some((path, mtime, ww, wh));
+            if best.as_ref().map_or(true, |(_, t)| mtime > *t) {
+                best = Some((tag.clone(), mtime));
             }
         }
     }
-    best.map(|(p, _, ww, wh)| (p, ww, wh))
+    let (tag, _) = best?;
+    store.load_layers_data(&tag).ok().map(|(map, _)| map)
 }
 
 struct MarginsGripExtension;

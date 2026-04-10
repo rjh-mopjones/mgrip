@@ -10,7 +10,7 @@ pub mod terrain_render;
 pub mod visualization;
 pub mod wrap;
 
-pub use biome_map::{tile_has_fluid_surface, pixel_is_ocean_rgb, BiomeMap, MacroOceanMask, SEA_LEVEL};
+pub use biome_map::{tile_has_fluid_surface, BiomeMap, MacroOceanMask, SEA_LEVEL};
 pub use biome_splines::BiomeSplines;
 pub use derived::{
     derive_aridity, derive_erosion, derive_heightmap, derive_micro_heightmap, derive_peaks_valleys,

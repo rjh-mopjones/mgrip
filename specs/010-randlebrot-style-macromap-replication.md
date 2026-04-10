@@ -43,7 +43,8 @@ This spec intentionally defines only the macro-side artifact contract:
 
 - `macromap.png` replaces `biome.png` as the authoritative persisted macro
   artifact
-- macro-facing review and future macro-side tooling derive from `macromap.png`
+- macro-facing review uses `macromap.png`
+- semantic comparison and ocean truth use `macro_biome.bin`, not PNG palettes
 
 This spec is therefore not "fix the whole terrain/runtime stack."
 
@@ -159,11 +160,12 @@ explicit output contract:
 Consumer contract:
 
 - macro-facing review reads `macromap.png`
-- future macro-side consumers should read `macromap.png`
+- future macro-side visual consumers should read `macromap.png`
+- future macro-side semantic consumers should read `macro_biome.bin`
 - selector preview and in-level `[M]` local map are not changed by this spec
 
-If `biome.png` continues to exist during migration, it is non-authoritative and
-debug-only under this spec.
+New layers artifacts should not emit `biome.png`. Its semantics are persisted in
+`macro_biome.bin`; `macromap.png` is the presentation image.
 
 ### Section 3 — Replicate the Randlebrot macromap pipeline
 
@@ -351,7 +353,7 @@ scripts/player/fps_controller.gd
 
 2. **Inspect outputs**
    - persisted `macromap.png`
-   - any remaining debug-only `biome.png`
+   - no persisted `biome.png` in new artifacts
    - stitched base and derived layer exports
    - manifest contents
 
