@@ -974,7 +974,14 @@ fn find_newest_layer_image(
 fn load_compare_layers(
     store: &mg_artifacts::ArtifactStore,
     layers_tag: Option<&str>,
-) -> (String, std::path::PathBuf, f64, f64, BiomeMap) {
+) -> (
+    String,
+    std::path::PathBuf,
+    f64,
+    f64,
+    BiomeMap,
+    mg_noise::RiverNetwork,
+) {
     match layers_tag {
         Some(tag) => {
             let manifest = store.load_layer_manifest(tag).unwrap_or_else(|e| {
@@ -986,7 +993,7 @@ fn load_compare_layers(
                 eprintln!("error: layers artifact '{tag}' has no macromap.png. Regenerate layers.");
                 std::process::exit(1);
             }
-            let (macro_map, _) = store.load_layers_data(tag).unwrap_or_else(|e| {
+            let (macro_map, river_network) = store.load_layers_data(tag).unwrap_or_else(|e| {
                 eprintln!("error: could not load macro_biome.bin for '{tag}': {e}");
                 std::process::exit(1);
             });
@@ -996,6 +1003,7 @@ fn load_compare_layers(
                 manifest.world_width as f64,
                 manifest.world_height as f64,
                 macro_map,
+                river_network,
             )
         }
         None => {
@@ -1009,11 +1017,18 @@ fn load_compare_layers(
                     );
                     std::process::exit(1);
                 });
-            let (macro_map, _) = store.load_layers_data(&tag).unwrap_or_else(|e| {
+            let (macro_map, river_network) = store.load_layers_data(&tag).unwrap_or_else(|e| {
                 eprintln!("error: could not load macro_biome.bin for '{tag}': {e}");
                 std::process::exit(1);
             });
-            (tag, macro_visual_path, world_w, world_h, macro_map)
+            (
+                tag,
+                macro_visual_path,
+                world_w,
+                world_h,
+                macro_map,
+                river_network,
+            )
         }
     }
 }
@@ -1052,7 +1067,7 @@ fn run_compare_scale(
     layers_tag: Option<&str>,
 ) {
     const CELL_PX: usize = 64; // pixels per cell in output images
-    const MICRO_RES: usize = 65; // LOD2 resolution
+    const MICRO_RES: usize = MICRO_TILE_RESOLUTION; // LOD0 resolution
 
     let n = grid_size;
     let world_x = (meso_x * n as i64) as f64;
@@ -1074,7 +1089,7 @@ fn run_compare_scale(
         std::process::exit(1);
     });
 
-    let (resolved_layers_tag, macro_visual_path, world_w, world_h, macro_map) =
+    let (resolved_layers_tag, macro_visual_path, world_w, world_h, macro_map, river_network) =
         load_compare_layers(&store, layers_tag);
 
     let macro_visual_img = image::open(&macro_visual_path)
@@ -1162,7 +1177,7 @@ fn run_compare_scale(
         });
     println!("  macro_rivers.png");
 
-    // ── Micro grid: NxN individual chunks at freq_scale=8.0, LOD2 ────────────
+    // ── Micro grid: NxN individual chunks using runtime LOD0 semantics ───────
     let pb = spinner(&format!("Generating {n}×{n} micro chunks…"));
     let mut micro_rgba = vec![0u8; img_w * img_h * 4];
     let mut runtime_river_rgba = vec![0u8; img_w * img_h * 4];
@@ -1185,10 +1200,18 @@ fn run_compare_scale(
                 1.0,
                 MICRO_RES,
                 MICRO_RES,
-                0,
+                MICRO_DETAIL_LEVEL,
                 false,
                 false,
                 MICRO_FREQUENCY_SCALE,
+            );
+            micro.apply_macro_river_network(
+                &river_network,
+                cx,
+                cy,
+                1.0,
+                1.0,
+                mg_noise::LOD_THRESHOLD_MICRO,
             );
             micro.apply_macro_ocean_mask(&macro_ocean_mask, cx, cy, 1.0, 1.0);
 

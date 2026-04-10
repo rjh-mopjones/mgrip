@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::biome_splines::BiomeSplines;
 use crate::derived;
 use crate::erosion_sim::{simulate_erosion, ErosionParams};
-use crate::rivers::{RiverNetwork, LOD_THRESHOLD_MACRO};
+use crate::rivers::{rasterize_to_tile, RiverNetwork, LOD_THRESHOLD_MACRO};
 use crate::strategy::{
     ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
     RockHardnessStrategy, TectonicPlatesStrategy,
@@ -503,6 +503,59 @@ impl BiomeMap {
                 };
                 self.vegetation_density[i] = 0.0;
             }
+        }
+    }
+
+    /// Project the saved macro river network into this runtime tile.
+    ///
+    /// Runtime chunks are generated without the full global river solve. This keeps chunk
+    /// generation cheap, then reuses the saved macro network so local maps and level chunks
+    /// can still expose the same drainage paths as `macromap.png`.
+    pub fn apply_macro_river_network(
+        &mut self,
+        network: &RiverNetwork,
+        origin_x: f64,
+        origin_y: f64,
+        world_size_x: f64,
+        world_size_y: f64,
+        threshold: u32,
+    ) {
+        let tile_w = self.width;
+        let tile_h = self.height;
+        self.rivers = rasterize_to_tile(
+            network,
+            tile_w,
+            tile_h,
+            origin_x,
+            origin_y,
+            world_size_x,
+            world_size_y,
+            self.world_width,
+            self.world_height,
+            threshold as f64,
+        );
+
+        for i in 0..tile_w * tile_h {
+            if self.rivers[i] <= 0.0 {
+                continue;
+            }
+            self.water_table[i] = derived::derive_water_table(
+                self.rivers[i],
+                self.humidity[i],
+                self.heightmap[i],
+                self.precipitation_type[i],
+                self.continentalness[i],
+            );
+            if self.rivers[i] > 0.1
+                && !tile_has_fluid_surface(self.biomes[i])
+                && self.aridity[i] < 0.7
+            {
+                self.biomes[i] = TileType::River;
+            }
+            self.vegetation_density[i] =
+                derived::derive_vegetation_density(self.biomes[i], self.water_table[i]);
+            self.soil_type[i] =
+                derived::derive_soil_type(self.biomes[i], self.erosion[i], self.rock_hardness[i]);
         }
     }
 

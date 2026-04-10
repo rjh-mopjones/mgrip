@@ -96,7 +96,9 @@ impl ArtifactStore {
             return Err(ArtifactError::NotFound { kind: "layers".into(), tag: tag.into() });
         }
         let biome_map = read_bincode(&dir.join(MACRO_BIOME_FILE), "macro BiomeMap")?;
-        let river_network = read_bincode(&dir.join(RIVER_NETWORK_FILE), "RiverNetwork")?;
+        let mut river_network: RiverNetwork =
+            read_bincode(&dir.join(RIVER_NETWORK_FILE), "RiverNetwork")?;
+        river_network.rebuild_spatial_index();
         Ok((biome_map, river_network))
     }
 

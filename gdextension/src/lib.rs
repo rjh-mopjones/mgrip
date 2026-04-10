@@ -8,9 +8,9 @@ mod mesh;
 
 use godot::prelude::*;
 use mg_noise::{
-    AtmosphereClass, BiomeMap, LandformClass, MacroOceanMask, PlanetZone, RuntimeChunkPresentation,
-    RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids, SurfacePaletteClass,
-    SurfaceWaterState, SEA_LEVEL,
+    AtmosphereClass, BiomeMap, LandformClass, MacroOceanMask, PlanetZone, RiverNetwork,
+    RuntimeChunkPresentation, RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids,
+    SurfacePaletteClass, SurfaceWaterState, LOD_THRESHOLD_MICRO, SEA_LEVEL,
 };
 use rayon::spawn;
 use std::sync::{
@@ -19,19 +19,27 @@ use std::sync::{
 };
 use std::time::Instant;
 
-static MACRO_OCEAN_MASK: OnceLock<Option<MacroOceanMask>> = OnceLock::new();
+static MACRO_SEMANTICS: OnceLock<Option<MacroSemantics>> = OnceLock::new();
 
-fn get_macro_ocean_mask() -> Option<&'static MacroOceanMask> {
-    MACRO_OCEAN_MASK
+struct MacroSemantics {
+    ocean_mask: MacroOceanMask,
+    river_network: RiverNetwork,
+}
+
+fn get_macro_semantics() -> Option<&'static MacroSemantics> {
+    MACRO_SEMANTICS
         .get_or_init(|| {
             let store = mg_artifacts::ArtifactStore::new().ok()?;
-            let macro_map = newest_macro_biome(&store)?;
-            Some(MacroOceanMask::from_biome_map(&macro_map))
+            let (macro_map, river_network) = newest_macro_layers(&store)?;
+            Some(MacroSemantics {
+                ocean_mask: MacroOceanMask::from_biome_map(&macro_map),
+                river_network,
+            })
         })
         .as_ref()
 }
 
-fn newest_macro_biome(store: &mg_artifacts::ArtifactStore) -> Option<BiomeMap> {
+fn newest_macro_layers(store: &mg_artifacts::ArtifactStore) -> Option<(BiomeMap, RiverNetwork)> {
     let layers = store.list_layers().ok()?;
     let mut best: Option<(String, std::time::SystemTime)> = None;
     for (tag, _manifest) in &layers {
@@ -46,7 +54,21 @@ fn newest_macro_biome(store: &mg_artifacts::ArtifactStore) -> Option<BiomeMap> {
         }
     }
     let (tag, _) = best?;
-    store.load_layers_data(&tag).ok().map(|(map, _)| map)
+    store.load_layers_data(&tag).ok()
+}
+
+fn apply_macro_semantics(map: &mut BiomeMap, world_x: f64, world_y: f64) {
+    if let Some(semantics) = get_macro_semantics() {
+        map.apply_macro_river_network(
+            &semantics.river_network,
+            world_x,
+            world_y,
+            1.0,
+            1.0,
+            LOD_THRESHOLD_MICRO,
+        );
+        map.apply_macro_ocean_mask(&semantics.ocean_mask, world_x, world_y, 1.0, 1.0);
+    }
 }
 
 struct MarginsGripExtension;
@@ -478,9 +500,7 @@ impl MgTerrainGen {
             false,
             freq_scale.max(0.1),
         );
-        if let Some(mask) = get_macro_ocean_mask() {
-            map.apply_macro_ocean_mask(mask, world_x, world_y, 1.0, 1.0);
-        }
+        apply_macro_semantics(&mut map, world_x, world_y);
         biome_map_from_arc(Arc::new(map))
     }
 
@@ -587,9 +607,7 @@ impl MgChunkBuildJob {
                 false,
                 freq_scale.max(0.1),
             );
-            if let Some(mask) = get_macro_ocean_mask() {
-                map.apply_macro_ocean_mask(mask, world_x, world_y, 1.0, 1.0);
-            }
+            apply_macro_semantics(&mut map, world_x, world_y);
             let map = Arc::new(map);
             let generation_ms = generation_start.elapsed().as_secs_f64() * 1000.0;
 
