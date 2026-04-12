@@ -252,11 +252,12 @@ fn main() {
 // World layout constants (matching biome_map.rs and spec)
 const WORLD_WIDTH: f64 = 1024.0;
 const WORLD_HEIGHT: f64 = 512.0;
-// Macro BiomeMap at 2× world resolution for finer D8 flow solve. Each macro
-// pixel is 0.5 wu — D8 has 2× more direction changes per world unit than at
-// 1:1, producing smoother river paths with less staircase zigzag.
-const MACRO_MAP_W: usize = 2048;
-const MACRO_MAP_H: usize = 1024;
+// Macro BiomeMap at 1:1 world resolution. D8 flow solve at 1 px/wu produces
+// the densest dendritic network; doubling to 2 px/wu halved segment lengths
+// and made rivers fragment. Smoothness comes from Chaikin passes + meander,
+// not raw grid resolution.
+const MACRO_MAP_W: usize = 1024;
+const MACRO_MAP_H: usize = 512;
 // Tile grid: 16×8 macro tiles of 64×64 world units each.
 // Render at 768px, box-downscale to 384px before stitching. Final macromap
 // is 6144×3072 (50% larger than the previous 4096×2048).

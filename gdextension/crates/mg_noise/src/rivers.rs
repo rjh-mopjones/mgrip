@@ -328,6 +328,8 @@ impl RiverNetwork {
         sea_level: f64,
     ) -> Self {
         let total = width * height;
+        let world_width: f64 = 1024.0;
+        let world_height: f64 = 512.0;
 
         // Step 0: Condition heightmap for coherent drainage
         let conditioned = condition_heightmap_for_drainage(
@@ -359,8 +361,10 @@ impl RiverNetwork {
             }
             let mid_idx = seg.path.len() / 2;
             let (mx, my) = seg.path[mid_idx];
-            let px = (mx as usize).min(width - 1);
-            let py = (my as usize).min(height - 1);
+            // Path coords are in WORLD units; convert to macro pixel indices
+            // for the light_level/humidity/temperature array lookup.
+            let px = ((mx / world_width * width as f64) as usize).min(width - 1);
+            let py = ((my / world_height * height as f64) as usize).min(height - 1);
             let idx = py * width + px;
             let light = light_level.get(idx).copied().unwrap_or(0.5);
             let humid = humidity.get(idx).copied().unwrap_or(0.5);
@@ -399,8 +403,14 @@ impl RiverNetwork {
             let max_drainage = segments.iter().map(|s| s.drainage_area).max().unwrap_or(0);
             let segs_above_500 = segments.iter().filter(|s| s.drainage_area >= 500).count();
             let segs_above_100 = segments.iter().filter(|s| s.drainage_area >= 100).count();
+            let visible = segments.iter().filter(|s| s.character.is_visible_channel()).count();
+            let buried = segments.iter().filter(|s| matches!(s.character, RiverCharacter::BuriedIce)).count();
+            let dry = segments.iter().filter(|s| matches!(s.character, RiverCharacter::DryWadi)).count();
+            let frozen = segments.iter().filter(|s| matches!(s.character, RiverCharacter::Frozen)).count();
+            let seasonal = segments.iter().filter(|s| matches!(s.character, RiverCharacter::SeasonalFlow)).count();
+            let permanent = segments.iter().filter(|s| matches!(s.character, RiverCharacter::Permanent)).count();
             eprintln!(
-                "[rivers] {} segments, max drainage {max_drainage}, >=500: {segs_above_500}, >=100: {segs_above_100}",
+                "[rivers] {} segments, max drainage {max_drainage}, >=500: {segs_above_500}, >=100: {segs_above_100}  visible: {visible} (perm={permanent} season={seasonal} frozen={frozen}) hidden: buried={buried} dry={dry}",
                 segments.len()
             );
         }
@@ -549,9 +559,18 @@ impl RiverNetwork {
                 .collect();
             // Interior-minimum: upstream-end at least 60% of Strahler max.
             let min_half_width = (max_half_width * 0.6).clamp(min_px, max_half_width);
+            // Convert world-coord path to macro-pixel-coord path. At 1:1
+            // this is identity; at 2:1 it doubles all coordinates so the
+            // rasteriser covers the full 2048×1024 grid instead of only
+            // the left half.
+            let pixel_path: Vec<(f64, f64)> = smoothed
+                .iter()
+                .map(|&(wx, wy)| (wx * pixels_per_wu, wy * (height as f64 / 512.0)))
+                .collect();
+            let drainage_scaled: Vec<u32> = drainage_per_point.clone();
             rasterise_smooth_line_with_min(
                 &mut grid, width, height,
-                &smoothed, &drainage_per_point, max_drainage, max_half_width,
+                &pixel_path, &drainage_scaled, max_drainage, max_half_width,
                 min_half_width,
             );
         }
@@ -862,6 +881,15 @@ fn build_river_tree(
     width: usize, height: usize, sea_level: f64, min_accumulation: u32,
 ) -> Vec<RiverSegment> {
     let total = width * height;
+    // Convert pixel indices to world coordinates. At 1:1 macro (1024×512)
+    // this is an identity transform. At 2:1 (2048×1024) it scales by 0.5.
+    // Without this, path coordinates are in macro pixel space and the
+    // runtime rasterizer (which works in world coords) draws nothing because
+    // every path point is 2× too far from the chunk.
+    let world_width: f64 = 1024.0;
+    let world_height: f64 = 512.0;
+    let px_to_wx = world_width / width as f64;
+    let px_to_wy = world_height / height as f64;
     let is_river: Vec<bool> = accumulation.iter().map(|&a| a >= min_accumulation).collect();
 
     // Count river-cell inflows
@@ -903,7 +931,10 @@ fn build_river_tree(
             if current != start && segment_id_at[current].is_some() { break; }
             if current != start && inflow_count[current] >= 2 { break; }
 
-            path.push(((current % width) as f64, (current / width) as f64));
+            path.push((
+                (current % width) as f64 * px_to_wx,
+                (current / width) as f64 * px_to_wy,
+            ));
 
             if continentalness.get(current).copied().unwrap_or(0.0) < sea_level { break; }
             if flow_dir[current] == NO_FLOW { break; }
