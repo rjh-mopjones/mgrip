@@ -208,13 +208,16 @@ impl RiverCharacter {
     }
 
     fn is_visible_channel(&self) -> bool {
+        // Only surface-water channels render. DryWadi (substellar dayside:
+        // too hot for surface water — dry geological channels only) and
+        // BuriedIce (deep nightside: frozen underground drainage) are real
+        // drainage features in the network but should not paint surface
+        // water on the macromap or runtime chunks.
         matches!(
             self,
-            RiverCharacter::DryWadi
-                | RiverCharacter::SeasonalFlow
+            RiverCharacter::SeasonalFlow
                 | RiverCharacter::Permanent
                 | RiverCharacter::Frozen
-                | RiverCharacter::BuriedIce
         )
     }
 
