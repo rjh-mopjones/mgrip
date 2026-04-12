@@ -51,28 +51,25 @@ pub const LOD_THRESHOLD_MESO: u32 = 4;
 pub const LOD_THRESHOLD_MICRO: u32 = 2;
 
 const MAX_RIVER_WORLD_HALF_WIDTH: f64 = 4.0;
-// Macro flow grid renders at 1 px / world unit. Absolute floor of 1 px so no
-// segment is ever sub-pixel (would render as AA-only stipple — the user's
-// "disconnected dashes" bug). Max is exercised by Strahler-8+ mainstems
-// only; see `macro_strahler_half_width_px`.
-const FLOW_GRID_MIN_HALF_WIDTH: f64 = 1.0;
-const FLOW_GRID_MAX_HALF_WIDTH: f64 = 14.0;
+// Macro flow grid width limits in WORLD UNITS. Multiplied by `pixels_per_wu`
+// at render time so the same river width holds regardless of whether the
+// macro grid is 1024×512 (1 px/wu) or 2048×1024 (2 px/wu). Without this
+// scaling, doubling macro resolution halves visible river width — the exact
+// bug that made rivers vanish after the res bump.
+const FLOW_GRID_MIN_HALF_WIDTH_WU: f64 = 1.0;
+const FLOW_GRID_MAX_HALF_WIDTH_WU: f64 = 14.0;
 // Runtime tile rasterization is at any pixels-per-wu. Min kept small so
 // trickles look like trickles; max caps mains at ~20% of chunk width so
 // rivers don't swallow entire 1×1 runtime tiles.
 const TILE_RIVER_MIN_HALF_WIDTH_PX: f64 = 3.0;
 const TILE_RIVER_MAX_HALF_WIDTH_PX: f64 = 56.0;
 
-/// Macro-specific Strahler → pixel half-width lookup.
+/// Macro-specific Strahler → WORLD-UNIT half-width lookup.
 ///
-/// At macro render scale (1 px / wu) the wu-based `strahler_world_half_width`
-/// values collapse to sub-pixel (0.10–0.80 px) which clamps every segment to
-/// the global min — no visible hierarchy between headwaters and mainstems.
-/// This direct pixel table spans the macro's visible range so each Strahler
-/// order renders a distinct pixel width, producing a real dendritic texture.
-///
-/// Values are deliberately coarse steps (1 → 13 px half, = 2 → 26 px diameter).
-fn macro_strahler_half_width_px(strahler: u32) -> f64 {
+/// Values in wu — multiplied by `pixels_per_wu` at render time so the river
+/// width is resolution-independent. At 1 px/wu these are 1–13 px; at 2 px/wu
+/// they're 2–26 px. The hierarchy stays visible at any macro resolution.
+fn macro_strahler_half_width_wu(strahler: u32) -> f64 {
     match strahler.max(1) {
         1 => 1.0,
         2 => 1.8,
@@ -522,24 +519,21 @@ impl RiverNetwork {
             if smoothed.len() < 2 {
                 continue;
             }
-            // Macro half-width from direct Strahler→pixel table. Character
-            // multiplier still applies so Frozen / DryWadi / BuriedIce render
-            // as fractions of their order's nominal width.
-            let max_half_width = (macro_strahler_half_width_px(seg.strahler_order)
-                * seg.character.width_multiplier())
-                .clamp(FLOW_GRID_MIN_HALF_WIDTH, FLOW_GRID_MAX_HALF_WIDTH);
-            // Macro meander amplitude: generous so curves are readable at
-            // 1 px/wu across the full 1024-wide map. For a 1.0 px half-width
-            // S1 tributary this is ~5.5 wu displacement; for a 13 px half
-            // S8 mainstem it's ~25 wu — enough to show broad sweeps over
-            // the tens-of-wu length of those segments.
-            let meander_amplitude = 4.0 + max_half_width * 1.5;
+            // Strahler wu × pixels_per_wu → resolution-independent pixel width.
+            // Same world width at 1 px/wu or 2 px/wu or any future resolution.
+            let min_px = FLOW_GRID_MIN_HALF_WIDTH_WU * pixels_per_wu;
+            let max_px = FLOW_GRID_MAX_HALF_WIDTH_WU * pixels_per_wu;
+            let max_half_width = (macro_strahler_half_width_wu(seg.strahler_order)
+                * seg.character.width_multiplier()
+                * pixels_per_wu)
+                .clamp(min_px, max_px);
+            // Meander amplitude in WORLD UNITS (not pixels) so it's the same
+            // curve at any resolution. Divide back from pixel half-width.
+            let half_width_wu = max_half_width / pixels_per_wu;
+            let meander_amplitude = 4.0 + half_width_wu * 1.5;
             let smoothed = meander_path(&smoothed, meander_amplitude);
             // Per-point drainage lerp from upstream parent's drainage at the
             // head of this segment to the segment's own drainage at its foot.
-            // Gives the rasteriser a varying per-pixel `norm_drain` so rivers
-            // visibly widen toward the mouth within a single segment, not
-            // just at confluences.
             let upstream_drainage = self.upstream_drainage_for(seg.id) as f64;
             let segment_drainage = seg.drainage_area as f64;
             let n = smoothed.len();
@@ -550,13 +544,8 @@ impl RiverNetwork {
                     (upstream_drainage + (segment_drainage - upstream_drainage) * t) as u32
                 })
                 .collect();
-            // Interior-minimum clamp: upstream-end of segment is at LEAST
-            // 60% of its Strahler max, so the line stays visually continuous
-            // as it enters the parent confluence. End of segment reaches full
-            // `max_half_width` at its own drainage — that's the mouth-ward
-            // widening within a segment.
-            let min_half_width = (max_half_width * 0.6)
-                .clamp(FLOW_GRID_MIN_HALF_WIDTH, max_half_width);
+            // Interior-minimum: upstream-end at least 60% of Strahler max.
+            let min_half_width = (max_half_width * 0.6).clamp(min_px, max_half_width);
             rasterise_smooth_line_with_min(
                 &mut grid, width, height,
                 &smoothed, &drainage_per_point, max_drainage, max_half_width,
