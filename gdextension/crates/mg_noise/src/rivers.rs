@@ -390,7 +390,7 @@ impl RiverNetwork {
         // stripes on `rivers.png` at the wrap-crossing y row.
         for seg in &mut segments {
             let unwrapped = unwrap_path_x(&seg.path, width as f64);
-            seg.path = chaikin_smooth(&unwrapped, 2);
+            seg.path = chaikin_smooth(&unwrapped, 3);
             seg.meander_offsets = vec![0.0; seg.path.len()];
         }
 
@@ -510,7 +510,7 @@ impl RiverNetwork {
         // control points — visible as hard straight runs across the macro
         // view. Match the target used by `rasterize_from_network` so macro and
         // runtime smooth to the same curve.
-        let target_spacing = 0.25 / pixels_per_wu.max(0.0001);
+        let target_spacing = 0.08 / pixels_per_wu.max(0.0001);
         for seg in &self.segments {
             if !seg.character.is_visible_channel() || seg.path.len() < 2 {
                 continue;
@@ -1184,7 +1184,7 @@ pub fn rasterize_from_network(
         // `max_len/target = 1/(0.25/8) = 32 → 5 passes`. Gives a visually
         // smooth curve instead of hard-edged straight line segments between
         // original control points (which the solid-line rasterizer exposes).
-        let target_spacing = 0.25 / pixels_per_wu.max(0.0001);
+        let target_spacing = 0.08 / pixels_per_wu.max(0.0001);
         // Unwrap x-coords so wrap-crossing segments don't linearly interpolate
         // across the full world. World width hardcoded as 1024.
         let unwrapped = unwrap_path_x(&constraint.path, 1024.0);
