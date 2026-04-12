@@ -71,14 +71,14 @@ const TILE_RIVER_MAX_HALF_WIDTH_PX: f64 = 56.0;
 /// they're 2–26 px. The hierarchy stays visible at any macro resolution.
 fn macro_strahler_half_width_wu(strahler: u32) -> f64 {
     match strahler.max(1) {
-        1 => 1.0,
-        2 => 1.8,
-        3 => 2.6,
-        4 => 3.6,
-        5 => 5.0,
-        6 => 7.0,
-        7 => 9.5,
-        _ => 13.0,
+        1 => 1.4,
+        2 => 2.2,
+        3 => 3.2,
+        4 => 4.5,
+        5 => 6.0,
+        6 => 8.0,
+        7 => 11.0,
+        _ => 14.0,
     }
 }
 
@@ -128,7 +128,10 @@ fn meander_path(path: &[(f64, f64)], amplitude_wu: f64) -> Vec<(f64, f64)> {
         let nx = -dy / len;
         let ny = dx / len;
         // Low-frequency noise at world coord — shared meander surface.
-        let noise_value = noise.get([wx * 0.04, wy * 0.04]);
+        // Frequency 0.07 = ~14 wu wavelength. At typical map selector zoom
+        // showing ~30 wu, this produces 2-3 visible meander cycles — enough
+        // to read as "meandering" rather than "one gentle curve".
+        let noise_value = noise.get([wx * 0.07, wy * 0.07]);
         // Taper at endpoints so confluences stay anchored.
         let from_start = i.min(endpoint_taper) as f64 / endpoint_taper as f64;
         let from_end = (n - 1 - i).min(endpoint_taper) as f64 / endpoint_taper as f64;
