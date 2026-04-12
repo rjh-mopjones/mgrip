@@ -197,7 +197,7 @@ impl RiverCharacter {
     }
 
     fn outside_surface_band(y: usize, height: usize) -> Self {
-        if y < height / 3 {
+        if y < height / 5 {
             RiverCharacter::BuriedIce
         } else {
             RiverCharacter::DryWadi
@@ -365,7 +365,10 @@ impl RiverNetwork {
             let light = light_level.get(idx).copied().unwrap_or(0.5);
             let humid = humidity.get(idx).copied().unwrap_or(0.5);
             let temp = temperature.get(idx).copied().unwrap_or(15.0);
-            seg.character = if py < height / 3 || py >= (height * 2) / 3 {
+            // Narrow the forced-character bands to 20% each polar extreme.
+            // The previous 33% bands made terminus-coast rivers (world y 100-170)
+            // classify as BuriedIce and vanish after is_visible_channel filtering.
+            seg.character = if py < height / 5 || py >= (height * 4) / 5 {
                 RiverCharacter::outside_surface_band(py, height)
             } else {
                 RiverCharacter::classify(light, humid, temp)
