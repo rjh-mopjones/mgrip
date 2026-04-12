@@ -388,11 +388,14 @@ fn is_frozen_biome(b: TileType) -> bool {
 /// muddy/dust corridors. Default is the standard blue river. Used both for
 /// `TileType::River` cells (solid pixels) and the high-strength branch of the
 /// river corridor blend.
-fn solid_river_color(temperature: f64, light_level: f64, aridity: f64) -> [u8; 3] {
+fn solid_river_color(temperature: f64, light_level: f64, _aridity: f64) -> [u8; 3] {
+    // Visible rivers are always surface water — no more muddy/grey corridor
+    // color for arid regions (those segments are DryWadi which is_visible_channel
+    // now filters out). Remaining channels are Permanent/SeasonalFlow/Frozen
+    // and should look like water everywhere. Cold/dim regions get pale
+    // ice-water; everything else gets standard blue.
     if temperature < -1.0 || light_level < 0.12 {
         [160, 190, 210]
-    } else if aridity > 0.7 || temperature > 55.0 || light_level > 0.82 {
-        [128, 104, 78]
     } else {
         [80, 130, 180]
     }

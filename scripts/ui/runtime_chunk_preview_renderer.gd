@@ -205,11 +205,9 @@ func _build_chunk_map_image(
 	return image
 
 
-func _solid_river_color(temperature: float, light: float, aridity: float) -> Color:
+func _solid_river_color(temperature: float, light: float, _aridity: float) -> Color:
 	if temperature < -1.0 or light < 0.12:
 		return Color(160.0 / 255.0, 190.0 / 255.0, 210.0 / 255.0, 1.0)
-	if aridity > 0.7 or temperature > 55.0 or light > 0.82:
-		return Color(128.0 / 255.0, 104.0 / 255.0, 78.0 / 255.0, 1.0)
 	return Color(80.0 / 255.0, 130.0 / 255.0, 180.0 / 255.0, 1.0)
 
 
