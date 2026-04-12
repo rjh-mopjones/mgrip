@@ -252,22 +252,23 @@ fn main() {
 // World layout constants (matching biome_map.rs and spec)
 const WORLD_WIDTH: f64 = 1024.0;
 const WORLD_HEIGHT: f64 = 512.0;
-const MACRO_MAP_W: usize = 1024;
-const MACRO_MAP_H: usize = 512;
+// Macro BiomeMap at 2× world resolution for finer D8 flow solve. Each macro
+// pixel is 0.5 wu — D8 has 2× more direction changes per world unit than at
+// 1:1, producing smoother river paths with less staircase zigzag.
+const MACRO_MAP_W: usize = 2048;
+const MACRO_MAP_H: usize = 1024;
 // Tile grid: 16×8 macro tiles of 64×64 world units each.
-// We render at 512px, then box-downscale each tile to 256px before stitching.
-// This is equivalent to stitching an 8192×4096 intermediate and downscaling
-// 2x to the final 4096×2048 artifact, without holding the full intermediate
-// in memory.
+// Render at 768px, box-downscale to 384px before stitching. Final macromap
+// is 6144×3072 (50% larger than the previous 4096×2048).
 const TILE_WORLD_SIZE: f64 = 64.0;
-const TILE_RENDER_PX: usize = 512;
+const TILE_RENDER_PX: usize = 768;
 const TILE_OUTPUT_PX: usize = TILE_RENDER_PX / 2;
 const TILES_X: usize = (WORLD_WIDTH / TILE_WORLD_SIZE) as usize; // 16
 const TILES_Y: usize = (WORLD_HEIGHT / TILE_WORLD_SIZE) as usize; // 8
-const FULL_RENDER_W: usize = TILES_X * TILE_RENDER_PX; // 8192
-const FULL_RENDER_H: usize = TILES_Y * TILE_RENDER_PX; // 4096
-const FULL_W: usize = TILES_X * TILE_OUTPUT_PX; // 4096
-const FULL_H: usize = TILES_Y * TILE_OUTPUT_PX; // 2048
+const FULL_RENDER_W: usize = TILES_X * TILE_RENDER_PX; // 12288
+const FULL_RENDER_H: usize = TILES_Y * TILE_RENDER_PX; // 6144
+const FULL_W: usize = TILES_X * TILE_OUTPUT_PX; // 6144
+const FULL_H: usize = TILES_Y * TILE_OUTPUT_PX; // 3072
 const MICRO_CHUNK_WORLD_SIZE: f64 = 1.0;
 const MICRO_TILE_RESOLUTION: usize = 512;
 const MICRO_DETAIL_LEVEL: u32 = 2;
