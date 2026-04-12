@@ -167,8 +167,8 @@ fn strahler_world_half_width(strahler_order: u32) -> f64 {
 // trickles feeding into Strahler-2 confluences; with the old ratio 0.00012
 // at 1024×512 the effective floor was ~63 cells which filtered out the
 // fine-branching texture entirely.
-const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00003;
-const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 4.0;
+const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.000015;
+const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 2.0;
 
 // ─── River Character ────────────────────────────────────────────────────────
 
@@ -301,31 +301,32 @@ pub fn build_river_chains(segments: &[RiverSegment]) -> Vec<RiverChain> {
             }
             visited += 1;
             let s = &segments[current];
-            if !s.character.is_visible_channel() {
-                break;
-            }
             max_strahler = max_strahler.max(s.strahler_order);
 
-            let upstream_drain = s
-                .upstream
-                .iter()
-                .filter_map(|&uid| segments.get(uid))
-                .map(|u| u.drainage_area)
-                .max()
-                .unwrap_or(0);
+            // Only append PATH for visible segments. Non-visible segments
+            // (DryWadi/BuriedIce in dayside/nightside) are skipped visually
+            // but the chain KEEPS WALKING downstream so it can reach ocean
+            // through any non-visible zone rather than stopping mid-land.
+            if s.character.is_visible_channel() {
+                let upstream_drain = s
+                    .upstream
+                    .iter()
+                    .filter_map(|&uid| segments.get(uid))
+                    .map(|u| u.drainage_area)
+                    .max()
+                    .unwrap_or(0);
 
-            let n = s.path.len();
-            for (i, &pt) in s.path.iter().enumerate() {
-                let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 1.0 };
-                let d = upstream_drain as f64
-                    + (s.drainage_area as f64 - upstream_drain as f64) * t;
-                path.push(pt);
-                drainage_per_point.push(d as u32);
+                let n = s.path.len();
+                for (i, &pt) in s.path.iter().enumerate() {
+                    let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 1.0 };
+                    let d = upstream_drain as f64
+                        + (s.drainage_area as f64 - upstream_drain as f64) * t;
+                    path.push(pt);
+                    drainage_per_point.push(d as u32);
+                }
+                last_drainage = s.drainage_area;
             }
-            last_drainage = s.drainage_area;
 
-            // Always follow downstream — chains overlap at trunk segments
-            // but that's correct (rasterise max-blends).
             match s.downstream {
                 Some(ds) if ds < segments.len() => {
                     current = ds;
@@ -503,7 +504,7 @@ impl RiverNetwork {
         // stripes on `rivers.png` at the wrap-crossing y row.
         for seg in &mut segments {
             let unwrapped = unwrap_path_x(&seg.path, width as f64);
-            seg.path = chaikin_smooth(&unwrapped, 3);
+            seg.path = chaikin_smooth(&unwrapped, 5);
             seg.meander_offsets = vec![0.0; seg.path.len()];
         }
 
@@ -646,7 +647,7 @@ impl RiverNetwork {
                 * pixels_per_wu)
                 .clamp(min_px, max_px);
             let half_width_wu = max_half_width / pixels_per_wu;
-            let meander_amplitude = 4.0 + half_width_wu * 1.5;
+            let meander_amplitude = 6.0 + half_width_wu * 2.0;
             let smoothed = meander_path(&smoothed, meander_amplitude);
 
             // Interpolate drainage_per_point to match smoothed path length.
@@ -660,7 +661,7 @@ impl RiverNetwork {
                 })
                 .collect();
 
-            let min_half_width = (max_half_width * 0.3).clamp(min_px * 0.5, max_half_width);
+            let min_half_width = (max_half_width * 0.15).clamp(min_px * 0.3, max_half_width);
 
             // World → pixel conversion.
             let pixel_path: Vec<(f64, f64)> = smoothed
@@ -1354,7 +1355,7 @@ pub fn rasterize_from_network(
 
         let max_half_width = (world_half_raw * pixels_per_wu)
             .clamp(TILE_RIVER_MIN_HALF_WIDTH_PX, TILE_RIVER_MAX_HALF_WIDTH_PX);
-        let min_half_width = (max_half_width * 0.3).clamp(TILE_RIVER_MIN_HALF_WIDTH_PX * 0.5, max_half_width);
+        let min_half_width = (max_half_width * 0.15).clamp(TILE_RIVER_MIN_HALF_WIDTH_PX * 0.3, max_half_width);
 
         rasterise_smooth_line_with_min(
             &mut grid,

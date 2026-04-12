@@ -432,7 +432,7 @@ func _run_capture_probe(capture_dir: String) -> void:
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_mode_entered.png"))
 
-	_open_compare_view(Vector2i(392, 152))  # meso (49,19) — user reference region
+	_open_compare_view(Vector2i(200, 200))  # river-rich terminus region
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_opened.png"))
 

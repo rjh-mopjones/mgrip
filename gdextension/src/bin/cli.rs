@@ -262,7 +262,7 @@ const MACRO_MAP_H: usize = 512;
 // Render at 768px, box-downscale to 384px before stitching. Final macromap
 // is 6144×3072 (50% larger than the previous 4096×2048).
 const TILE_WORLD_SIZE: f64 = 64.0;
-const TILE_RENDER_PX: usize = 768;
+const TILE_RENDER_PX: usize = 1024;
 const TILE_OUTPUT_PX: usize = TILE_RENDER_PX / 2;
 const TILES_X: usize = (WORLD_WIDTH / TILE_WORLD_SIZE) as usize; // 16
 const TILES_Y: usize = (WORLD_HEIGHT / TILE_WORLD_SIZE) as usize; // 8
