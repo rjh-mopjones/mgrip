@@ -268,63 +268,44 @@ pub struct RiverChain {
     pub character: RiverCharacter,
 }
 
-/// Build river chains by following each headwater segment downstream to the
-/// mouth (ocean or no-flow terminus). At confluences where multiple upstream
-/// tributaries merge, only the LARGEST upstream (by drainage) continues the
-/// chain — smaller tributaries start separate chains. This ensures each
-/// segment appears in exactly ONE chain, and the "trunk" of each drainage
-/// basin is one continuous stroke.
+/// Build river chains by following each headwater downstream to the mouth.
+///
+/// Each chain = continuous path from one headwater all the way to the ocean,
+/// concatenating every segment's path along the `downstream` pointers. Trunk
+/// segments near the mouth appear in MULTIPLE chains (one per tributary that
+/// feeds into them) — the rasterise `max()` blend handles the overlap
+/// correctly, and the visual result is a connected dendritic tree where width
+/// grows smoothly from source to mouth.
 pub fn build_river_chains(segments: &[RiverSegment]) -> Vec<RiverChain> {
     if segments.is_empty() {
         return vec![];
     }
 
-    // For each segment that has multiple upstreams (a confluence), mark which
-    // upstream is the "main" (highest drainage) — that one continues the
-    // parent chain. Others start fresh chains.
-    let mut is_main_upstream = vec![false; segments.len()];
-    for seg in segments {
-        if seg.upstream.is_empty() {
-            continue;
-        }
-        // The upstream with highest drainage is the "main" continuation.
-        let main_up = seg
-            .upstream
-            .iter()
-            .copied()
-            .max_by_key(|&uid| segments.get(uid).map_or(0, |s| s.drainage_area));
-        if let Some(uid) = main_up {
-            is_main_upstream[uid] = true;
-        }
-    }
-
-    // Find chain heads: segments that are NOT the main upstream of their
-    // downstream parent. These are either headwaters (no upstream at all)
-    // or minor tributaries at a confluence.
+    // Headwaters = segments with no upstream. Each starts a chain.
     let mut chains = Vec::new();
     for (idx, seg) in segments.iter().enumerate() {
-        // Skip if this segment is the main continuation of its downstream —
-        // it will be picked up when we walk from a chain head.
-        if is_main_upstream[idx] {
-            continue;
+        if !seg.upstream.is_empty() {
+            continue; // not a headwater
         }
-        // This segment starts a new chain. Walk downstream, always following
-        // the main-upstream path at each node.
+
         let mut path = Vec::new();
         let mut drainage_per_point = Vec::new();
         let mut current = idx;
         let mut max_strahler = 0u32;
         let mut last_drainage = 0u32;
+        let mut visited = 0usize;
 
         loop {
+            if visited > segments.len() {
+                break; // cycle guard
+            }
+            visited += 1;
             let s = &segments[current];
             if !s.character.is_visible_channel() {
-                // If we hit a non-visible segment, stop the chain here.
                 break;
             }
             max_strahler = max_strahler.max(s.strahler_order);
 
-            // Compute upstream drainage for this segment (max of its upstreams).
             let upstream_drain = s
                 .upstream
                 .iter()
@@ -333,7 +314,6 @@ pub fn build_river_chains(segments: &[RiverSegment]) -> Vec<RiverChain> {
                 .max()
                 .unwrap_or(0);
 
-            // Append this segment's path with per-point drainage lerp.
             let n = s.path.len();
             for (i, &pt) in s.path.iter().enumerate() {
                 let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 1.0 };
@@ -344,38 +324,25 @@ pub fn build_river_chains(segments: &[RiverSegment]) -> Vec<RiverChain> {
             }
             last_drainage = s.drainage_area;
 
-            // Follow downstream if this segment is the main upstream of
-            // its downstream parent.
-            if let Some(ds) = s.downstream {
-                if ds < segments.len() && is_main_upstream[current] {
-                    // We ARE the main upstream of ds — continue the chain.
+            // Always follow downstream — chains overlap at trunk segments
+            // but that's correct (rasterise max-blends).
+            match s.downstream {
+                Some(ds) if ds < segments.len() => {
                     current = ds;
-                    continue;
                 }
+                _ => break,
             }
-            // Either no downstream or we're a minor tributary — stop.
-            break;
         }
 
         if path.len() >= 2 {
-            let mid = path.len() / 2;
-            let mid_seg_idx = segments
-                .iter()
-                .position(|s| {
-                    s.path
-                        .first()
-                        .map_or(false, |&p| {
-                            let (px, py) = path[mid.min(path.len() - 1)];
-                            (p.0 - px).abs() < 0.01 && (p.1 - py).abs() < 0.01
-                        })
-                })
-                .unwrap_or(idx);
+            // Use the character from the midpoint segment for visibility/color.
+            let mid_char = segments.get(idx).map_or(RiverCharacter::Permanent, |s| s.character);
             chains.push(RiverChain {
                 path,
                 drainage_per_point,
                 max_drainage: last_drainage,
                 max_strahler,
-                character: segments[mid_seg_idx].character,
+                character: mid_char,
             });
         }
     }
