@@ -30,6 +30,15 @@ var _gen: MgTerrainGen
 func _ready() -> void:
 	_gen = MgTerrainGen.new()
 
+
+## Sample the macro `BiomeMap` at a single world-space point for agent
+## observation, compare tooling, or any read-only macro truth query. Returns
+## `{loaded: false}` when no macro layers are loaded.
+func sample_macro_point(world_x: float, world_y: float) -> Dictionary:
+	if _gen == null:
+		return {"loaded": false}
+	return _gen.sample_macro_point(world_x, world_y)
+
 ## Runtime chunk coord -> generator-space world origin.
 func chunk_coord_to_world_origin(chunk_coord: Vector2i) -> Vector2:
 	return Vector2(

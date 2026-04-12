@@ -47,7 +47,38 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
             let biome = map.biomes[idx];
 
             let [r, g, b] = if is_water_biome(biome) && cont < SEA_LEVEL {
-                render_ocean(biome, cont, map.light_level[idx], map.temperature[idx])
+                let mut ocean_pixel = render_ocean(
+                    biome,
+                    cont,
+                    map.light_level[idx],
+                    map.temperature[idx],
+                );
+                // River-into-ocean confluence: where a river segment runs into
+                // an ocean cell, blend the river corridor color over the ocean
+                // pixel so the river visibly meets the sea instead of stopping
+                // at the shoreline. Strength scales with the river field so
+                // only true mouths show through.
+                let river_here = map.rivers[idx];
+                if river_here > 0.02 {
+                    let river_col = solid_river_color(
+                        map.temperature[idx],
+                        map.light_level[idx],
+                        map.aridity[idx],
+                    );
+                    let blend = (river_here / 0.5).clamp(0.0, 1.0) * 0.7;
+                    ocean_pixel = lerp_rgb(ocean_pixel, river_col, blend);
+                }
+                ocean_pixel
+            } else if biome == TileType::River {
+                // River biome cells are surface water — render the corridor
+                // colour solid instead of blending it over land tinting. This
+                // is the difference between a clear blue river and a tan-tinted
+                // smear at low river strength.
+                solid_river_color(
+                    map.temperature[idx],
+                    map.light_level[idx],
+                    map.aridity[idx],
+                )
             } else {
                 let mut pixel = biome.rgb();
 
@@ -168,26 +199,25 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                     }
                 }
 
-                // River corridors
+                // River corridors. `rasterise_smooth_line` puts a value floor of
+                // ~0.15 at every channel center pixel, so anything above the
+                // ~0.05 noise threshold is "really" a river surface and should
+                // paint solid water. Below that, fall back to a soft blend so
+                // sub-pixel edge contributions still anti-alias against land.
                 let river = map.rivers[idx];
                 let temp_here = map.temperature[idx];
-                if river > 0.02 {
+                if river > 0.005 {
                     let arid = map.aridity[idx];
                     let light = map.light_level[idx];
-                    let river_strength = (river.sqrt() * 0.6).min(0.9);
-                    let corridor_color = if temp_here < -1.0 || light < 0.12 {
-                        [160, 190, 210]
-                    } else if arid > 0.7 || temp_here > 55.0 || light > 0.82 {
-                        [128, 104, 78]
+                    let corridor_color =
+                        solid_river_color(temp_here, light, arid);
+                    if river >= 0.05 {
+                        pixel = corridor_color;
                     } else {
-                        [80, 130, 180]
-                    };
-                    let corridor_strength = if arid > 0.7 || temp_here > 55.0 || light > 0.82 {
-                        river_strength * 0.55
-                    } else {
-                        river_strength
-                    };
-                    pixel = lerp_rgb(pixel, corridor_color, corridor_strength);
+                        // Far edge of the rasterised channel — soft blend.
+                        let edge_strength = (river / 0.05).clamp(0.0, 1.0);
+                        pixel = lerp_rgb(pixel, corridor_color, edge_strength);
+                    }
                 }
                 if !map.sediment.is_empty() && river > 0.01 {
                     let sed = map.sediment[idx];
@@ -350,6 +380,22 @@ fn is_frozen_biome(b: TileType) -> bool {
         TileType::Snow | TileType::IceSheet | TileType::Glacier
         | TileType::FrozenBog | TileType::Tundra | TileType::White
     )
+}
+
+/// Pick a solid river surface colour from local climate context.
+///
+/// Cold/dim cells render as pale ice-water. Hot/bright/arid cells render as
+/// muddy/dust corridors. Default is the standard blue river. Used both for
+/// `TileType::River` cells (solid pixels) and the high-strength branch of the
+/// river corridor blend.
+fn solid_river_color(temperature: f64, light_level: f64, aridity: f64) -> [u8; 3] {
+    if temperature < -1.0 || light_level < 0.12 {
+        [160, 190, 210]
+    } else if aridity > 0.7 || temperature > 55.0 || light_level > 0.82 {
+        [128, 104, 78]
+    } else {
+        [80, 130, 180]
+    }
 }
 
 fn coastal_fringe(continentalness: f64) -> f64 {

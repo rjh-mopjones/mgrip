@@ -46,15 +46,132 @@ pub(crate) const NO_FLOW: u8 = 255;
 
 // ─── LOD Drainage Thresholds ────────────────────────────────────────────────
 
-pub const LOD_THRESHOLD_MACRO: u32 = 60;
-pub const LOD_THRESHOLD_MESO: u32 = 35;
-pub const LOD_THRESHOLD_MICRO: u32 = 5;
+pub const LOD_THRESHOLD_MACRO: u32 = 30;
+pub const LOD_THRESHOLD_MESO: u32 = 4;
+pub const LOD_THRESHOLD_MICRO: u32 = 2;
 
 const MAX_RIVER_WORLD_HALF_WIDTH: f64 = 4.0;
-const FLOW_GRID_MAX_HALF_WIDTH: f64 = 2.0;
-const TILE_RIVER_MAX_HALF_WIDTH_RATIO: f64 = 0.015;
-const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00012;
-const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 12.0;
+// Macro flow grid renders at 1 px / world unit. Absolute floor of 1 px so no
+// segment is ever sub-pixel (would render as AA-only stipple — the user's
+// "disconnected dashes" bug). Max is exercised by Strahler-8+ mainstems
+// only; see `macro_strahler_half_width_px`.
+const FLOW_GRID_MIN_HALF_WIDTH: f64 = 1.0;
+const FLOW_GRID_MAX_HALF_WIDTH: f64 = 14.0;
+// Runtime tile rasterization is at any pixels-per-wu. Min kept small so
+// trickles look like trickles; max caps mains at ~20% of chunk width so
+// rivers don't swallow entire 1×1 runtime tiles.
+const TILE_RIVER_MIN_HALF_WIDTH_PX: f64 = 3.0;
+const TILE_RIVER_MAX_HALF_WIDTH_PX: f64 = 56.0;
+
+/// Macro-specific Strahler → pixel half-width lookup.
+///
+/// At macro render scale (1 px / wu) the wu-based `strahler_world_half_width`
+/// values collapse to sub-pixel (0.10–0.80 px) which clamps every segment to
+/// the global min — no visible hierarchy between headwaters and mainstems.
+/// This direct pixel table spans the macro's visible range so each Strahler
+/// order renders a distinct pixel width, producing a real dendritic texture.
+///
+/// Values are deliberately coarse steps (1 → 13 px half, = 2 → 26 px diameter).
+fn macro_strahler_half_width_px(strahler: u32) -> f64 {
+    match strahler.max(1) {
+        1 => 1.0,
+        2 => 1.8,
+        3 => 2.6,
+        4 => 3.6,
+        5 => 5.0,
+        6 => 7.0,
+        7 => 9.5,
+        _ => 13.0,
+    }
+}
+
+/// Meander noise — shared instance used by both macro flow grid and runtime
+/// chunk rasterization so the same river produces the same meander curve
+/// regardless of render scale.
+static MEANDER_NOISE: std::sync::OnceLock<noise::OpenSimplex> = std::sync::OnceLock::new();
+
+fn meander_noise_instance() -> &'static noise::OpenSimplex {
+    MEANDER_NOISE.get_or_init(|| noise::OpenSimplex::new(0xBEEF_u32))
+}
+
+/// Apply perpendicular meander displacement to a path.
+///
+/// D8 flow-solve paths run in fixed 8 directions and produce long straight
+/// runs anywhere the gradient is consistent. Real rivers meander laterally
+/// based on terrain slope, sediment, and discharge — this approximates that
+/// by displacing each point perpendicular to the local tangent using
+/// low-frequency OpenSimplex noise evaluated at the point's WORLD coord.
+///
+/// Noise frequency (`0.04`) targets ~25 wu meander wavelength. Amplitude is
+/// provided in world units; typical values are 1.5-4× the river half-width.
+///
+/// Endpoint attenuation tapers the displacement at both ends so rivers join
+/// smoothly at tributary junctions and river mouths.
+fn meander_path(path: &[(f64, f64)], amplitude_wu: f64) -> Vec<(f64, f64)> {
+    use noise::NoiseFn;
+    if path.len() < 2 || amplitude_wu <= 0.0 {
+        return path.to_vec();
+    }
+    let n = path.len();
+    let noise = meander_noise_instance();
+    let mut out = Vec::with_capacity(n);
+    let endpoint_taper = 8.min(n / 4).max(1);
+    for i in 0..n {
+        let (wx, wy) = path[i];
+        let prev = if i > 0 { path[i - 1] } else { path[i] };
+        let next = if i + 1 < n { path[i + 1] } else { path[i] };
+        let dx = next.0 - prev.0;
+        let dy = next.1 - prev.1;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-6 {
+            out.push((wx, wy));
+            continue;
+        }
+        // Left-hand normal (perpendicular to tangent).
+        let nx = -dy / len;
+        let ny = dx / len;
+        // Low-frequency noise at world coord — shared meander surface.
+        let noise_value = noise.get([wx * 0.04, wy * 0.04]);
+        // Taper at endpoints so confluences stay anchored.
+        let from_start = i.min(endpoint_taper) as f64 / endpoint_taper as f64;
+        let from_end = (n - 1 - i).min(endpoint_taper) as f64 / endpoint_taper as f64;
+        let taper = from_start.min(from_end);
+        let offset = noise_value * amplitude_wu * taper;
+        out.push((wx + nx * offset, wy + ny * offset));
+    }
+    out
+}
+
+/// Strahler-order-driven half-width in WORLD UNITS for visual rasterization.
+///
+/// Strahler order naturally encodes drainage hierarchy: order 1 = headwater
+/// trickle, higher orders are mainstems with much higher discharge. This
+/// produces a visible "thinner upstream, thicker downstream" gradient that
+/// drainage area alone can't because the drainage range is 1000× but visual
+/// width range needs to be 10×. Returns world units; callers convert to
+/// pixels at their local `pixels_per_wu`.
+///
+/// Values are deliberately exaggerated for visual readability — at 1 px/wu
+/// macro and 512 px/wu runtime, even Strahler 1 tributaries should look like
+/// real channels rather than 1-pixel scratches.
+fn strahler_world_half_width(strahler_order: u32) -> f64 {
+    match strahler_order.max(1) {
+        1 => 0.10,
+        2 => 0.16,
+        3 => 0.24,
+        4 => 0.34,
+        5 => 0.46,
+        6 => 0.60,
+        _ => 0.80,
+    }
+}
+// Lower both knobs so the network includes short headwater tributaries.
+// Dendritic drainage (see classic basin patterns) needs many Strahler-1
+// trickles feeding into Strahler-2 confluences; with the old ratio 0.00012
+// at 1024×512 the effective floor was ~63 cells which filtered out the
+// fine-branching texture entirely.
+const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00003;
+const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 4.0;
 
 // ─── River Character ────────────────────────────────────────────────────────
 
@@ -107,7 +224,12 @@ impl RiverCharacter {
             RiverCharacter::SeasonalFlow => 0.6,
             RiverCharacter::Permanent => 1.0,
             RiverCharacter::Frozen => 0.9,
-            RiverCharacter::BuriedIce => 0.0,
+            // Buried ice channels are subterranean drainage; render faintly so
+            // runtime chunks and macro receipts both surface them as a subtle
+            // hint instead of skipping them entirely (previously 0.0 made them
+            // visible-but-invisible — `is_visible_channel` says yes, the
+            // rasteriser skipped because half-width collapsed to zero).
+            RiverCharacter::BuriedIce => 0.4,
         }
     }
 }
@@ -253,9 +375,19 @@ impl RiverNetwork {
         // Step 5.5: Compute Strahler stream orders
         compute_strahler_orders(&mut segments);
 
-        // Step 6: Smooth paths to remove D8 staircase
+        // Step 6: Smooth paths to remove D8 staircase.
+        //
+        // CRITICAL: unwrap x-coordinates before chaikin smoothing. D8 paths
+        // that cross the world-x wrap boundary have consecutive points like
+        // `(1023, y)` → `(0, y)` — physically adjacent across the seam but
+        // numerically on opposite sides. Chaikin averages `(1023+0)/2 = 511.5`
+        // and inserts that midpoint — a garbage point in the middle of the
+        // world. Subsequent rasterizers then draw a straight horizontal line
+        // from `(1023, y)` to `(511, y)` to `(0, y)`, visible as full-width
+        // stripes on `rivers.png` at the wrap-crossing y row.
         for seg in &mut segments {
-            seg.path = chaikin_smooth(&seg.path, 2);
+            let unwrapped = unwrap_path_x(&seg.path, width as f64);
+            seg.path = chaikin_smooth(&unwrapped, 2);
             seg.meander_offsets = vec![0.0; seg.path.len()];
         }
 
@@ -278,6 +410,25 @@ impl RiverNetwork {
 
     pub fn rebuild_spatial_index(&mut self) {
         self.spatial_index = build_spatial_index(&self.segments);
+    }
+
+    /// Returns the maximum drainage of any upstream tributary at the
+    /// **start** of the segment (its upstream-facing end). Used by the
+    /// rasterisers to lerp width along the path so rivers visibly widen
+    /// toward the mouth: upstream-end width ~ upstream parent, downstream-end
+    /// width ~ own drainage. Headwater segments (no upstream) return 0.
+    pub fn upstream_drainage_for(&self, segment_index: usize) -> u32 {
+        self.segments
+            .get(segment_index)
+            .map(|seg| {
+                seg.upstream
+                    .iter()
+                    .filter_map(|&uid| self.segments.get(uid))
+                    .map(|s| s.drainage_area)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
     }
 
     /// Query river segments intersecting rectangular bounds.
@@ -308,15 +459,19 @@ impl RiverNetwork {
                         if seg.drainage_area < lod_drainage_threshold {
                             continue;
                         }
-                        let clipped: Vec<(f64, f64)> = seg.path.iter()
-                            .filter(|&&(px, py)| px >= min_x - 1.0 && px <= max_x + 1.0 && py >= min_y - 1.0 && py <= max_y + 1.0)
-                            .copied()
-                            .collect();
-                        if clipped.is_empty() {
+                        if seg.path.len() < 2 {
                             continue;
                         }
+                        // Keep the full segment path. Previously this clipped to a
+                        // per-point filter around the query bbox, which dropped every
+                        // point except the rare one that happened to land inside a 1×1
+                        // chunk and left the caller with a single-point path — causing
+                        // `rasterize_from_network` to skip rendering entirely on small
+                        // runtime tiles. The downstream rasteriser already clips to
+                        // tile pixel bounds, so passing the full polyline is correct
+                        // and lets smooth lines draw through small chunks continuously.
                         constraints.push(RiverConstraint {
-                            path: clipped,
+                            path: seg.path.clone(),
                             drainage_area: seg.drainage_area,
                             character: seg.character,
                             width: compute_river_width(seg.drainage_area, seg.character),
@@ -333,19 +488,76 @@ impl RiverNetwork {
     }
 
     /// Convert to a flat flow grid using smooth rasterisation.
+    ///
+    /// The flow grid is the macro presentation surface — `terrain_render` reads
+    /// it to draw river corridors on `macromap.png`. Width is driven by
+    /// `strahler_world_half_width(strahler_order)` so the hierarchy is visible:
+    /// small tributaries are thin, mainstems thicken downstream. The min/max
+    /// cap keeps every order visible without swallowing the macro view.
     pub fn to_flow_grid(&self, width: usize, height: usize) -> Vec<f64> {
         let mut grid = vec![0.0f64; width * height];
         let max_drainage = self.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
+        // The macro flow grid is conventionally 1 pixel per world unit; that's
+        // how `BiomeMap::generate` builds the macro pass. If a caller asks for
+        // a different resolution we still need pixels-per-wu so the world
+        // width converts correctly.
+        let pixels_per_wu = width as f64 / 1024.0;
+        // Chaikin-smooth the raw segment polyline. Without this the solid-line
+        // rasteriser draws straight line segments between the sparse D8 flow
+        // control points — visible as hard straight runs across the macro
+        // view. Match the target used by `rasterize_from_network` so macro and
+        // runtime smooth to the same curve.
+        let target_spacing = 0.25 / pixels_per_wu.max(0.0001);
         for seg in &self.segments {
             if !seg.character.is_visible_channel() || seg.path.len() < 2 {
                 continue;
             }
-            let drainage_per_point = vec![seg.drainage_area; seg.path.len()];
-            let max_half_width =
-                (2.0 * seg.character.width_multiplier()).min(FLOW_GRID_MAX_HALF_WIDTH);
-            rasterise_smooth_line(
+            // Unwrap x-coords so wrap-crossing segments don't rasterize as a
+            // straight line across the whole world.
+            let unwrapped = unwrap_path_x(&seg.path, 1024.0);
+            let smoothed = subdivide_to_spacing(&unwrapped, target_spacing);
+            if smoothed.len() < 2 {
+                continue;
+            }
+            // Macro half-width from direct Strahler→pixel table. Character
+            // multiplier still applies so Frozen / DryWadi / BuriedIce render
+            // as fractions of their order's nominal width.
+            let max_half_width = (macro_strahler_half_width_px(seg.strahler_order)
+                * seg.character.width_multiplier())
+                .clamp(FLOW_GRID_MIN_HALF_WIDTH, FLOW_GRID_MAX_HALF_WIDTH);
+            // Macro meander amplitude: generous so curves are readable at
+            // 1 px/wu across the full 1024-wide map. For a 1.0 px half-width
+            // S1 tributary this is ~5.5 wu displacement; for a 13 px half
+            // S8 mainstem it's ~25 wu — enough to show broad sweeps over
+            // the tens-of-wu length of those segments.
+            let meander_amplitude = 4.0 + max_half_width * 1.5;
+            let smoothed = meander_path(&smoothed, meander_amplitude);
+            // Per-point drainage lerp from upstream parent's drainage at the
+            // head of this segment to the segment's own drainage at its foot.
+            // Gives the rasteriser a varying per-pixel `norm_drain` so rivers
+            // visibly widen toward the mouth within a single segment, not
+            // just at confluences.
+            let upstream_drainage = self.upstream_drainage_for(seg.id) as f64;
+            let segment_drainage = seg.drainage_area as f64;
+            let n = smoothed.len();
+            let denom = (n - 1).max(1) as f64;
+            let drainage_per_point: Vec<u32> = (0..n)
+                .map(|i| {
+                    let t = i as f64 / denom;
+                    (upstream_drainage + (segment_drainage - upstream_drainage) * t) as u32
+                })
+                .collect();
+            // Interior-minimum clamp: upstream-end of segment is at LEAST
+            // 60% of its Strahler max, so the line stays visually continuous
+            // as it enters the parent confluence. End of segment reaches full
+            // `max_half_width` at its own drainage — that's the mouth-ward
+            // widening within a segment.
+            let min_half_width = (max_half_width * 0.6)
+                .clamp(FLOW_GRID_MIN_HALF_WIDTH, max_half_width);
+            rasterise_smooth_line_with_min(
                 &mut grid, width, height,
-                &seg.path, &drainage_per_point, max_drainage, max_half_width,
+                &smoothed, &drainage_per_point, max_drainage, max_half_width,
+                min_half_width,
             );
         }
         grid
@@ -392,21 +604,41 @@ pub(crate) fn fill_depressions(
     elevation: &[f64], width: usize, height: usize, sea_level: f64,
     continentalness: Option<&[f64]>,
 ) -> Vec<f64> {
-    let epsilon = 1e-4;
+    // Base epsilon for Priority Flood fill. Using a UNIFORM epsilon creates
+    // perfectly monotonic gradients on flat plateaus — BFS-equidistant cells
+    // get identical elevations, D8 ties break to the first-checked offset
+    // (north), and large flat regions produce long straight axis-aligned
+    // river chains visible as horizontal/vertical stripes on `rivers.png`.
+    //
+    // Position-hashed per-cell multiplier breaks the symmetry: two adjacent
+    // cells that would otherwise receive the same epsilon now receive
+    // slightly different increments, so D8 sees a real (if tiny) gradient
+    // and picks varied neighbors. The hash is deterministic in world coords
+    // so macro and runtime agree.
+    let base_epsilon = 1e-4;
     let mut filled = elevation.to_vec();
     let mut resolved = vec![false; width * height];
     let mut heap = BinaryHeap::new();
 
+    // ONLY initialise ocean cells as PF seeds so every drained cell flows
+    // toward an actual sea, not the map's top/bottom edge. Previous behaviour
+    // also seeded y=0 and y=height-1 as "boundary sinks", which let inland
+    // drainage escape off-map to the polar edges without ever reaching
+    // water. Rivers can now terminate only where they hit ocean (or drop
+    // into an endorheic basin that PF raises to its spill level).
+    //
+    // For fully land-locked worlds this would leave cells unresolved; but
+    // Margin's macromap has a terminator ocean belt, so every connected
+    // land mass has an ocean path and PF covers the whole continent.
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
-            let is_boundary = y == 0 || y == height - 1;
             let is_ocean = if let Some(cont) = continentalness {
                 cont[idx] <= sea_level
             } else {
                 elevation[idx] <= sea_level
             };
-            if is_ocean || is_boundary {
+            if is_ocean {
                 heap.push(FloodCell { elevation: elevation[idx], index: idx });
                 resolved[idx] = true;
             }
@@ -423,8 +655,12 @@ pub(crate) fn fill_depressions(
             let nidx = ny as usize * width + nx as usize;
             if resolved[nidx] { continue; }
             resolved[nidx] = true;
+            // Position-hashed per-cell jitter so PF-filled plateaus don't form
+            // uniform monotonic gradients that D8 tie-breaks into straight
+            // axis-aligned runs.
+            let hash = position_jitter(nx as u32, ny as u32);
             let new_elev = if elevation[nidx] <= filled[cell.index] {
-                filled[cell.index] + epsilon
+                filled[cell.index] + base_epsilon * (0.3 + 1.4 * hash)
             } else {
                 elevation[nidx]
             };
@@ -433,6 +669,56 @@ pub(crate) fn fill_depressions(
         }
     }
     filled
+}
+
+/// Deterministic coordinate-hashed jitter in `[0.0, 1.0)`. Breaks spatial
+/// symmetry in priority-flood fill and D8 tie-breaks so flat regions don't
+/// produce axis-aligned river chains. Also used for meander noise seeding
+/// and anywhere else we need "small per-cell variation tied to world coord".
+pub(crate) fn position_jitter(x: u32, y: u32) -> f64 {
+    let mut h = (x as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    h ^= (y as u64).wrapping_mul(0xBF58476D1CE4E5B9);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0x94D049BB133111EB);
+    ((h >> 33) as f64) / (1u64 << 31) as f64
+}
+
+/// Unwrap a river path's x-coordinates to be continuous in coord space.
+///
+/// D8 flow paths cross the world x-wrap boundary. A segment flowing from
+/// `(1023, y)` to `(1, y)` is physically adjacent across the seam but
+/// numerically 1022 cells apart. The rasteriser doesn't know about wrap and
+/// linearly interpolates across the whole width — visible as a solid
+/// horizontal stripe from x=0 to x=width in every tile that touches that y
+/// row. This helper rewrites each point so consecutive entries never jump
+/// more than `world_width / 2`, carrying accumulated offsets forward. The
+/// resulting coords may fall outside `[0, world_width)` on one side of the
+/// wrap — that's intentional and handled by the tile-local pixel clip.
+fn unwrap_path_x(path: &[(f64, f64)], world_width: f64) -> Vec<(f64, f64)> {
+    if path.len() < 2 || world_width <= 0.0 {
+        return path.to_vec();
+    }
+    let half_width = world_width * 0.5;
+    let mut out = Vec::with_capacity(path.len());
+    out.push(path[0]);
+    for i in 1..path.len() {
+        let raw_prev = path[i - 1];
+        let unwrapped_prev = out[i - 1];
+        let wrap_offset = unwrapped_prev.0 - raw_prev.0;
+        let curr = path[i];
+        let mut x = curr.0 + wrap_offset;
+        // If raw consecutive points still straddle the wrap after carrying the
+        // existing offset, add/subtract one more world_width so the difference
+        // is the minimal one.
+        while x - unwrapped_prev.0 > half_width {
+            x -= world_width;
+        }
+        while x - unwrapped_prev.0 < -half_width {
+            x += world_width;
+        }
+        out.push((x, curr.1));
+    }
+    out
 }
 
 // ─── Heightmap Drainage Conditioning ────────────────────────────────────────
@@ -515,6 +801,11 @@ fn compute_geology_aware_flow(
 
             let mut max_slope = 0.0;
             let mut best_dir = NO_FLOW;
+            // Cell-level jitter so tie-breaks between neighbors of equal slope
+            // vary spatially. Without this the first-checked offset (north)
+            // always wins on flat terrain and D8 emits long axis-aligned
+            // chains.
+            let cell_jitter = position_jitter(x as u32, y as u32);
             for (dir, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
                 let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
                 let ny = y as i32 + dy;
@@ -525,7 +816,15 @@ fn compute_geology_aware_flow(
                     - rock_hardness.get(nidx).copied().unwrap_or(0.5) * 0.5
                     + tectonic_stress.get(nidx).copied().unwrap_or(0.0) * 0.4)
                     .clamp(0.1, 2.0);
-                let adjusted = base_slope * geo_factor;
+                // Hash per (cell, direction) so different directions get
+                // different tiny bonuses — selects a varied direction on flat
+                // terrain rather than always the first one tested.
+                let dir_jitter = position_jitter(
+                    x as u32 * 8 + dir as u32,
+                    y as u32,
+                );
+                let tie_break = (cell_jitter + dir_jitter) * 1e-9;
+                let adjusted = base_slope * geo_factor + tie_break;
                 if adjusted > max_slope {
                     max_slope = adjusted;
                     best_dir = dir as u8;
@@ -773,6 +1072,24 @@ pub fn rasterise_smooth_line(
     path: &[(f64, f64)], drainage_per_point: &[u32],
     max_drainage: u32, max_half_width: f64,
 ) {
+    rasterise_smooth_line_with_min(
+        grid, width, height,
+        path, drainage_per_point,
+        max_drainage, max_half_width, 0.65,
+    );
+}
+
+/// Like `rasterise_smooth_line` but with an explicit minimum half-width so
+/// callers using a Strahler-derived `max_half_width` don't get their intended
+/// width collapsed by the internal `norm_drain` modulation. The norm_drain
+/// scaling stayed in to keep the small-drainage falloff but the floor is now
+/// the caller's responsibility.
+pub fn rasterise_smooth_line_with_min(
+    grid: &mut [f64], width: usize, height: usize,
+    path: &[(f64, f64)], drainage_per_point: &[u32],
+    max_drainage: u32, max_half_width: f64,
+    min_half_width: f64,
+) {
     if path.len() < 2 || max_drainage == 0 { return; }
     let max_drain_f = max_drainage as f64;
 
@@ -798,10 +1115,12 @@ pub fn rasterise_smooth_line(
             let drainage = d0 + (d1 - d0) * t;
 
             let norm_drain = (drainage / max_drain_f).sqrt();
-            let half_width = (norm_drain * max_half_width).max(0.65);
-            let value = norm_drain.max(0.15);
+            // Caller's `min_half_width` floors the rendered width so the
+            // Strahler-derived target isn't shrunk by drainage modulation.
+            let half_width = (norm_drain * max_half_width).max(min_half_width);
+            let value = 1.0;
 
-            let hw_ceil = half_width.ceil() as i32;
+            let hw_ceil = half_width.ceil() as i32 + 1;
             let px_center = cx.round() as i32;
             let py_center = cy.round() as i32;
 
@@ -814,11 +1133,16 @@ pub fn rasterise_smooth_line(
                     let rel_x = px as f64 - cx;
                     let rel_y = py as f64 - cy;
                     let perp_dist = (rel_x * perp_x + rel_y * perp_y).abs();
-                    if perp_dist > half_width { continue; }
-
-                    let falloff = (1.0 - (perp_dist / half_width)).powi(2);
+                    // Solid interior, single-pixel anti-aliased edge.
+                    let pixel_value = if perp_dist <= half_width - 1.0 {
+                        value
+                    } else if perp_dist < half_width {
+                        value * (half_width - perp_dist)
+                    } else {
+                        continue;
+                    };
                     let idx = py as usize * width + px as usize;
-                    grid[idx] = grid[idx].max(value * falloff);
+                    grid[idx] = grid[idx].max(pixel_value);
                 }
             }
         }
@@ -852,22 +1176,62 @@ pub fn rasterize_from_network(
     for constraint in &constraints {
         if !constraint.character.is_visible_channel() { continue; }
 
-        let target_spacing = 6.0 / pixels_per_wu;
-        let subdivided = subdivide_to_spacing(&constraint.path, target_spacing);
+        // Target ~0.25 px between Chaikin output points. D8 flow paths land at
+        // ~1 wu spacing (one per integer cell), so at meso scale (8 px/wu)
+        // `max_len/target = 1/(0.25/8) = 32 → 5 passes`. Gives a visually
+        // smooth curve instead of hard-edged straight line segments between
+        // original control points (which the solid-line rasterizer exposes).
+        let target_spacing = 0.25 / pixels_per_wu.max(0.0001);
+        // Unwrap x-coords so wrap-crossing segments don't linearly interpolate
+        // across the full world. World width hardcoded as 1024.
+        let unwrapped = unwrap_path_x(&constraint.path, 1024.0);
+        let subdivided = subdivide_to_spacing(&unwrapped, target_spacing);
 
-        let pixel_path: Vec<(f64, f64)> = subdivided.iter()
+        // Apply meander on world coordinates. Amplitude is tuned for the
+        // runtime scale: a 1-wu chunk at 512 px/wu can only sensibly show
+        // ~0.1-0.5 wu of perpendicular displacement before the river wanders
+        // outside the chunk. Macro uses a separate, larger amplitude in
+        // `to_flow_grid` — the two render contexts deliberately show slightly
+        // different curves because their zoom levels need different scales
+        // of meander to read as "curved".
+        let world_half_raw = strahler_world_half_width(constraint.strahler_order)
+            * constraint.character.width_multiplier();
+        let meander_amplitude = 0.12 + world_half_raw * 0.6;
+        let meandered = meander_path(&subdivided, meander_amplitude);
+
+        let pixel_path: Vec<(f64, f64)> = meandered
+            .iter()
             .map(|&(wx, wy)| ((wx - world_x) * scale, (wy - world_y) * scale))
             .collect();
         if pixel_path.len() < 2 { continue; }
 
-        let drainage_per_point = vec![constraint.drainage_area; pixel_path.len()];
-        let max_half_width = (1.5 * scale * constraint.character.width_multiplier())
-            .min(output_size as f64 * TILE_RIVER_MAX_HALF_WIDTH_RATIO);
 
-        rasterise_smooth_line(
+        // Per-point drainage lerp: upstream head → downstream foot. Same as
+        // `to_flow_grid`; gives visible mouth-ward widening within each
+        // segment at runtime scale.
+        let upstream_drainage = network.upstream_drainage_for(constraint.segment_index) as f64;
+        let segment_drainage = constraint.drainage_area as f64;
+        let n = pixel_path.len();
+        let denom = (n - 1).max(1) as f64;
+        let drainage_per_point: Vec<u32> = (0..n)
+            .map(|i| {
+                let t = i as f64 / denom;
+                (upstream_drainage + (segment_drainage - upstream_drainage) * t) as u32
+            })
+            .collect();
+        // Use the same Strahler-order width as `to_flow_grid`. Both paths now
+        // converge on the same physical river width — only the rendering
+        // resolution differs. This is what makes runtime chunks match the
+        // macromap visual at the same world coord.
+        let world_half = world_half_raw;
+        let max_half_width = (world_half * pixels_per_wu)
+            .clamp(TILE_RIVER_MIN_HALF_WIDTH_PX, TILE_RIVER_MAX_HALF_WIDTH_PX);
+        let min_half_width = max_half_width * 0.55;
+
+        rasterise_smooth_line_with_min(
             &mut grid, output_size, output_size,
             &pixel_path, &drainage_per_point,
-            global_max, max_half_width,
+            global_max, max_half_width, min_half_width,
         );
     }
     grid

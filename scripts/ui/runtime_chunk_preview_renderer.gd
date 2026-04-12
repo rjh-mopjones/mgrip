@@ -51,15 +51,23 @@ func render_biome_map_preview(
 	var heights: PackedInt32Array = biome_map.block_heights(HEIGHT_SCALE)
 	var fluid_mask: PackedByteArray = biome_map.is_ocean_grid()
 	var biome_rgba: PackedByteArray = biome_map.export_layer_rgba("biome")
-	var image: Image = _build_chunk_map_image(heights, fluid_mask, biome_rgba, texture_size)
+	var rivers: PackedByteArray = biome_map.rivers_byte_grid()
+	var aridity: PackedByteArray = biome_map.aridity_byte_grid()
+	var temperature: PackedByteArray = biome_map.temperature_byte_grid()
+	var light_level: PackedByteArray = biome_map.light_level_byte_grid()
+	var image: Image = _build_chunk_map_image(
+		heights, fluid_mask, biome_rgba, rivers, aridity, temperature, light_level, texture_size
+	)
 	var biome_image: Image = _build_biome_image(biome_rgba, texture_size)
 	var ocean_mask_image: Image = _build_ocean_mask_image(fluid_mask, texture_size)
+	var rivers_image: Image = _build_rivers_image(rivers, texture_size)
 	var texture := ImageTexture.create_from_image(image)
 	var center := CHUNK_RESOLUTION / 2
 	return {
 		"image": image,
 		"biome_image": biome_image,
 		"ocean_mask_image": ocean_mask_image,
+		"rivers_image": rivers_image,
 		"texture": texture,
 		"micro_ocean": biome_map.is_ocean(center, center),
 		"summary": summary,
@@ -84,6 +92,12 @@ func render_chunk_grid_preview(
 		false,
 		Image.FORMAT_RGBA8
 	)
+	var rivers_image := Image.create(
+		cell_size * grid_size,
+		cell_size * grid_size,
+		false,
+		Image.FORMAT_RGBA8
+	)
 	var cell_ocean := {}
 	for gy in range(grid_size):
 		for gx in range(grid_size):
@@ -92,6 +106,7 @@ func render_chunk_grid_preview(
 			var chunk_image: Image = preview.get("image")
 			var chunk_biome_image: Image = preview.get("biome_image")
 			var chunk_ocean_mask: Image = preview.get("ocean_mask_image")
+			var chunk_rivers: Image = preview.get("rivers_image")
 			image.blit_rect(
 				chunk_image,
 				Rect2i(Vector2i.ZERO, Vector2i(cell_size, cell_size)),
@@ -107,6 +122,12 @@ func render_chunk_grid_preview(
 				Rect2i(Vector2i.ZERO, Vector2i(cell_size, cell_size)),
 				Vector2i(gx * cell_size, gy * cell_size)
 			)
+			if chunk_rivers != null:
+				rivers_image.blit_rect(
+					chunk_rivers,
+					Rect2i(Vector2i.ZERO, Vector2i(cell_size, cell_size)),
+					Vector2i(gx * cell_size, gy * cell_size)
+				)
 			cell_ocean["%d:%d" % [chunk_coord.x, chunk_coord.y]] = bool(preview.get("micro_ocean", false))
 
 	var texture := ImageTexture.create_from_image(image)
@@ -114,6 +135,7 @@ func render_chunk_grid_preview(
 		"image": image,
 		"biome_image": biome_image,
 		"ocean_mask_image": ocean_mask_image,
+		"rivers_image": rivers_image,
 		"texture": texture,
 		"cell_ocean": cell_ocean,
 	}
@@ -125,17 +147,70 @@ func _build_chunk_map_image(
 	heights: PackedInt32Array,
 	fluid_mask: PackedByteArray,
 	biome_rgba: PackedByteArray,
+	rivers: PackedByteArray,
+	aridity: PackedByteArray,
+	temperature: PackedByteArray,
+	light_level: PackedByteArray,
 	texture_size: int
 ) -> Image:
 	var image := Image.create(texture_size, texture_size, false, Image.FORMAT_RGBA8)
+	# Source block step — chunk is CHUNK_RESOLUTION (512), texture is `texture_size`.
+	# Rivers in `rivers` are 1-3 px wide at chunk resolution. Sampling one nearest
+	# pixel per texture pixel (the previous behaviour) aliased the whole channel
+	# away on every chunk. We MAX over the source block so any river pixel inside
+	# the block surfaces in the preview.
+	var step: int = maxi(int(CHUNK_RESOLUTION / texture_size), 1)
 	for py in range(texture_size):
 		var sy := _sample_coord(py, texture_size)
 		for px in range(texture_size):
 			var sx := _sample_coord(px, texture_size)
 			var index := sy * CHUNK_RESOLUTION + sx
 			var color := _sample_topdown_color(heights, fluid_mask, biome_rgba, sx, sy, index)
+			# Scan an `step × step` source block centred on the sampled pixel for
+			# the strongest river value. Takes the river color from that peak
+			# sample so we get climate-correct water tinting.
+			var peak_river := 0.0
+			var peak_index := index
+			var by_start := maxi(sy - step / 2, 0)
+			var by_end := mini(by_start + step, CHUNK_RESOLUTION)
+			var bx_start := maxi(sx - step / 2, 0)
+			var bx_end := mini(bx_start + step, CHUNK_RESOLUTION)
+			for by in range(by_start, by_end):
+				for bx in range(bx_start, bx_end):
+					var bi := by * CHUNK_RESOLUTION + bx
+					if bi >= rivers.size():
+						continue
+					var rv := float(rivers[bi]) / 255.0
+					if rv > peak_river:
+						peak_river = rv
+						peak_index = bi
+			if peak_river > 0.005:
+				var is_ocean_cell := peak_index < fluid_mask.size() and fluid_mask[peak_index] != 0
+				var arid := 0.0 if peak_index >= aridity.size() else float(aridity[peak_index]) / 255.0
+				var temp := 0.0 if peak_index >= temperature.size() else float(temperature[peak_index]) / 255.0 * 150.0 - 50.0
+				var light := 0.0 if peak_index >= light_level.size() else float(light_level[peak_index]) / 255.0
+				var river_color := _solid_river_color(temp, light, arid)
+				if is_ocean_cell:
+					# Confluence: tint the ocean cell toward the river color
+					# so the river visibly enters the sea. Mirror terrain_render
+					# behaviour so macro and runtime show the same mouth.
+					var blend := clampf(peak_river / 0.5, 0.0, 1.0) * 0.7
+					color = color.lerp(river_color, blend)
+				elif peak_river >= 0.05:
+					color = river_color
+				else:
+					var t := clampf(peak_river / 0.05, 0.0, 1.0)
+					color = color.lerp(river_color, t)
 			image.set_pixel(px, py, color)
 	return image
+
+
+func _solid_river_color(temperature: float, light: float, aridity: float) -> Color:
+	if temperature < -1.0 or light < 0.12:
+		return Color(160.0 / 255.0, 190.0 / 255.0, 210.0 / 255.0, 1.0)
+	if aridity > 0.7 or temperature > 55.0 or light > 0.82:
+		return Color(128.0 / 255.0, 104.0 / 255.0, 78.0 / 255.0, 1.0)
+	return Color(80.0 / 255.0, 130.0 / 255.0, 180.0 / 255.0, 1.0)
 
 
 func _build_biome_image(biome_rgba: PackedByteArray, texture_size: int) -> Image:
@@ -146,6 +221,35 @@ func _build_biome_image(biome_rgba: PackedByteArray, texture_size: int) -> Image
 			var sx := _sample_coord(px, texture_size)
 			var index := sy * CHUNK_RESOLUTION + sx
 			image.set_pixel(px, py, _biome_color_at(biome_rgba, index))
+	return image
+
+
+func _build_rivers_image(rivers: PackedByteArray, texture_size: int) -> Image:
+	# Single-channel river presence as luminance — used by compare engine to
+	# detect runtime rivers without going through the rendered preview pixels.
+	# MAX over the source block, mirroring _build_chunk_map_image so the
+	# compare metric reads the same data the visual preview shows.
+	var image := Image.create(texture_size, texture_size, false, Image.FORMAT_RGBA8)
+	var step: int = maxi(int(CHUNK_RESOLUTION / texture_size), 1)
+	for py in range(texture_size):
+		var sy := _sample_coord(py, texture_size)
+		for px in range(texture_size):
+			var sx := _sample_coord(px, texture_size)
+			var by_start := maxi(sy - step / 2, 0)
+			var by_end := mini(by_start + step, CHUNK_RESOLUTION)
+			var bx_start := maxi(sx - step / 2, 0)
+			var bx_end := mini(bx_start + step, CHUNK_RESOLUTION)
+			var peak := 0
+			for by in range(by_start, by_end):
+				for bx in range(bx_start, bx_end):
+					var bi := by * CHUNK_RESOLUTION + bx
+					if bi >= rivers.size():
+						continue
+					var v := int(rivers[bi])
+					if v > peak:
+						peak = v
+			var l := float(peak) / 255.0
+			image.set_pixel(px, py, Color(l, l, l, 1.0))
 	return image
 
 

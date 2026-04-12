@@ -96,10 +96,13 @@ pub fn derive_micro_heightmap(
 
 pub fn derive_peaks_valleys(base_pv: f64, tectonic: f64, rock_hardness: f64) -> f64 {
     // Keep tectonic boundaries important without letting them dominate the
-    // whole macro relief field as broad wedge-shaped ridges.
+    // whole macro relief field as broad wedge-shaped ridges. The base 0.22
+    // ensures even passive interior has enough local relief to create
+    // discernible valleys — D8 flow needs real gradient variance between
+    // neighbour cells or rivers run in straight lines.
     let stress = 1.0 - tectonic;
     let stress_envelope = stress * stress * stress;
-    let amplitude = 0.14 + stress_envelope * 0.58;
+    let amplitude = 0.22 + stress_envelope * 0.78;
     let hardness_factor = 0.7 + rock_hardness * 0.3;
     (base_pv * amplitude * hardness_factor).clamp(-1.0, 1.0)
 }

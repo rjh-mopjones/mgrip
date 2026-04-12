@@ -301,80 +301,18 @@ fn generate_macro_tile(
         1.0,
     );
 
-    if !macro_map.heightmap.is_empty() {
-        let splines = mg_noise::BiomeSplines::new(mg_noise::SEA_LEVEL);
-        for py in 0..TILE_RENDER_PX {
-            for px in 0..TILE_RENDER_PX {
-                let idx = py * TILE_RENDER_PX + px;
-                let sample_x = sample_macro_tile_world_coord(wx, px);
-                let sample_y = sample_macro_tile_world_coord(wy, py);
-                let macro_hm = macro_map.sample_heightmap_at(sample_x, sample_y);
-
-                let stress = 1.0 - tile.tectonic[idx];
-                let above_sea = (macro_hm - mg_noise::SEA_LEVEL).max(0.0);
-                let mountain_intensity = (stress * above_sea * 3.0).min(1.0);
-                let mountain_detail = tile.peaks_valleys[idx] * mountain_intensity * 0.2;
-                let hm = (macro_hm + mountain_detail).clamp(-1.0, 1.0);
-                tile.heightmap[idx] = hm;
-
-                let cont = tile.continentalness[idx];
-                let humid = tile.humidity[idx];
-                let rock = tile.rock_hardness[idx];
-                let tect = tile.tectonic[idx];
-                let light = tile.light_level[idx];
-                let peaks = tile.peaks_valleys[idx];
-
-                let temp = mg_noise::derive_temperature(light, hm, humid, cont);
-                let eros = mg_noise::derive_erosion(hm, rock, humid);
-                let arid = mg_noise::derive_aridity(temp, humid);
-                let precip = mg_noise::derive_precipitation_type(temp, humid, hm);
-                let snow = mg_noise::derive_snowpack(precip, temp, hm, light);
-
-                tile.temperature[idx] = temp;
-                tile.erosion[idx] = eros;
-                tile.aridity[idx] = arid;
-                tile.precipitation_type[idx] = precip;
-                tile.snowpack[idx] = snow;
-                tile.resource_richness[idx] = mg_noise::derive_resource_richness(tect, rock, eros);
-                tile.biomes[idx] = splines.evaluate_dithered_with_light(
-                    cont, temp, tect, eros, peaks, humid, arid, rock, px, py, light,
-                );
-            }
-        }
-    }
-
-    tile.rivers = rasterize_to_tile(
+    tile.anchor_to_macro(
+        macro_map,
         river_network,
-        TILE_RENDER_PX,
-        TILE_RENDER_PX,
+        seed,
         wx,
         wy,
         TILE_WORLD_SIZE,
         TILE_WORLD_SIZE,
-        WORLD_WIDTH,
-        WORLD_HEIGHT,
-        LOD_THRESHOLD_MACRO as f64,
+        LOD_THRESHOLD_MACRO,
+        0.2,
+        false,
     );
-
-    for i in 0..TILE_RENDER_PX * TILE_RENDER_PX {
-        tile.water_table[i] = mg_noise::derive_water_table(
-            tile.rivers[i],
-            tile.humidity[i],
-            tile.heightmap[i],
-            tile.precipitation_type[i],
-            tile.continentalness[i],
-        );
-        if tile.rivers[i] > 0.1
-            && !mg_noise::tile_has_fluid_surface(tile.biomes[i])
-            && tile.aridity[i] < 0.7
-        {
-            tile.biomes[i] = mg_core::TileType::River;
-        }
-        tile.vegetation_density[i] =
-            mg_noise::derive_vegetation_density(tile.biomes[i], tile.water_table[i]);
-        tile.soil_type[i] =
-            mg_noise::derive_soil_type(tile.biomes[i], tile.erosion[i], tile.rock_hardness[i]);
-    }
 
     tile
 }
@@ -1205,15 +1143,22 @@ fn run_compare_scale(
                 false,
                 MICRO_FREQUENCY_SCALE,
             );
-            micro.apply_macro_river_network(
+            // Use the same macro anchoring path the in-game runtime uses so the
+            // CLI receipts and the Godot compare view stay aligned. The legacy
+            // ocean-mask + river-only path is no longer authoritative.
+            let _ = &macro_ocean_mask; // retained above for the macro receipt; unused here.
+            micro.anchor_to_macro(
+                &macro_map,
                 &river_network,
+                seed,
                 cx,
                 cy,
                 1.0,
                 1.0,
                 mg_noise::LOD_THRESHOLD_MICRO,
+                0.2,
+                true,
             );
-            micro.apply_macro_ocean_mask(&macro_ocean_mask, cx, cy, 1.0, 1.0);
 
             let mc = MICRO_RES / 2;
             let micro_ocean = micro.is_ocean(mc, mc);
@@ -1235,19 +1180,31 @@ fn run_compare_scale(
                 "runtime_river_present": false,
             }));
 
-            // Blit micro biome RGBA into grid (nearest-neighbour scale MICRO_RES → CELL_PX)
+            // Blit micro biome RGBA into grid (nearest-neighbour scale MICRO_RES → CELL_PX).
+            // For rivers we take the MAX over the source block instead of one nearest sample —
+            // a 1-3 px wide river at MICRO_RES would otherwise alias to nothing at CELL_PX.
             let biome = micro.layer_to_rgba(NoiseLayer::Biome);
+            let block = MICRO_RES / CELL_PX;
             for py in 0..CELL_PX {
                 for px in 0..CELL_PX {
-                    let sx = px * MICRO_RES / CELL_PX;
-                    let sy = py * MICRO_RES / CELL_PX;
+                    let sx = px * block;
+                    let sy = py * block;
                     let src = (sy * MICRO_RES + sx) * 4;
                     let dx = gx * CELL_PX + px;
                     let dy = gy * CELL_PX + py;
                     let dst = (dy * img_w + dx) * 4;
                     micro_rgba[dst..dst + 4].copy_from_slice(&biome[src..src + 4]);
-                    let river = micro.rivers[sy * MICRO_RES + sx];
-                    if river > 0.0 {
+
+                    let mut river_max = 0.0f64;
+                    for by in 0..block {
+                        for bx in 0..block {
+                            let v = micro.rivers[(sy + by) * MICRO_RES + (sx + bx)];
+                            if v > river_max {
+                                river_max = v;
+                            }
+                        }
+                    }
+                    if river_max > 0.0 {
                         runtime_river_present += 1;
                         cell_runtime_river_present = true;
                         runtime_river_mask[dy * img_w + dx] = true;
@@ -1255,7 +1212,8 @@ fn run_compare_scale(
                     if macro_river_mask[dy * img_w + dx] {
                         cell_macro_river_present = true;
                     }
-                    runtime_river_rgba[dst..dst + 4].copy_from_slice(&river_debug_rgba(river));
+                    runtime_river_rgba[dst..dst + 4]
+                        .copy_from_slice(&river_debug_rgba(river_max));
                 }
             }
             if let Some(cell) = cells.last_mut().and_then(|value| value.as_object_mut()) {

@@ -304,6 +304,13 @@ func get_chunk_runtime_presentation(chunk_coord: Vector2i) -> Dictionary:
 func get_current_runtime_presentation() -> Dictionary:
 	return get_chunk_runtime_presentation(GameState.current_chunk)
 
+## Macro-truth sampler bridge for the agent runtime. Reads from the cached
+## `MACRO_SEMANTICS` singleton in Rust via `GenerationManager.sample_macro_point`
+## so agent observations can validate runtime chunks against the macromap
+## without re-generating macro data per call.
+func sample_macro_semantics(world_x: float, world_y: float) -> Dictionary:
+	return GenerationManager.sample_macro_point(world_x, world_y)
+
 func get_player_node() -> CharacterBody3D:
 	return _player
 

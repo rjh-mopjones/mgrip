@@ -11,6 +11,19 @@ const DEFAULT_HEIGHT_SAMPLE_OFFSETS: Array[Vector2i] = [
 	Vector2i(0, -16),
 ]
 
+## Five-point cross around the player's current chunk for macro observation.
+## Offset in world units (chunks). Sampling a cross rather than a full 3x3
+## grid keeps the observation payload small while still covering the four
+## cardinal neighbors — enough for an agent to see if it's approaching a
+## coastline, river, or climate band in any direction.
+const MACRO_SAMPLE_OFFSETS: Array[Vector2] = [
+	Vector2.ZERO,
+	Vector2(1.0, 0.0),
+	Vector2(-1.0, 0.0),
+	Vector2(0.0, 1.0),
+	Vector2(0.0, -1.0),
+]
+
 func build(
 		world,
 		player: CharacterBody3D,
@@ -21,7 +34,7 @@ func build(
 		options: Dictionary = {}) -> Dictionary:
 	var timestamp_ms := Time.get_ticks_msec()
 	var base := {
-		"schema_version": 1,
+		"schema_version": 2,
 		"session_id": session.session_id if session != null else "",
 		"step_index": session.step_count if session != null else 0,
 		"timestamp_ms": timestamp_ms,
@@ -55,6 +68,7 @@ func build(
 	base["prewarm_target_chunk"] = AgentSessionScript.vector2i_to_dict(chunk_streamer.prewarm_target_chunk())
 	base["nearby_sampled_terrain_heights"] = _sample_nearby_heights(world, player.position)
 	base["nearest_land_results"] = _nearest_land_results(world, probe_points)
+	base["macro_semantics_sample"] = _sample_macro_semantics_ring(world)
 	base["flythrough"] = _flythrough_state()
 	var current_chunk_state: Dictionary = AgentSessionScript.sanitize_variant(
 		world.get_current_chunk_state() if world.has_method("get_current_chunk_state") else {}
@@ -73,6 +87,29 @@ func build(
 			),
 		}
 	return base
+
+func _sample_macro_semantics_ring(world) -> Array[Dictionary]:
+	# Sample macro truth at the player's current chunk plus a cardinal cross
+	# of neighbors. Each chunk is 1 world unit, so offsets are in world units.
+	# Skipping entries where macro is unloaded (loaded == false) keeps the
+	# observation compact — agent callers see an empty array and branch.
+	if world == null or not world.has_method("sample_macro_semantics"):
+		return []
+	var samples: Array[Dictionary] = []
+	var anchor := Vector2(GameState.current_chunk.x, GameState.current_chunk.y)
+	for offset in MACRO_SAMPLE_OFFSETS:
+		var world_point := anchor + offset + Vector2(0.5, 0.5)
+		var sample: Dictionary = world.sample_macro_semantics(world_point.x, world_point.y)
+		if sample.is_empty() or not sample.get("loaded", false):
+			continue
+		sample["sample_world"] = {"x": world_point.x, "y": world_point.y}
+		sample["sample_chunk"] = {
+			"x": int(floor(world_point.x)),
+			"y": int(floor(world_point.y)),
+		}
+		samples.append(AgentSessionScript.sanitize_variant(sample))
+	return samples
+
 
 func _sample_nearby_heights(world, player_position: Vector3) -> Array[Dictionary]:
 	var center_block := Vector2i(

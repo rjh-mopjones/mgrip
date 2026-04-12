@@ -16,6 +16,10 @@ const RUNTIME_OCEAN_ONLY_TINT := Color(0.95, 0.38, 0.16, 1.0)
 const WATER_BIOME_MISMATCH_TINT := Color(0.98, 0.80, 0.16, 1.0)
 const WATER_BIOME_MISMATCH_ALT_TINT := Color(0.98, 0.96, 0.84, 1.0)
 const LAND_BIOME_MISMATCH_TINT := Color(0.88, 0.26, 0.92, 1.0)
+const MACRO_RIVER_ONLY_TINT := Color(1.0, 0.85, 0.0, 1.0)
+const RUNTIME_RIVER_ONLY_TINT := Color(0.55, 0.95, 1.0, 1.0)
+const MATCHING_RIVER_TINT := Color(0.10, 0.65, 0.95, 1.0)
+const RIVER_THRESHOLD := 0.02
 const RUNTIME_CHUNK_PREVIEW_RENDERER := preload("res://scripts/ui/runtime_chunk_preview_renderer.gd")
 
 var _seed: int
@@ -97,6 +101,9 @@ func _ready() -> void:
 	_add_legend_entry(_make_color_swatch(RUNTIME_OCEAN_ONLY_TINT, 0.82), "runtime ocean only")
 	_add_legend_entry(_make_hatched_swatch(), "water-biome drift")
 	_add_legend_entry(_make_color_swatch(LAND_BIOME_MISMATCH_TINT, 0.72), "land-biome drift")
+	_add_legend_entry(_make_color_swatch(MACRO_RIVER_ONLY_TINT, 0.92), "river MISSING in runtime")
+	_add_legend_entry(_make_color_swatch(RUNTIME_RIVER_ONLY_TINT, 0.92), "river MISSING in macro")
+	_add_legend_entry(_make_color_swatch(MATCHING_RIVER_TINT, 0.55), "matching river")
 
 	_panels_grid = GridContainer.new()
 	_panels_grid.columns = 2
@@ -109,8 +116,8 @@ func _ready() -> void:
 	for panel_label in [
 		"Macro Visual  (macro artifact)",
 		"Runtime Local Map  (LOD0)",
-		"Macro Colours over Runtime",
-		"Delta  (Biome + Ocean Drift)",
+		"Runtime  (macro tint)",
+		"Residual Drift  (should be zero)",
 	]:
 		var col := VBoxContainer.new()
 		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -134,9 +141,9 @@ func _ready() -> void:
 				_macro_rect = rect
 			"Runtime Local Map  (LOD0)":
 				_runtime_rect = rect
-			"Macro Colours over Runtime":
+			"Runtime  (macro tint)":
 				_wash_rect = rect
-			"Delta  (Biome + Ocean Drift)":
+			"Residual Drift  (should be zero)":
 				_diff_rect = rect
 
 	_agreement_label = Label.new()
@@ -187,6 +194,7 @@ func _generate() -> void:
 	var macro_semantic := _build_macro_semantic_images(n, img_w, img_h)
 	var macro_biome_img: Image = macro_semantic.get("biome_image")
 	var macro_mask_img: Image = macro_semantic.get("ocean_mask_image")
+	var macro_rivers_img: Image = macro_semantic.get("rivers_image")
 
 	_status_label.text = "Building %dx%d LOD0 local-map region from runtime chunk data…" % [n, n]
 	var region_preview: Dictionary = _preview_renderer.render_chunk_grid_preview(
@@ -203,6 +211,10 @@ func _generate() -> void:
 	runtime_biome_img.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
 	var runtime_mask_img := _copy_image(region_preview.get("ocean_mask_image"))
 	runtime_mask_img.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
+	var runtime_rivers_img: Image = null
+	if region_preview.has("rivers_image") and region_preview.get("rivers_image") != null:
+		runtime_rivers_img = _copy_image(region_preview.get("rivers_image"))
+		runtime_rivers_img.resize(img_w, img_h, Image.INTERPOLATE_NEAREST)
 
 	var wash_img := _build_macro_wash_image(runtime_img, macro_img)
 	var diff_img := _build_diff_overlay_image(
@@ -210,14 +222,23 @@ func _generate() -> void:
 		macro_biome_img,
 		runtime_biome_img,
 		macro_mask_img,
-		runtime_mask_img
+		runtime_mask_img,
+		macro_rivers_img,
+		runtime_rivers_img
 	)
 	_draw_chunk_grid(wash_img)
 	_draw_chunk_grid(diff_img)
 	_wash_rect.texture = ImageTexture.create_from_image(wash_img)
 	_diff_rect.texture = ImageTexture.create_from_image(diff_img)
 
-	var stats := _compute_comparison_stats(macro_biome_img, runtime_biome_img, macro_mask_img, runtime_mask_img)
+	var stats := _compute_comparison_stats(
+		macro_biome_img,
+		runtime_biome_img,
+		macro_mask_img,
+		runtime_mask_img,
+		macro_rivers_img,
+		runtime_rivers_img
+	)
 	var pixel_total := int(stats.get("pixel_total", 0))
 	var ocean_agree := int(stats.get("ocean_agree", 0))
 	var biome_agree := int(stats.get("biome_agree", 0))
@@ -230,23 +251,68 @@ func _generate() -> void:
 	var biome_mismatch := int(stats.get("biome_mismatch", 0))
 	var water_biome_mismatch := int(stats.get("water_biome_mismatch", 0))
 	var land_biome_mismatch := int(stats.get("land_biome_mismatch", 0))
+	var macro_river_only := int(stats.get("macro_river_only", 0))
+	var runtime_river_only := int(stats.get("runtime_river_only", 0))
+	var matching_river := int(stats.get("matching_river", 0))
+	var macro_river_total := int(stats.get("macro_river_total", 0))
 	var ocean_pct := 100.0 * float(ocean_agree) / float(maxi(pixel_total, 1))
 	var biome_pct := 100.0 * float(biome_agree) / float(maxi(pixel_total, 1))
 	var land_biome_pct := 100.0 * float(land_biome_agree) / float(maxi(land_biome_total, 1))
+	var river_recall_pct := 100.0 * float(matching_river) / float(maxi(macro_river_total, 1))
 	_status_label.text = (
-		"Done. Macro = macro artifact context. Wash = macro colours on runtime. Delta = ocean plus land and water biome drift."
+		"Done. Runtime chunks anchor to macro_biome.bin via apply_macro_semantics — residual drift should be zero. Any visible diff is a real mismatch."
 	)
+	# Direct-to-disk capture for the headless/probe path. The CanvasLayer that
+	# the compare view lives in doesn't always render to the main viewport in
+	# screenshot tests, so save the four panel images plus a composed sheet
+	# directly when MGRIP_SELECTOR_CAPTURE_DIR is set.
+	var capture_dir := OS.get_environment("MGRIP_SELECTOR_CAPTURE_DIR")
+	if not capture_dir.is_empty():
+		_save_compare_panels(
+			capture_dir,
+			macro_img,
+			runtime_img,
+			wash_img,
+			diff_img
+		)
 	_agreement_label.text = (
-		"Ocean: %d/%d (%.1f%%)    Biome: %d/%d (%.1f%%)    Land biome: %d/%d (%.1f%%)\nClean chunks: %d/%d    Macro-ocean only: %d px    Runtime-ocean only: %d px    Water-biome mismatch: %d px    Land-biome mismatch: %d px    Total biome mismatch: %d px"
+		"Ocean: %d/%d (%.1f%%)    Biome: %d/%d (%.1f%%)    Land biome: %d/%d (%.1f%%)    River recall: %d/%d (%.1f%%)\nClean chunks: %d/%d    Macro-ocean only: %d px    Runtime-ocean only: %d px    Water-biome mismatch: %d px    Land-biome mismatch: %d px    Total biome mismatch: %d px    River MISSING in runtime: %d px    River MISSING in macro: %d px"
 		% [
 			ocean_agree, pixel_total, ocean_pct,
 			biome_agree, pixel_total, biome_pct,
 			land_biome_agree, land_biome_total, land_biome_pct,
+			matching_river, macro_river_total, river_recall_pct,
 			chunk_clean, chunk_total,
 			macro_ocean_only, runtime_ocean_only,
-			water_biome_mismatch, land_biome_mismatch, biome_mismatch
+			water_biome_mismatch, land_biome_mismatch, biome_mismatch,
+			macro_river_only, runtime_river_only
 		]
 	)
+
+
+func _save_compare_panels(
+	capture_dir: String,
+	macro_img: Image,
+	runtime_img: Image,
+	wash_img: Image,
+	diff_img: Image
+) -> void:
+	DirAccess.make_dir_recursive_absolute(capture_dir)
+	macro_img.save_png(capture_dir.path_join("compare_panel_macro.png"))
+	runtime_img.save_png(capture_dir.path_join("compare_panel_runtime.png"))
+	wash_img.save_png(capture_dir.path_join("compare_panel_wash.png"))
+	diff_img.save_png(capture_dir.path_join("compare_panel_drift.png"))
+
+	# Composed 2x2 sheet so we can grok all four panels at once.
+	var w := macro_img.get_width()
+	var h := macro_img.get_height()
+	var sheet := Image.create(w * 2 + 16, h * 2 + 16, false, Image.FORMAT_RGBA8)
+	sheet.fill(Color(0.05, 0.05, 0.06, 1.0))
+	sheet.blit_rect(macro_img, Rect2i(Vector2i.ZERO, Vector2i(w, h)), Vector2i(0, 0))
+	sheet.blit_rect(runtime_img, Rect2i(Vector2i.ZERO, Vector2i(w, h)), Vector2i(w + 16, 0))
+	sheet.blit_rect(wash_img, Rect2i(Vector2i.ZERO, Vector2i(w, h)), Vector2i(0, h + 16))
+	sheet.blit_rect(diff_img, Rect2i(Vector2i.ZERO, Vector2i(w, h)), Vector2i(w + 16, h + 16))
+	sheet.save_png(capture_dir.path_join("compare_sheet.png"))
 
 
 func _refresh_responsive_layout() -> void:
@@ -342,29 +408,51 @@ func _build_macro_crop(n: int, img_w: int, img_h: int) -> Image:
 
 
 func _build_macro_semantic_images(n: int, img_w: int, img_h: int) -> Dictionary:
-	var macro_map: MgBiomeMap = _generator.generate_region(
-		_seed,
+	# Read directly from the persisted macro_biome.bin via the cached
+	# MACRO_SEMANTICS singleton instead of re-running macro generation per
+	# compare open. This is the same data the runtime chunk pipeline anchors
+	# to via apply_macro_semantics, so the diff panel reflects real semantic
+	# drift between the saved macro and the generated runtime — not noise
+	# from divergent generation runs.
+	var sample: Dictionary = _generator.sample_macro_region(
 		_origin.x,
 		_origin.y,
 		float(n),
 		float(n),
 		img_w,
-		img_h,
-		0,
-		1.0
+		img_h
 	)
-	var biome_rgba := macro_map.export_layer_rgba("biome")
+	if not sample.get("loaded", false):
+		var blank_biome := Image.create(img_w, img_h, false, Image.FORMAT_RGBA8)
+		blank_biome.fill(Color(0.18, 0.18, 0.20))
+		var blank_mask := Image.create(img_w, img_h, false, Image.FORMAT_RGBA8)
+		blank_mask.fill(Color.BLACK)
+		var blank_rivers := Image.create(img_w, img_h, false, Image.FORMAT_RGBA8)
+		blank_rivers.fill(Color.BLACK)
+		return {
+			"biome_image": blank_biome,
+			"ocean_mask_image": blank_mask,
+			"rivers_image": blank_rivers,
+		}
+	var biome_rgba: PackedByteArray = sample.get("biome_rgba")
 	var biome_image := Image.create_from_data(img_w, img_h, false, Image.FORMAT_RGBA8, biome_rgba)
+	var ocean_mask_raw: PackedByteArray = sample.get("ocean_mask")
 	var ocean_mask_image := Image.create(img_w, img_h, false, Image.FORMAT_RGBA8)
-	var fluid_mask: PackedByteArray = macro_map.is_ocean_grid()
+	var rivers_raw: PackedByteArray = sample.get("rivers")
+	var rivers_image := Image.create(img_w, img_h, false, Image.FORMAT_RGBA8)
 	for py in range(img_h):
 		for px in range(img_w):
 			var index := py * img_w + px
-			var ocean := index < fluid_mask.size() and fluid_mask[index] != 0
+			var ocean := index < ocean_mask_raw.size() and ocean_mask_raw[index] != 0
 			ocean_mask_image.set_pixel(px, py, Color.WHITE if ocean else Color.BLACK)
+			var rl := 0.0
+			if index < rivers_raw.size():
+				rl = float(rivers_raw[index]) / 255.0
+			rivers_image.set_pixel(px, py, Color(rl, rl, rl, 1.0))
 	return {
 		"biome_image": biome_image,
 		"ocean_mask_image": ocean_mask_image,
+		"rivers_image": rivers_image,
 	}
 
 
@@ -383,7 +471,9 @@ func _build_diff_overlay_image(
 	macro_img: Image,
 	runtime_biome_img: Image,
 	macro_mask_img: Image,
-	runtime_mask_img: Image
+	runtime_mask_img: Image,
+	macro_rivers_img: Image,
+	runtime_rivers_img: Image
 ) -> Image:
 	var image := _copy_image(runtime_img)
 	for py in range(image.get_height()):
@@ -393,8 +483,23 @@ func _build_diff_overlay_image(
 			var runtime_biome_color := runtime_biome_img.get_pixel(px, py)
 			var macro_ocean := _mask_pixel_is_ocean(macro_mask_img.get_pixel(px, py))
 			var runtime_ocean := _mask_pixel_is_ocean(runtime_mask_img.get_pixel(px, py))
+			var macro_river := false
+			var runtime_river := false
+			if macro_rivers_img != null:
+				macro_river = macro_rivers_img.get_pixel(px, py).r > RIVER_THRESHOLD
+			if runtime_rivers_img != null:
+				runtime_river = runtime_rivers_img.get_pixel(px, py).r > RIVER_THRESHOLD
 			var overlay := base
-			if macro_ocean and runtime_ocean and not _colors_match(macro_color, runtime_biome_color):
+			# River drift takes precedence over biome/ocean drift since the user
+			# wants missing rivers to be loudly flagged. Only flag river drift on
+			# land cells — rivers extending into ocean are expected confluence.
+			if macro_river and not runtime_river and not (macro_ocean or runtime_ocean):
+				overlay = base.lerp(MACRO_RIVER_ONLY_TINT, 0.92)
+			elif runtime_river and not macro_river and not (macro_ocean or runtime_ocean):
+				overlay = base.lerp(RUNTIME_RIVER_ONLY_TINT, 0.92)
+			elif macro_river and runtime_river:
+				overlay = base.lerp(MATCHING_RIVER_TINT, 0.55)
+			elif macro_ocean and runtime_ocean and not _colors_match(macro_color, runtime_biome_color):
 				overlay = _water_biome_mismatch_overlay(base, px, py)
 			elif macro_ocean and runtime_ocean:
 				overlay = base.lerp(MATCH_OCEAN_TINT, 0.32)
@@ -419,7 +524,9 @@ func _compute_comparison_stats(
 	macro_img: Image,
 	runtime_biome_img: Image,
 	macro_mask_img: Image,
-	runtime_mask_img: Image
+	runtime_mask_img: Image,
+	macro_rivers_img: Image,
+	runtime_rivers_img: Image
 ) -> Dictionary:
 	var pixel_total := macro_mask_img.get_width() * macro_mask_img.get_height()
 	var ocean_agree := 0
@@ -431,6 +538,10 @@ func _compute_comparison_stats(
 	var biome_mismatch := 0
 	var water_biome_mismatch := 0
 	var land_biome_mismatch := 0
+	var macro_river_total := 0
+	var macro_river_only := 0
+	var runtime_river_only := 0
+	var matching_river := 0
 	var chunk_clean := 0
 	var chunk_total := _grid_size * _grid_size
 	for gy in range(_grid_size):
@@ -444,6 +555,12 @@ func _compute_comparison_stats(
 					var runtime_biome_color := runtime_biome_img.get_pixel(px, py)
 					var macro_ocean := _mask_pixel_is_ocean(macro_mask_img.get_pixel(px, py))
 					var runtime_ocean := _mask_pixel_is_ocean(runtime_mask_img.get_pixel(px, py))
+					var macro_river := false
+					var runtime_river := false
+					if macro_rivers_img != null:
+						macro_river = macro_rivers_img.get_pixel(px, py).r > RIVER_THRESHOLD
+					if runtime_rivers_img != null:
+						runtime_river = runtime_rivers_img.get_pixel(px, py).r > RIVER_THRESHOLD
 					if macro_ocean == runtime_ocean:
 						ocean_agree += 1
 					elif macro_ocean:
@@ -465,6 +582,19 @@ func _compute_comparison_stats(
 						chunk_has_mismatch = true
 					if not macro_ocean and not runtime_ocean:
 						land_biome_total += 1
+					# River drift only on land cells — river-into-ocean is
+					# legitimate confluence and should not count as drift.
+					if not macro_ocean and not runtime_ocean:
+						if macro_river:
+							macro_river_total += 1
+						if macro_river and runtime_river:
+							matching_river += 1
+						elif macro_river and not runtime_river:
+							macro_river_only += 1
+							chunk_has_mismatch = true
+						elif runtime_river and not macro_river:
+							runtime_river_only += 1
+							chunk_has_mismatch = true
 			if not chunk_has_mismatch:
 				chunk_clean += 1
 	return {
@@ -478,6 +608,10 @@ func _compute_comparison_stats(
 		"biome_mismatch": biome_mismatch,
 		"water_biome_mismatch": water_biome_mismatch,
 		"land_biome_mismatch": land_biome_mismatch,
+		"macro_river_total": macro_river_total,
+		"macro_river_only": macro_river_only,
+		"runtime_river_only": runtime_river_only,
+		"matching_river": matching_river,
 		"chunk_total": chunk_total,
 		"chunk_clean": chunk_clean,
 	}

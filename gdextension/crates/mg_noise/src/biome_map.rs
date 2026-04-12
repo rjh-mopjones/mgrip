@@ -76,6 +76,52 @@ impl MacroOceanMask {
     }
 }
 
+/// Bilinear sample a per-pixel field slice at world coordinates.
+///
+/// The x-axis wraps (cylindrical world); the y-axis is clamped. Used to smoothly
+/// interpolate macro artifact fields when projecting them into finer runtime tiles —
+/// nearest-neighbor sampling would produce hard seams at runtime chunk boundaries.
+pub fn sample_field_bilinear(
+    field: &[f64],
+    wx: f64,
+    wy: f64,
+    world_width: f64,
+    world_height: f64,
+    width: usize,
+    height: usize,
+) -> f64 {
+    if field.is_empty() || width == 0 || height == 0 {
+        return 0.0;
+    }
+    debug_assert_eq!(field.len(), width * height);
+
+    let wrapped_x = crate::wrap::wrap_x(wx, world_width);
+    let fx = wrapped_x * width as f64 / world_width;
+    let clamped_y = wy.clamp(0.0, world_height);
+    let fy = (clamped_y * height as f64 / world_height).min((height - 1) as f64);
+
+    let x0f = fx.floor();
+    let y0f = fy.floor();
+    let tx = fx - x0f;
+    let ty = fy - y0f;
+
+    let x0 = crate::wrap::wrap_grid_x(x0f as i32, width) as usize;
+    let x1 = crate::wrap::wrap_grid_x(x0f as i32 + 1, width) as usize;
+    let y0_i = (y0f as i32).max(0);
+    let y1_i = (y0_i + 1).min(height as i32 - 1);
+    let y0 = y0_i as usize;
+    let y1 = y1_i as usize;
+
+    let v00 = field[y0 * width + x0];
+    let v10 = field[y0 * width + x1];
+    let v01 = field[y1 * width + x0];
+    let v11 = field[y1 * width + x1];
+
+    let top = v00 * (1.0 - tx) + v10 * tx;
+    let bot = v01 * (1.0 - tx) + v11 * tx;
+    top * (1.0 - ty) + bot * ty
+}
+
 /// Seed offsets per base layer (additive from world_seed).
 const SEED_CONTINENTALNESS: u32 = 0;
 const SEED_TECTONIC: u32 = 1;
@@ -559,6 +605,178 @@ impl BiomeMap {
         }
     }
 
+    /// Anchor this tile's derived layers and biomes to a macro `BiomeMap` plus the global
+    /// `RiverNetwork`.
+    ///
+    /// Heightmap, temperature, erosion, aridity, precipitation, snowpack, resource_richness,
+    /// biomes, rivers, water_table, vegetation_density and soil_type are all rewritten so the
+    /// tile trends toward the values the macro artifact already produced. Base identity layers
+    /// (continentalness, tectonic, rock_hardness, humidity, light_level, peaks_valleys) are
+    /// left untouched — they define the identity of a place and must come from this tile's
+    /// own coordinate space.
+    ///
+    /// This is the single source of truth for "look like the macromap" semantics. Both the CLI
+    /// meso tile render and runtime micro chunks route through it so they can never drift.
+    ///
+    /// Parameters:
+    /// - `mountain_detail_gain`: weight applied to local `peaks_valleys` as relief detail on
+    ///   top of the macro heightmap. `0.2` matches the existing meso pipeline.
+    /// - `apply_micro_detail`: when `true`, fold sub-pixel `derive_micro_heightmap` noise onto
+    ///   the anchored heightmap. Use for runtime micro chunks; leave `false` for meso tiles.
+    pub fn anchor_to_macro(
+        &mut self,
+        macro_map: &BiomeMap,
+        river_network: &RiverNetwork,
+        seed: u32,
+        origin_x: f64,
+        origin_y: f64,
+        world_size_x: f64,
+        world_size_y: f64,
+        river_threshold: u32,
+        mountain_detail_gain: f64,
+        apply_micro_detail: bool,
+    ) {
+        let tile_w = self.width;
+        let tile_h = self.height;
+        if tile_w == 0 || tile_h == 0 || macro_map.heightmap.is_empty() {
+            return;
+        }
+
+        let detail_noise = OpenSimplex::new(seed.wrapping_add(SEED_MICRO_DETAIL));
+        let splines = BiomeSplines::new(SEA_LEVEL);
+
+        for py in 0..tile_h {
+            for px in 0..tile_w {
+                let idx = py * tile_w + px;
+                let wx = origin_x + (px as f64 + 0.5) * world_size_x / tile_w as f64;
+                let wy = origin_y + (py as f64 + 0.5) * world_size_y / tile_h as f64;
+
+                // Anchor every base layer that feeds the biome spline from the macro
+                // artifact. Macro and runtime sample noise at different `freq_scale`
+                // values (1.0 vs 8.0), so the same world coord lands on different
+                // continentalness / humidity / rock / tectonic / peaks values in each
+                // pass. The spline is sensitive to all of these for both ocean/land
+                // and land-biome classification — runtime drift is dominated by the
+                // freq_scale mismatch, not by genuine local detail. Anchoring the
+                // full base set forces spline inputs to match macro inputs at every
+                // pixel.
+                //
+                // Sub-pixel intra-chunk variation still comes from two sources:
+                //   - the dithered spline's coordinate-hash perturbation in
+                //     `evaluate_dithered_with_light`, which jitters cont/temp/humid
+                //     locally
+                //   - `derive_micro_heightmap`, which adds high-frequency noise on
+                //     top of the macro-anchored heightmap
+                self.continentalness[idx] =
+                    macro_map.sample_field_at(&macro_map.continentalness, wx, wy);
+                self.tectonic[idx] =
+                    macro_map.sample_field_at(&macro_map.tectonic, wx, wy);
+                self.humidity[idx] =
+                    macro_map.sample_field_at(&macro_map.humidity, wx, wy);
+                self.rock_hardness[idx] =
+                    macro_map.sample_field_at(&macro_map.rock_hardness, wx, wy);
+                self.peaks_valleys[idx] =
+                    macro_map.sample_field_at(&macro_map.peaks_valleys, wx, wy);
+
+                // Sample the macro heightmap. This is the value the macro pass
+                // used for ALL its derivations and biome classification. Runtime
+                // must use the same value as the spline input to match macro.
+                let macro_hm = macro_map.sample_field_at(&macro_map.heightmap, wx, wy);
+
+                // Pull anchored base identity layers.
+                let cont = self.continentalness[idx];
+                let humid = self.humidity[idx];
+                let rock = self.rock_hardness[idx];
+                let tect = self.tectonic[idx];
+                let light = self.light_level[idx];
+                let peaks = self.peaks_valleys[idx];
+
+                // Derive climate from MACRO heightmap (matches macro Phase 5
+                // derivations exactly, since macro derives from its own hm).
+                let temp = derived::derive_temperature(light, macro_hm, humid, cont);
+                let eros = derived::derive_erosion(macro_hm, rock, humid);
+                let arid = derived::derive_aridity(temp, humid);
+                let precip = derived::derive_precipitation_type(temp, humid, macro_hm);
+                let snow = derived::derive_snowpack(precip, temp, macro_hm, light);
+
+                self.temperature[idx] = temp;
+                self.erosion[idx] = eros;
+                self.aridity[idx] = arid;
+                self.precipitation_type[idx] = precip;
+                self.snowpack[idx] = snow;
+                self.resource_richness[idx] =
+                    derived::derive_resource_richness(tect, rock, eros);
+
+                // Classify biome with the SAME spline call the macro pass uses
+                // (`biome_map.rs:483`, non-dithered). With every spline input
+                // matching macro, the biome enum must match macro.
+                self.biomes[idx] = splines.evaluate_with_light(
+                    cont, temp, tect, eros, peaks, humid, arid, rock, light,
+                );
+
+                // Write the rendered heightmap with mesh detail on top of the
+                // macro-anchored value. This drives mesh generation and visual
+                // hillshade — biome classification already happened above using
+                // raw macro_hm so the detail doesn't perturb biome boundaries.
+                let stress = 1.0 - tect;
+                let above_sea = (macro_hm - SEA_LEVEL).max(0.0);
+                let mountain_intensity = (stress * above_sea * 3.0).min(1.0);
+                let mountain_detail = peaks * mountain_intensity * mountain_detail_gain;
+                let mut hm = (macro_hm + mountain_detail).clamp(-1.0, 1.0);
+                if apply_micro_detail {
+                    hm = derived::derive_micro_heightmap(hm, wx, wy, &detail_noise);
+                }
+                self.heightmap[idx] = hm;
+            }
+        }
+
+        // Project the global river network into this tile at the requested LOD threshold.
+        self.rivers = rasterize_to_tile(
+            river_network,
+            tile_w,
+            tile_h,
+            origin_x,
+            origin_y,
+            world_size_x,
+            world_size_y,
+            self.world_width,
+            self.world_height,
+            river_threshold as f64,
+        );
+
+        // Secondary derives that depend on rivers.
+        for i in 0..tile_w * tile_h {
+            self.water_table[i] = derived::derive_water_table(
+                self.rivers[i],
+                self.humidity[i],
+                self.heightmap[i],
+                self.precipitation_type[i],
+                self.continentalness[i],
+            );
+            if self.rivers[i] > 0.1
+                && !tile_has_fluid_surface(self.biomes[i])
+                && self.aridity[i] < 0.7
+            {
+                self.biomes[i] = TileType::River;
+            }
+            self.vegetation_density[i] =
+                derived::derive_vegetation_density(self.biomes[i], self.water_table[i]);
+            self.soil_type[i] =
+                derived::derive_soil_type(self.biomes[i], self.erosion[i], self.rock_hardness[i]);
+        }
+
+        // Polar ice cap override — idempotent, matches the tail of `generate()`.
+        apply_polar_ice_cap(
+            &mut self.biomes,
+            &self.light_level,
+            &self.continentalness,
+            &self.peaks_valleys,
+            &self.rock_hardness,
+            &self.temperature,
+            SEA_LEVEL,
+        );
+    }
+
     /// Quick accessor — returns heightmap value at pixel (x, y).
     pub fn heightmap_at(&self, x: usize, y: usize) -> f64 {
         self.heightmap[y * self.width + x]
@@ -578,6 +796,38 @@ impl BiomeMap {
         let x = (wrapped_x.round() as usize).min(self.width - 1);
         let y = (wy.clamp(0.0, self.world_height - 1.0).round() as usize).min(self.height - 1);
         self.heightmap[y * self.width + x]
+    }
+
+    /// Bilinear sample any `f64` field slice sized `width * height` at world coord.
+    ///
+    /// Used when anchoring a finer tile to this map's fields — interpolates between
+    /// macro pixels so downstream tiles don't show hard seams at macro pixel boundaries.
+    pub fn sample_field_at(&self, field: &[f64], wx: f64, wy: f64) -> f64 {
+        sample_field_bilinear(
+            field,
+            wx,
+            wy,
+            self.world_width,
+            self.world_height,
+            self.width,
+            self.height,
+        )
+    }
+
+    /// Nearest-neighbor discrete biome sample at world coordinates.
+    ///
+    /// Biomes are `TileType` enums — bilinear is not meaningful. Mirrors the
+    /// convention used by `MacroOceanMask::is_ocean_at_world`.
+    pub fn sample_biome_at_world(&self, wx: f64, wy: f64) -> TileType {
+        if self.biomes.is_empty() {
+            return TileType::Sea;
+        }
+        let wrapped_x = crate::wrap::wrap_x(wx, self.world_width);
+        let px = ((wrapped_x / self.world_width * self.width as f64) as usize).min(self.width - 1);
+        let py = ((wy.clamp(0.0, self.world_height) / self.world_height * self.height as f64)
+            as usize)
+            .min(self.height - 1);
+        self.biomes[py * self.width + px]
     }
 
     pub fn temperature_at(&self, x: usize, y: usize) -> f64 {
