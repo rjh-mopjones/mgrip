@@ -432,7 +432,7 @@ func _run_capture_probe(capture_dir: String) -> void:
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_mode_entered.png"))
 
-	_open_compare_view(Vector2i(700, 200))  # third terminus position
+	_open_compare_view(Vector2i(500, 220))  # dendritic-rich position
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_opened.png"))
 

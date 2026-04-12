@@ -1268,10 +1268,13 @@ pub fn rasterise_smooth_line_with_min(
                     let rel_y = py as f64 - cy;
                     let perp_dist = (rel_x * perp_x + rel_y * perp_y).abs();
                     // Solid interior, single-pixel anti-aliased edge.
-                    let pixel_value = if perp_dist <= half_width - 1.0 {
+                    // 2 px AA edge (was 1) so downsampled macromap shows
+                    // smoother river edges instead of pixel staircase.
+                    let aa_width = 2.0_f64.min(half_width * 0.5);
+                    let pixel_value = if perp_dist <= half_width - aa_width {
                         value
                     } else if perp_dist < half_width {
-                        value * (half_width - perp_dist)
+                        value * ((half_width - perp_dist) / aa_width)
                     } else {
                         continue;
                     };
