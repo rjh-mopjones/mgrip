@@ -248,6 +248,140 @@ pub struct RiverSegment {
     pub strahler_order: u32,
 }
 
+// ─── River Chain (connected headwater → mouth path) ────────────────────────
+
+/// A continuous path from one headwater all the way to the ocean, built by
+/// concatenating segment paths along the `downstream` pointers. Width grows
+/// from headwater drainage to mouth drainage. Rendered as ONE rasterize call
+/// so there are no visual gaps at confluences.
+pub struct RiverChain {
+    /// World-coord path from headwater (index 0) to mouth (last).
+    pub path: Vec<(f64, f64)>,
+    /// Per-point drainage for width modulation — grows monotonically from
+    /// headwater upstream drainage to mouth segment drainage.
+    pub drainage_per_point: Vec<u32>,
+    /// Max drainage in this chain (= mouth segment drainage).
+    pub max_drainage: u32,
+    /// Max Strahler order along the chain (for width table lookup).
+    pub max_strahler: u32,
+    /// Character at the chain midpoint (for visibility + color).
+    pub character: RiverCharacter,
+}
+
+/// Build river chains by following each headwater segment downstream to the
+/// mouth (ocean or no-flow terminus). At confluences where multiple upstream
+/// tributaries merge, only the LARGEST upstream (by drainage) continues the
+/// chain — smaller tributaries start separate chains. This ensures each
+/// segment appears in exactly ONE chain, and the "trunk" of each drainage
+/// basin is one continuous stroke.
+pub fn build_river_chains(segments: &[RiverSegment]) -> Vec<RiverChain> {
+    if segments.is_empty() {
+        return vec![];
+    }
+
+    // For each segment that has multiple upstreams (a confluence), mark which
+    // upstream is the "main" (highest drainage) — that one continues the
+    // parent chain. Others start fresh chains.
+    let mut is_main_upstream = vec![false; segments.len()];
+    for seg in segments {
+        if seg.upstream.is_empty() {
+            continue;
+        }
+        // The upstream with highest drainage is the "main" continuation.
+        let main_up = seg
+            .upstream
+            .iter()
+            .copied()
+            .max_by_key(|&uid| segments.get(uid).map_or(0, |s| s.drainage_area));
+        if let Some(uid) = main_up {
+            is_main_upstream[uid] = true;
+        }
+    }
+
+    // Find chain heads: segments that are NOT the main upstream of their
+    // downstream parent. These are either headwaters (no upstream at all)
+    // or minor tributaries at a confluence.
+    let mut chains = Vec::new();
+    for (idx, seg) in segments.iter().enumerate() {
+        // Skip if this segment is the main continuation of its downstream —
+        // it will be picked up when we walk from a chain head.
+        if is_main_upstream[idx] {
+            continue;
+        }
+        // This segment starts a new chain. Walk downstream, always following
+        // the main-upstream path at each node.
+        let mut path = Vec::new();
+        let mut drainage_per_point = Vec::new();
+        let mut current = idx;
+        let mut max_strahler = 0u32;
+        let mut last_drainage = 0u32;
+
+        loop {
+            let s = &segments[current];
+            if !s.character.is_visible_channel() {
+                // If we hit a non-visible segment, stop the chain here.
+                break;
+            }
+            max_strahler = max_strahler.max(s.strahler_order);
+
+            // Compute upstream drainage for this segment (max of its upstreams).
+            let upstream_drain = s
+                .upstream
+                .iter()
+                .filter_map(|&uid| segments.get(uid))
+                .map(|u| u.drainage_area)
+                .max()
+                .unwrap_or(0);
+
+            // Append this segment's path with per-point drainage lerp.
+            let n = s.path.len();
+            for (i, &pt) in s.path.iter().enumerate() {
+                let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 1.0 };
+                let d = upstream_drain as f64
+                    + (s.drainage_area as f64 - upstream_drain as f64) * t;
+                path.push(pt);
+                drainage_per_point.push(d as u32);
+            }
+            last_drainage = s.drainage_area;
+
+            // Follow downstream if this segment is the main upstream of
+            // its downstream parent.
+            if let Some(ds) = s.downstream {
+                if ds < segments.len() && is_main_upstream[current] {
+                    // We ARE the main upstream of ds — continue the chain.
+                    current = ds;
+                    continue;
+                }
+            }
+            // Either no downstream or we're a minor tributary — stop.
+            break;
+        }
+
+        if path.len() >= 2 {
+            let mid = path.len() / 2;
+            let mid_seg_idx = segments
+                .iter()
+                .position(|s| {
+                    s.path
+                        .first()
+                        .map_or(false, |&p| {
+                            let (px, py) = path[mid.min(path.len() - 1)];
+                            (p.0 - px).abs() < 0.01 && (p.1 - py).abs() < 0.01
+                        })
+                })
+                .unwrap_or(idx);
+            chains.push(RiverChain {
+                path,
+                drainage_per_point,
+                max_drainage: last_drainage,
+                max_strahler,
+                character: segments[mid_seg_idx].character,
+            });
+        }
+    }
+    chains
+}
+
 // ─── Chunk Coordinate for Spatial Index ─────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,6 +411,11 @@ pub struct RiverNetwork {
     pub segments: Vec<RiverSegment>,
     #[serde(skip)]
     spatial_index: HashMap<RiverChunkCoord, Vec<usize>>,
+    /// Precomputed chains: headwater → mouth continuous paths built by
+    /// `build_river_chains`. Stored so both `to_flow_grid` and
+    /// `rasterize_from_network` use the same connected river systems.
+    #[serde(skip)]
+    pub chains: Vec<RiverChain>,
     pub width: usize,
     pub height: usize,
 }
@@ -296,10 +435,12 @@ impl Clone for RiverNetwork {
         let mut cloned = Self {
             segments: self.segments.clone(),
             spatial_index: HashMap::new(),
+            chains: Vec::new(),
             width: self.width,
             height: self.height,
         };
         cloned.rebuild_spatial_index();
+        cloned.chains = build_river_chains(&cloned.segments);
         cloned
     }
 }
@@ -309,6 +450,7 @@ impl RiverNetwork {
         Self {
             segments: Vec::new(),
             spatial_index: HashMap::new(),
+            chains: Vec::new(),
             width,
             height,
         }
@@ -415,14 +557,16 @@ impl RiverNetwork {
             );
         }
 
-        // Step 7: Build spatial index
+        // Step 7: Build spatial index + chains
         let spatial_index = build_spatial_index(&segments);
+        let chains = build_river_chains(&segments);
 
-        Self { segments, spatial_index, width, height }
+        Self { segments, spatial_index, chains, width, height }
     }
 
     pub fn rebuild_spatial_index(&mut self) {
         self.spatial_index = build_spatial_index(&self.segments);
+        self.chains = build_river_chains(&self.segments);
     }
 
     /// Returns the maximum drainage of any upstream tributary at the
@@ -502,75 +646,68 @@ impl RiverNetwork {
 
     /// Convert to a flat flow grid using smooth rasterisation.
     ///
-    /// The flow grid is the macro presentation surface — `terrain_render` reads
-    /// it to draw river corridors on `macromap.png`. Width is driven by
-    /// `strahler_world_half_width(strahler_order)` so the hierarchy is visible:
-    /// small tributaries are thin, mainstems thicken downstream. The min/max
-    /// cap keeps every order visible without swallowing the macro view.
+    /// Renders CHAINS (headwater → mouth continuous paths) instead of
+    /// individual segments. This produces connected river networks: one
+    /// rasterize call per chain means no gaps at confluences, width grows
+    /// smoothly from headwater to mouth, and meander applies to the whole
+    /// river system as a coherent curve.
     pub fn to_flow_grid(&self, width: usize, height: usize) -> Vec<f64> {
         let mut grid = vec![0.0f64; width * height];
-        let max_drainage = self.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
-        // The macro flow grid is conventionally 1 pixel per world unit; that's
-        // how `BiomeMap::generate` builds the macro pass. If a caller asks for
-        // a different resolution we still need pixels-per-wu so the world
-        // width converts correctly.
+        let global_max_drainage = self.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
         let pixels_per_wu = width as f64 / 1024.0;
-        // Chaikin-smooth the raw segment polyline. Without this the solid-line
-        // rasteriser draws straight line segments between the sparse D8 flow
-        // control points — visible as hard straight runs across the macro
-        // view. Match the target used by `rasterize_from_network` so macro and
-        // runtime smooth to the same curve.
+        let py_per_wu = height as f64 / 512.0;
         let target_spacing = 0.08 / pixels_per_wu.max(0.0001);
-        for seg in &self.segments {
-            if !seg.character.is_visible_channel() || seg.path.len() < 2 {
+        let min_px = FLOW_GRID_MIN_HALF_WIDTH_WU * pixels_per_wu;
+        let max_px = FLOW_GRID_MAX_HALF_WIDTH_WU * pixels_per_wu;
+
+        let chains = build_river_chains(&self.segments);
+
+        for chain in &chains {
+            if chain.path.len() < 2 {
                 continue;
             }
-            // Unwrap x-coords so wrap-crossing segments don't rasterize as a
-            // straight line across the whole world.
-            let unwrapped = unwrap_path_x(&seg.path, 1024.0);
+            let unwrapped = unwrap_path_x(&chain.path, 1024.0);
             let smoothed = subdivide_to_spacing(&unwrapped, target_spacing);
             if smoothed.len() < 2 {
                 continue;
             }
-            // Strahler wu × pixels_per_wu → resolution-independent pixel width.
-            // Same world width at 1 px/wu or 2 px/wu or any future resolution.
-            let min_px = FLOW_GRID_MIN_HALF_WIDTH_WU * pixels_per_wu;
-            let max_px = FLOW_GRID_MAX_HALF_WIDTH_WU * pixels_per_wu;
-            let max_half_width = (macro_strahler_half_width_wu(seg.strahler_order)
-                * seg.character.width_multiplier()
+
+            // Width from the chain's max Strahler order — the trunk drives
+            // the visual weight; interior drainage modulation handles tapering.
+            let max_half_width = (macro_strahler_half_width_wu(chain.max_strahler)
+                * chain.character.width_multiplier()
                 * pixels_per_wu)
                 .clamp(min_px, max_px);
-            // Meander amplitude in WORLD UNITS (not pixels) so it's the same
-            // curve at any resolution. Divide back from pixel half-width.
             let half_width_wu = max_half_width / pixels_per_wu;
             let meander_amplitude = 4.0 + half_width_wu * 1.5;
             let smoothed = meander_path(&smoothed, meander_amplitude);
-            // Per-point drainage lerp from upstream parent's drainage at the
-            // head of this segment to the segment's own drainage at its foot.
-            let upstream_drainage = self.upstream_drainage_for(seg.id) as f64;
-            let segment_drainage = seg.drainage_area as f64;
+
+            // Interpolate drainage_per_point to match smoothed path length.
             let n = smoothed.len();
-            let denom = (n - 1).max(1) as f64;
+            let orig_n = chain.drainage_per_point.len();
             let drainage_per_point: Vec<u32> = (0..n)
                 .map(|i| {
-                    let t = i as f64 / denom;
-                    (upstream_drainage + (segment_drainage - upstream_drainage) * t) as u32
+                    let t = i as f64 / (n - 1).max(1) as f64;
+                    let src = (t * (orig_n - 1).max(1) as f64) as usize;
+                    chain.drainage_per_point[src.min(orig_n - 1)]
                 })
                 .collect();
-            // Interior-minimum: upstream-end at least 60% of Strahler max.
-            let min_half_width = (max_half_width * 0.6).clamp(min_px, max_half_width);
-            // Convert world-coord path to macro-pixel-coord path. At 1:1
-            // this is identity; at 2:1 it doubles all coordinates so the
-            // rasteriser covers the full 2048×1024 grid instead of only
-            // the left half.
+
+            let min_half_width = (max_half_width * 0.3).clamp(min_px * 0.5, max_half_width);
+
+            // World → pixel conversion.
             let pixel_path: Vec<(f64, f64)> = smoothed
                 .iter()
-                .map(|&(wx, wy)| (wx * pixels_per_wu, wy * (height as f64 / 512.0)))
+                .map(|&(wx, wy)| (wx * pixels_per_wu, wy * py_per_wu))
                 .collect();
-            let drainage_scaled: Vec<u32> = drainage_per_point.clone();
             rasterise_smooth_line_with_min(
-                &mut grid, width, height,
-                &pixel_path, &drainage_scaled, max_drainage, max_half_width,
+                &mut grid,
+                width,
+                height,
+                &pixel_path,
+                &drainage_per_point,
+                global_max_drainage,
+                max_half_width,
                 min_half_width,
             );
         }
@@ -1183,81 +1320,84 @@ pub fn rasterize_from_network(
     network: &RiverNetwork,
     world_x: f64, world_y: f64, world_size: f64,
     output_size: usize,
-    lod_drainage_threshold: u32,
+    _lod_drainage_threshold: u32,
 ) -> Vec<f64> {
     let mut grid = vec![0.0f64; output_size * output_size];
-
-    let margin = 2.0;
-    let constraints = network.query_chunk(
-        world_x - margin, world_y - margin,
-        world_x + world_size + margin, world_y + world_size + margin,
-        lod_drainage_threshold,
-    );
-    if constraints.is_empty() { return grid; }
+    if network.chains.is_empty() {
+        return grid;
+    }
 
     let global_max = network.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
     let scale = output_size as f64 / world_size;
     let pixels_per_wu = scale;
+    let target_spacing = 0.08 / pixels_per_wu.max(0.0001);
 
-    for constraint in &constraints {
-        if !constraint.character.is_visible_channel() { continue; }
+    // Iterate chains (not individual segments). Each chain is a continuous
+    // headwater→mouth path. Check if ANY point falls near this tile; if so,
+    // render the entire chain (pixel clipping handles the rest). This
+    // produces connected river visuals across tile boundaries.
+    let margin = 4.0;
+    let tile_min_x = world_x - margin;
+    let tile_max_x = world_x + world_size + margin;
+    let tile_min_y = world_y - margin;
+    let tile_max_y = world_y + world_size + margin;
 
-        // Target ~0.25 px between Chaikin output points. D8 flow paths land at
-        // ~1 wu spacing (one per integer cell), so at meso scale (8 px/wu)
-        // `max_len/target = 1/(0.25/8) = 32 → 5 passes`. Gives a visually
-        // smooth curve instead of hard-edged straight line segments between
-        // original control points (which the solid-line rasterizer exposes).
-        let target_spacing = 0.08 / pixels_per_wu.max(0.0001);
-        // Unwrap x-coords so wrap-crossing segments don't linearly interpolate
-        // across the full world. World width hardcoded as 1024.
-        let unwrapped = unwrap_path_x(&constraint.path, 1024.0);
-        let subdivided = subdivide_to_spacing(&unwrapped, target_spacing);
+    for chain in &network.chains {
+        if chain.path.len() < 2 {
+            continue;
+        }
+        // Quick bbox reject: check if any chain point is near the tile.
+        let hits_tile = chain.path.iter().any(|&(wx, wy)| {
+            wx >= tile_min_x && wx <= tile_max_x && wy >= tile_min_y && wy <= tile_max_y
+        });
+        if !hits_tile {
+            continue;
+        }
 
-        // Apply meander on world coordinates. Amplitude is tuned for the
-        // runtime scale: a 1-wu chunk at 512 px/wu can only sensibly show
-        // ~0.1-0.5 wu of perpendicular displacement before the river wanders
-        // outside the chunk. Macro uses a separate, larger amplitude in
-        // `to_flow_grid` — the two render contexts deliberately show slightly
-        // different curves because their zoom levels need different scales
-        // of meander to read as "curved".
-        let world_half_raw = strahler_world_half_width(constraint.strahler_order)
-            * constraint.character.width_multiplier();
+        let unwrapped = unwrap_path_x(&chain.path, 1024.0);
+        let smoothed = subdivide_to_spacing(&unwrapped, target_spacing);
+        if smoothed.len() < 2 {
+            continue;
+        }
+
+        // Runtime meander: small amplitude so rivers stay within chunk view.
+        let world_half_raw = strahler_world_half_width(chain.max_strahler)
+            * chain.character.width_multiplier();
         let meander_amplitude = 0.12 + world_half_raw * 0.6;
-        let meandered = meander_path(&subdivided, meander_amplitude);
+        let meandered = meander_path(&smoothed, meander_amplitude);
 
         let pixel_path: Vec<(f64, f64)> = meandered
             .iter()
             .map(|&(wx, wy)| ((wx - world_x) * scale, (wy - world_y) * scale))
             .collect();
-        if pixel_path.len() < 2 { continue; }
+        if pixel_path.len() < 2 {
+            continue;
+        }
 
-
-        // Per-point drainage lerp: upstream head → downstream foot. Same as
-        // `to_flow_grid`; gives visible mouth-ward widening within each
-        // segment at runtime scale.
-        let upstream_drainage = network.upstream_drainage_for(constraint.segment_index) as f64;
-        let segment_drainage = constraint.drainage_area as f64;
+        // Interpolate chain's per-point drainage to smoothed path length.
         let n = pixel_path.len();
-        let denom = (n - 1).max(1) as f64;
+        let orig_n = chain.drainage_per_point.len();
         let drainage_per_point: Vec<u32> = (0..n)
             .map(|i| {
-                let t = i as f64 / denom;
-                (upstream_drainage + (segment_drainage - upstream_drainage) * t) as u32
+                let t = i as f64 / (n - 1).max(1) as f64;
+                let src = (t * (orig_n - 1).max(1) as f64) as usize;
+                chain.drainage_per_point[src.min(orig_n - 1)]
             })
             .collect();
-        // Use the same Strahler-order width as `to_flow_grid`. Both paths now
-        // converge on the same physical river width — only the rendering
-        // resolution differs. This is what makes runtime chunks match the
-        // macromap visual at the same world coord.
-        let world_half = world_half_raw;
-        let max_half_width = (world_half * pixels_per_wu)
+
+        let max_half_width = (world_half_raw * pixels_per_wu)
             .clamp(TILE_RIVER_MIN_HALF_WIDTH_PX, TILE_RIVER_MAX_HALF_WIDTH_PX);
-        let min_half_width = max_half_width * 0.55;
+        let min_half_width = (max_half_width * 0.3).clamp(TILE_RIVER_MIN_HALF_WIDTH_PX * 0.5, max_half_width);
 
         rasterise_smooth_line_with_min(
-            &mut grid, output_size, output_size,
-            &pixel_path, &drainage_per_point,
-            global_max, max_half_width, min_half_width,
+            &mut grid,
+            output_size,
+            output_size,
+            &pixel_path,
+            &drainage_per_point,
+            global_max,
+            max_half_width,
+            min_half_width,
         );
     }
     grid
