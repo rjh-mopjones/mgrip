@@ -47,28 +47,9 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
             let biome = map.biomes[idx];
 
             let [r, g, b] = if is_water_biome(biome) && cont < SEA_LEVEL {
-                let mut ocean_pixel = render_ocean(
-                    biome,
-                    cont,
-                    map.light_level[idx],
-                    map.temperature[idx],
-                );
-                // River-into-ocean confluence: where a river segment runs into
-                // an ocean cell, blend the river corridor color over the ocean
-                // pixel so the river visibly meets the sea instead of stopping
-                // at the shoreline. Strength scales with the river field so
-                // only true mouths show through.
-                let river_here = map.rivers[idx];
-                if river_here > 0.02 {
-                    let river_col = solid_river_color(
-                        map.temperature[idx],
-                        map.light_level[idx],
-                        map.aridity[idx],
-                    );
-                    let blend = (river_here / 0.5).clamp(0.0, 1.0) * 0.7;
-                    ocean_pixel = lerp_rgb(ocean_pixel, river_col, blend);
-                }
-                ocean_pixel
+                // Per CLAUDE.md river invariants: no rivers rendered in ocean
+                // cells. River stops at coastline; ocean handles the rest.
+                render_ocean(biome, cont, map.light_level[idx], map.temperature[idx])
             } else if biome == TileType::River {
                 // River biome cells are surface water — render the corridor
                 // colour solid instead of blending it over land tinting. This

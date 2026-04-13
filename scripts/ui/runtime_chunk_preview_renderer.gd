@@ -184,23 +184,19 @@ func _build_chunk_map_image(
 					if rv > peak_river:
 						peak_river = rv
 						peak_index = bi
+			# Per CLAUDE.md: no rivers in ocean cells. River stops at coastline.
 			if peak_river > 0.005:
 				var is_ocean_cell := peak_index < fluid_mask.size() and fluid_mask[peak_index] != 0
-				var arid := 0.0 if peak_index >= aridity.size() else float(aridity[peak_index]) / 255.0
-				var temp := 0.0 if peak_index >= temperature.size() else float(temperature[peak_index]) / 255.0 * 150.0 - 50.0
-				var light := 0.0 if peak_index >= light_level.size() else float(light_level[peak_index]) / 255.0
-				var river_color := _solid_river_color(temp, light, arid)
-				if is_ocean_cell:
-					# Confluence: tint the ocean cell toward the river color
-					# so the river visibly enters the sea. Mirror terrain_render
-					# behaviour so macro and runtime show the same mouth.
-					var blend := clampf(peak_river / 0.5, 0.0, 1.0) * 0.7
-					color = color.lerp(river_color, blend)
-				elif peak_river >= 0.05:
-					color = river_color
-				else:
-					var t := clampf(peak_river / 0.05, 0.0, 1.0)
-					color = color.lerp(river_color, t)
+				if not is_ocean_cell:
+					var arid := 0.0 if peak_index >= aridity.size() else float(aridity[peak_index]) / 255.0
+					var temp := 0.0 if peak_index >= temperature.size() else float(temperature[peak_index]) / 255.0 * 150.0 - 50.0
+					var light := 0.0 if peak_index >= light_level.size() else float(light_level[peak_index]) / 255.0
+					var river_color := _solid_river_color(temp, light, arid)
+					if peak_river >= 0.05:
+						color = river_color
+					else:
+						var t := clampf(peak_river / 0.05, 0.0, 1.0)
+						color = color.lerp(river_color, t)
 			image.set_pixel(px, py, color)
 	return image
 

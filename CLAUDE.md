@@ -89,7 +89,19 @@ Build on these seams. Do not create parallel ownership paths.
 - South/day = hot and harsh, North/night = frozen and dark
 - Temperature derives from light level and altitude, not Earth-like latitude
 - No green vegetation palette anywhere — if it looks Earth-green, it's wrong
-- Dayside liquid water should not behave like normal Earth oceans
+- Dayside liquid water evaporates — not normal Earth rivers or oceans
+
+## River invariants
+
+- Rivers only form where precipitation exceeds evaporation — the terminus band
+- No surface rivers on deep dayside (water evaporates) or deep nightside (frozen solid)
+- No frozen rivers, no desert rivers — only liquid surface water in the habitable terminus
+- Every river must flow into a body of water (the sea) — no rivers ending mid-land
+- Rivers widen downstream as tributaries merge — headwaters thin, mouth wide
+- Rivers cannot be wider than two chunks (2 world units)
+- Rivers follow terrain — they sit in valleys, not painted on flat ground
+- Rivers form dendritic drainage networks — tributaries branch and merge into trunk systems
+- No rivers rendered in ocean cells — river stops at coastline
 
 ## Git
 

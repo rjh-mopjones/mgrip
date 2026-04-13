@@ -57,7 +57,9 @@ const MAX_RIVER_WORLD_HALF_WIDTH: f64 = 4.0;
 // scaling, doubling macro resolution halves visible river width — the exact
 // bug that made rivers vanish after the res bump.
 const FLOW_GRID_MIN_HALF_WIDTH_WU: f64 = 1.0;
-const FLOW_GRID_MAX_HALF_WIDTH_WU: f64 = 18.0;
+// Per CLAUDE.md river invariants: rivers cannot be wider than 2 chunks (2 wu).
+// Half-width = 1.0 wu → diameter = 2.0 wu = 2 chunks.
+const FLOW_GRID_MAX_HALF_WIDTH_WU: f64 = 1.0;
 // Runtime tile rasterization is at any pixels-per-wu. Min kept small so
 // trickles look like trickles; max caps mains at ~20% of chunk width so
 // rivers don't swallow entire 1×1 runtime tiles.
@@ -76,19 +78,18 @@ fn macro_strahler_half_width_wu(strahler: u32) -> f64 {
     // The 20× ratio between S1 and S7+ makes the trunk rivers
     // dramatically wider than tributaries — readable as a real drainage
     // hierarchy from orbit.
-    // S3-S4 are thin tributary lines that provide branching texture.
-    // S5+ are the visible mainstems. The jump at S5 is intentionally
-    // large so mainstems read as clearly different features from
-    // tributaries, not just slightly wider versions.
+    // Per CLAUDE.md: rivers max 2 chunks wide (half-width max 1.0 wu).
+    // Table spans 0.08 (hairline headwater) to 1.0 (max mainstem).
+    // ~12× ratio between S1 and S8 for visible hierarchy.
     match strahler.max(1) {
-        1 => 0.5,
-        2 => 0.7,
-        3 => 1.0,
-        4 => 1.5,
-        5 => 3.5,
-        6 => 6.0,
-        7 => 10.0,
-        _ => 15.0,
+        1 => 0.08,
+        2 => 0.12,
+        3 => 0.18,
+        4 => 0.28,
+        5 => 0.42,
+        6 => 0.60,
+        7 => 0.80,
+        _ => 1.00,
     }
 }
 
@@ -226,16 +227,13 @@ impl RiverCharacter {
     }
 
     fn is_visible_channel(&self) -> bool {
-        // Only surface-water channels render. DryWadi (substellar dayside:
-        // too hot for surface water — dry geological channels only) and
-        // BuriedIce (deep nightside: frozen underground drainage) are real
-        // drainage features in the network but should not paint surface
-        // water on the macromap or runtime chunks.
+        // Only liquid surface water in the habitable terminus renders.
+        // No frozen rivers (nightside), no desert rivers (dayside), no
+        // buried ice. Per river invariants in CLAUDE.md.
         matches!(
             self,
             RiverCharacter::SeasonalFlow
                 | RiverCharacter::Permanent
-                | RiverCharacter::Frozen
         )
     }
 

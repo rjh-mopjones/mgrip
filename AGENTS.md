@@ -128,10 +128,24 @@ biomes, visuals, or worldgen logic:
   latitude noise.
 - No green vegetation palette anywhere. If output looks Earth-green, it is
   wrong.
-- Dayside liquid surface water should not behave like a normal Earth world.
+- Dayside liquid water evaporates — not normal Earth rivers or oceans.
 
 If a terrain or biome change makes the world look generic-Earth, assume it is
 wrong until proven otherwise.
+
+### River invariants
+
+- Rivers only form where precipitation exceeds evaporation — the terminus band.
+- No surface rivers on deep dayside (water evaporates) or deep nightside (frozen).
+- No frozen rivers, no desert rivers — only liquid surface water in the habitable
+  terminus.
+- Every river must flow into a body of water (the sea) — no rivers ending mid-land.
+- Rivers widen downstream as tributaries merge — headwaters thin, mouth wide.
+- Rivers cannot be wider than two chunks (2 world units).
+- Rivers follow terrain — they sit in valleys, not painted on flat ground.
+- Rivers form dendritic drainage networks — tributaries branch and merge into
+  trunk systems.
+- No rivers rendered in ocean cells — river stops at coastline.
 
 ## Macro Map and Compare Notes
 
