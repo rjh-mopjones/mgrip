@@ -127,11 +127,14 @@ fn meander_path(path: &[(f64, f64)], amplitude_wu: f64) -> Vec<(f64, f64)> {
         // Left-hand normal (perpendicular to tangent).
         let nx = -dy / len;
         let ny = dx / len;
-        // Low-frequency noise at world coord — shared meander surface.
-        // Frequency 0.07 = ~14 wu wavelength. At typical map selector zoom
-        // showing ~30 wu, this produces 2-3 visible meander cycles — enough
-        // to read as "meandering" rather than "one gentle curve".
-        let noise_value = noise.get([wx * 0.07, wy * 0.07]);
+        // Two-harmonic meander: low-freq sweep + high-freq wiggle.
+        // Low freq (0.05) = ~20 wu wavelength → broad bends.
+        // High freq (0.18) = ~5.5 wu wavelength → short wiggles that break
+        // up the D8 staircase pattern. Second harmonic at 40% strength so
+        // it adds texture without dominating the sweep.
+        let low = noise.get([wx * 0.05, wy * 0.05]);
+        let high = noise.get([wx * 0.18 + 100.0, wy * 0.18 + 100.0]);
+        let noise_value = low + high * 0.4;
         // Taper at endpoints so confluences stay anchored.
         let from_start = i.min(endpoint_taper) as f64 / endpoint_taper as f64;
         let from_end = (n - 1 - i).min(endpoint_taper) as f64 / endpoint_taper as f64;
@@ -1117,7 +1120,6 @@ fn build_river_tree(
             + (last.0 * px_to_wx.recip()) as usize;
         cur_idx = cur_idx.min(width * height - 1);
         let mut bridge_path: Vec<(f64, f64)> = Vec::new();
-        let mut found_downstream = false;
 
         for _ in 0..width.max(height) {
             if flow_dir[cur_idx] == NO_FLOW { break; }
@@ -1132,7 +1134,6 @@ fn build_river_tree(
             if let Some(ds) = segment_id_at[next] {
                 if ds != i {
                     segments[i].downstream = Some(ds);
-                    found_downstream = true;
                 }
                 break;
             }
