@@ -183,8 +183,13 @@ fn strahler_world_half_width(strahler_order: u32) -> f64 {
 // trickles feeding into Strahler-2 confluences; with the old ratio 0.00012
 // at 1024×512 the effective floor was ~63 cells which filtered out the
 // fine-branching texture entirely.
-const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00004;
-const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 4.0;
+// Channel initiation threshold — minimum catchment area (in cells) before
+// a drainage path becomes a named river segment. Low values (4-8) create
+// thousands of tiny S1-S2 segments that look like noise. Higher values
+// (20+) produce fewer, cleaner channels where real catchment convergence
+// has occurred — actual rivers, not every hillside trickle.
+const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00008;
+const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 20.0;
 
 // ─── River Character ────────────────────────────────────────────────────────
 
@@ -470,7 +475,39 @@ impl RiverNetwork {
         );
 
         // Step 3: Flow accumulation
-        let accumulation = compute_flow_accumulation(&flow_dir, &filled, width, height);
+        let mut accumulation = compute_flow_accumulation(&flow_dir, &filled, width, height);
+
+        // Step 3.5: Climate-weighted accumulation.
+        //
+        // On a tidally locked world, precipitation peaks at the terminus
+        // (moderate light_level ~0.3-0.6) where warm dayside air meets cold
+        // nightside air. Deep dayside (light > 0.8) evaporates all surface
+        // water. Deep nightside (light < 0.1) is frozen solid.
+        //
+        // Scale each cell's accumulated drainage by a "precipitation
+        // effectiveness" factor so that drainage paths through dry/frozen
+        // zones contribute less flow. This naturally reduces river formation
+        // outside the terminus band without hard climate-zone cutoffs.
+        for idx in 0..total {
+            let light = light_level.get(idx).copied().unwrap_or(0.5);
+            let precip_effectiveness = if light < 0.08 {
+                // Deep nightside: frozen, minimal meltwater
+                0.05
+            } else if light < 0.20 {
+                // Outer nightside: some seasonal melt
+                0.15 + (light - 0.08) / 0.12 * 0.35
+            } else if light < 0.70 {
+                // Terminus band: full precipitation
+                1.0
+            } else if light < 0.85 {
+                // Dayside margin: evaporation reduces effectiveness
+                1.0 - (light - 0.70) / 0.15 * 0.7
+            } else {
+                // Deep dayside: nearly all water evaporates
+                0.08
+            };
+            accumulation[idx] = (accumulation[idx] as f64 * precip_effectiveness) as u32;
+        }
 
         // Step 4: Build river tree
         let min_accumulation =
@@ -898,7 +935,13 @@ fn condition_heightmap_for_drainage(
 ) -> Vec<f64> {
     let total = width * height;
     let smoothed = box_blur(heightmap, width, height, 48);
-    let blend = 0.80;
+    // Blend factor: how much of the box-blurred heightmap to use for
+    // drainage conditioning. Lower = more local relief preserved = more
+    // varied D8 flow directions = rivers follow terrain features instead
+    // of taking the straightest path downhill. 0.50 (was 0.80) keeps
+    // enough smoothing to prevent noise-driven fragmentation while letting
+    // valleys and ridges guide drainage.
+    let blend = 0.50;
     let mut conditioned = Vec::with_capacity(total);
     for idx in 0..total {
         conditioned.push(heightmap[idx] * (1.0 - blend) + smoothed[idx] * blend);
