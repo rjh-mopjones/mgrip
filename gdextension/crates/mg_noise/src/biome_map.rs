@@ -730,19 +730,29 @@ impl BiomeMap {
             }
         }
 
-        // Project the global river network into this tile at the requested LOD threshold.
-        self.rivers = rasterize_to_tile(
-            river_network,
-            tile_w,
-            tile_h,
-            origin_x,
-            origin_y,
-            world_size_x,
-            world_size_y,
-            self.world_width,
-            self.world_height,
-            river_threshold as f64,
-        );
+        // Sample rivers from the GLOBAL macro flow grid instead of per-tile
+        // chain rasterisation. Uses NEAREST-NEIGHBOR (not bilinear) to preserve
+        // crisp river edges. Bilinear smears the solid-line output across wide
+        // areas, triggering the river > 0.02 threshold far from actual channels.
+        if !macro_map.rivers.is_empty() {
+            let macro_w = macro_map.width;
+            let macro_h = macro_map.height;
+            for py in 0..tile_h {
+                for px in 0..tile_w {
+                    let idx = py * tile_w + px;
+                    let wx = origin_x + (px as f64 + 0.5) * world_size_x / tile_w as f64;
+                    let wy = origin_y + (py as f64 + 0.5) * world_size_y / tile_h as f64;
+                    let wrapped_x = crate::wrap::wrap_x(wx, macro_map.world_width);
+                    let mpx = ((wrapped_x / macro_map.world_width * macro_w as f64) as usize)
+                        .min(macro_w - 1);
+                    let mpy = ((wy.clamp(0.0, macro_map.world_height)
+                        / macro_map.world_height
+                        * macro_h as f64) as usize)
+                        .min(macro_h - 1);
+                    self.rivers[idx] = macro_map.rivers[mpy * macro_w + mpx];
+                }
+            }
+        }
 
         // Secondary derives that depend on rivers.
         for i in 0..tile_w * tile_h {

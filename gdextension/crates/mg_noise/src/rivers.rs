@@ -57,7 +57,7 @@ const MAX_RIVER_WORLD_HALF_WIDTH: f64 = 4.0;
 // scaling, doubling macro resolution halves visible river width — the exact
 // bug that made rivers vanish after the res bump.
 const FLOW_GRID_MIN_HALF_WIDTH_WU: f64 = 1.0;
-const FLOW_GRID_MAX_HALF_WIDTH_WU: f64 = 14.0;
+const FLOW_GRID_MAX_HALF_WIDTH_WU: f64 = 16.0;
 // Runtime tile rasterization is at any pixels-per-wu. Min kept small so
 // trickles look like trickles; max caps mains at ~20% of chunk width so
 // rivers don't swallow entire 1×1 runtime tiles.
@@ -70,14 +70,20 @@ const TILE_RIVER_MAX_HALF_WIDTH_PX: f64 = 56.0;
 /// width is resolution-independent. At 1 px/wu these are 1–13 px; at 2 px/wu
 /// they're 2–26 px. The hierarchy stays visible at any macro resolution.
 fn macro_strahler_half_width_wu(strahler: u32) -> f64 {
+    // Exponential progression: each order ~1.6× wider than previous.
+    // S1 headwater trickle = 1.4 wu (barely visible at full map zoom).
+    // S7 mainstem = 30 wu (clearly visible at full planet view).
+    // The 20× ratio between S1 and S7+ makes the trunk rivers
+    // dramatically wider than tributaries — readable as a real drainage
+    // hierarchy from orbit.
     match strahler.max(1) {
-        1 => 1.4,
-        2 => 2.2,
-        3 => 3.2,
-        4 => 4.5,
-        5 => 6.0,
-        6 => 8.0,
-        7 => 11.0,
+        1 => 0.8,
+        2 => 1.2,
+        3 => 1.8,
+        4 => 2.8,
+        5 => 4.5,
+        6 => 7.0,
+        7 => 10.0,
         _ => 14.0,
     }
 }
@@ -173,8 +179,8 @@ fn strahler_world_half_width(strahler_order: u32) -> f64 {
 // trickles feeding into Strahler-2 confluences; with the old ratio 0.00012
 // at 1024×512 the effective floor was ~63 cells which filtered out the
 // fine-branching texture entirely.
-const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.000015;
-const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 2.0;
+const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00008;
+const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 8.0;
 
 // ─── River Character ────────────────────────────────────────────────────────
 
@@ -659,6 +665,15 @@ impl RiverNetwork {
 
         for chain in &chains {
             if chain.path.len() < 2 {
+                continue;
+            }
+            // Only render chains with max Strahler >= 3 on the macro flow grid.
+            // S1-S2 headwater trickles are too numerous and cover too much area
+            // at the macro grid resolution (1024×512) — they flood the terminus
+            // band with blue. They still exist in the chain data for runtime
+            // chunk rendering where the higher pixel resolution can distinguish
+            // them.
+            if chain.max_strahler < 3 {
                 continue;
             }
             let unwrapped = unwrap_path_x(&chain.path, 1024.0);
