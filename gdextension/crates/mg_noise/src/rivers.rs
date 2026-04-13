@@ -531,6 +531,28 @@ impl RiverNetwork {
         let spatial_index = build_spatial_index(&segments);
         let chains = build_river_chains(&segments);
 
+        // Chain diagnostics
+        {
+            let total_chains = chains.len();
+            let avg_len = if total_chains > 0 {
+                chains.iter().map(|c| c.path.len()).sum::<usize>() / total_chains
+            } else { 0 };
+            let max_len = chains.iter().map(|c| c.path.len()).max().unwrap_or(0);
+            let long_chains = chains.iter().filter(|c| c.path.len() > 20).count();
+            // Check how many chains end near an ocean cell (last point near sea_level)
+            let reaches_ocean = chains.iter().filter(|c| {
+                if let Some(&(lx, ly)) = c.path.last() {
+                    let px = ((lx / 1024.0 * width as f64) as usize).min(width - 1);
+                    let py = ((ly / 512.0 * height as f64) as usize).min(height - 1);
+                    continentalness.get(py * width + px).copied().unwrap_or(0.0) <= sea_level
+                } else { false }
+            }).count();
+            eprintln!(
+                "[chains] {} chains, avg_pts={avg_len}, max_pts={max_len}, long(>20)={long_chains}, reaches_ocean={reaches_ocean}/{}",
+                total_chains, total_chains
+            );
+        }
+
         Self { segments, spatial_index, chains, width, height }
     }
 
@@ -1084,20 +1106,71 @@ fn build_river_tree(
         });
     }
 
-    // Link segments downstream
+    // Link segments downstream. When the immediate next cell has no segment
+    // (drainage below min_accumulation), walk D8 flow until finding one or
+    // reaching ocean. This bridges the gap between a river segment and its
+    // downstream neighbor, adding the intermediate low-drainage cells to the
+    // segment's path so chains run unbroken to ocean.
     for i in 0..segments.len() {
         let last = *segments[i].path.last().unwrap();
-        let last_idx = last.1 as usize * width + last.0 as usize;
-        if flow_dir[last_idx] == NO_FLOW { continue; }
-        let x = last_idx % width;
-        let y = last_idx / width;
-        let (dx, dy) = D8_OFFSETS[flow_dir[last_idx] as usize];
-        let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
-        let ny = y as i32 + dy;
-        if ny < 0 || ny >= height as i32 { continue; }
-        let next_idx = ny as usize * width + nx;
-        if let Some(ds) = segment_id_at[next_idx] {
-            if ds != i { segments[i].downstream = Some(ds); }
+        let mut cur_idx = (last.1 * px_to_wy.recip()) as usize * width
+            + (last.0 * px_to_wx.recip()) as usize;
+        cur_idx = cur_idx.min(width * height - 1);
+        let mut bridge_path: Vec<(f64, f64)> = Vec::new();
+        let mut found_downstream = false;
+
+        for _ in 0..width.max(height) {
+            if flow_dir[cur_idx] == NO_FLOW { break; }
+            let x = cur_idx % width;
+            let y = cur_idx / width;
+            let (dx, dy) = D8_OFFSETS[flow_dir[cur_idx] as usize];
+            let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
+            let ny = y as i32 + dy;
+            if ny < 0 || ny >= height as i32 { break; }
+            let next = ny as usize * width + nx;
+
+            if let Some(ds) = segment_id_at[next] {
+                if ds != i {
+                    segments[i].downstream = Some(ds);
+                    found_downstream = true;
+                }
+                break;
+            }
+            // When we reach ocean, extend 5 cells INTO the water so the river
+            // visually overlaps with the ocean render. A single cell wasn't
+            // enough — the river mouth needs to extend into the ocean far
+            // enough that the confluence overlay in terrain_render paints a
+            // visible estuary/mouth where river meets sea.
+            if continentalness.get(next).copied().unwrap_or(0.0) <= sea_level {
+                bridge_path.push((nx as f64 * px_to_wx, (ny as usize) as f64 * px_to_wy));
+                // Walk a few more cells into ocean
+                let mut ocean_cur = next;
+                for _ in 0..5 {
+                    if flow_dir[ocean_cur] == NO_FLOW { break; }
+                    let ox = ocean_cur % width;
+                    let oy = ocean_cur / width;
+                    let (odx, ody) = D8_OFFSETS[flow_dir[ocean_cur] as usize];
+                    let onx = crate::wrap::wrap_grid_x(ox as i32 + odx, width) as usize;
+                    let ony = oy as i32 + ody;
+                    if ony < 0 || ony >= height as i32 { break; }
+                    ocean_cur = ony as usize * width + onx;
+                    bridge_path.push((onx as f64 * px_to_wx, (ony as usize) as f64 * px_to_wy));
+                }
+                break;
+            }
+            // Add bridge cell to this segment's path
+            bridge_path.push((nx as f64 * px_to_wx, (ny as usize) as f64 * px_to_wy));
+            segment_id_at[next] = Some(i);
+            cur_idx = next;
+        }
+
+        if !bridge_path.is_empty() {
+            segments[i].path.extend(bridge_path);
+            // Update drainage at the new endpoint
+            let new_last = cur_idx;
+            if let Some(&acc) = accumulation.get(new_last) {
+                segments[i].drainage_area = segments[i].drainage_area.max(acc);
+            }
         }
     }
 

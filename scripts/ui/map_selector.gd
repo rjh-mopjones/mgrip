@@ -432,7 +432,7 @@ func _run_capture_probe(capture_dir: String) -> void:
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_mode_entered.png"))
 
-	_open_compare_view(Vector2i(400, 160))  # coastal position — river mouth
+	_open_compare_view(Vector2i(440, 220))  # user's default spawn area
 	await get_tree().process_frame
 	_save_viewport_capture(capture_dir.path_join("compare_opened.png"))
 
