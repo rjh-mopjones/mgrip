@@ -306,29 +306,28 @@ pub fn build_river_chains(segments: &[RiverSegment]) -> Vec<RiverChain> {
             let s = &segments[current];
             max_strahler = max_strahler.max(s.strahler_order);
 
-            // Only append PATH for visible segments. Non-visible segments
-            // (DryWadi/BuriedIce in dayside/nightside) are skipped visually
-            // but the chain KEEPS WALKING downstream so it can reach ocean
-            // through any non-visible zone rather than stopping mid-land.
-            if s.character.is_visible_channel() {
-                let upstream_drain = s
-                    .upstream
-                    .iter()
-                    .filter_map(|&uid| segments.get(uid))
-                    .map(|u| u.drainage_area)
-                    .max()
-                    .unwrap_or(0);
+            // Include ALL segments' paths regardless of character visibility.
+            // Previous versions skipped DryWadi/BuriedIce which cut chains
+            // before they reached ocean — rivers ended mid-land. Now every
+            // chain runs unbroken from headwater to sea. All rivers render
+            // as solid blue (grey corridor color was removed earlier).
+            let upstream_drain = s
+                .upstream
+                .iter()
+                .filter_map(|&uid| segments.get(uid))
+                .map(|u| u.drainage_area)
+                .max()
+                .unwrap_or(0);
 
-                let n = s.path.len();
-                for (i, &pt) in s.path.iter().enumerate() {
-                    let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 1.0 };
-                    let d = upstream_drain as f64
-                        + (s.drainage_area as f64 - upstream_drain as f64) * t;
-                    path.push(pt);
-                    drainage_per_point.push(d as u32);
-                }
-                last_drainage = s.drainage_area;
+            let n = s.path.len();
+            for (i, &pt) in s.path.iter().enumerate() {
+                let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 1.0 };
+                let d = upstream_drain as f64
+                    + (s.drainage_area as f64 - upstream_drain as f64) * t;
+                path.push(pt);
+                drainage_per_point.push(d as u32);
             }
+            last_drainage = s.drainage_area;
 
             match s.downstream {
                 Some(ds) if ds < segments.len() => {
@@ -650,7 +649,12 @@ impl RiverNetwork {
                 * pixels_per_wu)
                 .clamp(min_px, max_px);
             let half_width_wu = max_half_width / pixels_per_wu;
-            let meander_amplitude = 6.0 + half_width_wu * 2.0;
+            // Aggressive meander: base 10 wu + 3× river width. For S1 tribs
+            // (hw=1.4 wu): 14 wu amplitude = 14 px at 1 px/wu. The D8
+            // staircase step is 1 wu = 1 px. 14× displacement >> step →
+            // meander visually dominates the staircase. For S7 mains
+            // (hw=11 wu): 43 wu amplitude = big sweeping curves.
+            let meander_amplitude = 10.0 + half_width_wu * 3.0;
             let smoothed = meander_path(&smoothed, meander_amplitude);
 
             // Interpolate drainage_per_point to match smoothed path length.
@@ -1337,7 +1341,7 @@ pub fn rasterize_from_network(
         // Runtime meander: small amplitude so rivers stay within chunk view.
         let world_half_raw = strahler_world_half_width(chain.max_strahler)
             * chain.character.width_multiplier();
-        let meander_amplitude = 0.12 + world_half_raw * 0.6;
+        let meander_amplitude = 0.3 + world_half_raw * 1.5;
         let meandered = meander_path(&smoothed, meander_amplitude);
 
         let pixel_path: Vec<(f64, f64)> = meandered
