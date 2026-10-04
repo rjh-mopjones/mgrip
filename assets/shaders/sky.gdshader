@@ -38,15 +38,16 @@ float star_field(vec3 dir) {
 	return brightness * (0.5 + 0.5 * vary) * smoothstep(0.15, 0.55, night_blend);
 }
 
-float aurora(vec3 dir) {
+// TIME is passed in: the Compatibility renderer only exposes it inside sky().
+float aurora(vec3 dir, float time) {
 	if (dir.y < 0.04) return 0.0;
 	// bias toward nightside (-Z on Margin)
 	float north_factor = smoothstep(0.25, -0.45, dir.z);
 	float lat = dir.y;
 	float lon = atan(dir.x, dir.z);
 	// two layered waves; abs() avoids hard cutoff edges
-	float wave = abs(sin(lon * 3.1 + TIME * 0.27) * sin(lon * 7.3 - TIME * 0.11));
-	wave += 0.35 * abs(sin(lon * 5.0 - TIME * 0.18) * sin(lon * 2.1 + TIME * 0.09));
+	float wave = abs(sin(lon * 3.1 + time * 0.27) * sin(lon * 7.3 - time * 0.11));
+	wave += 0.35 * abs(sin(lon * 5.0 - time * 0.18) * sin(lon * 2.1 + time * 0.09));
 	float curtain = smoothstep(0.04, 0.40, lat) * smoothstep(0.88, 0.42, lat);
 	return wave * curtain * north_factor;
 }
@@ -88,7 +89,7 @@ void sky() {
 	sky_col += vec3(stars * 0.9);
 
 	// Aurora curtains — nightside only, scaled by aurora_intensity
-	float aur = aurora(EYEDIR);
+	float aur = aurora(EYEDIR, TIME);
 	float slow_wave = sin(EYEDIR.x * 4.2 + TIME * 0.06) * 0.5 + 0.5;
 	vec3 aur_col = mix(aurora_colour_a, aurora_colour_b, slow_wave);
 	sky_col += aur_col * aur * aurora_intensity * 0.6;
