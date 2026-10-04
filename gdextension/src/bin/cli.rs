@@ -134,6 +134,17 @@ enum GenerateKind {
 
 #[derive(Subcommand)]
 enum InspectKind {
+    /// Compare a runtime chunk's east and south border heights with the
+    /// neighbouring chunks' matching borders. They share the same world
+    /// positions, so any difference is a step in the terrain at the chunk seam
+    ChunkSeam {
+        /// World seed
+        seed: u32,
+        /// Chunk X
+        chunk_x: u32,
+        /// Chunk Y
+        chunk_y: u32,
+    },
     /// Print value percentiles of each macro layer over land cells, for
     /// calibrating formulas that read those layers
     LayerStats {
@@ -246,6 +257,11 @@ fn main() {
             } => run_generate_level(&layers_tag, x, y, &level_tag),
         },
         Commands::Inspect { kind } => match kind {
+            InspectKind::ChunkSeam {
+                seed,
+                chunk_x,
+                chunk_y,
+            } => run_inspect_chunk_seam(seed, chunk_x, chunk_y),
             InspectKind::LayerStats { layers_tag } => run_inspect_layer_stats(&layers_tag),
             InspectKind::LevelPresentation { level_tag } => {
                 run_inspect_level_presentation(&level_tag)
@@ -905,6 +921,80 @@ fn run_inspect_chunk_presentation(
 
 /// Discover the newest named layer image across all layers artifacts, mirroring the
 /// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
+// ─── inspect chunk-seam ──────────────────────────────────────────────────────
+
+/// Blocks of height per unit of heightmap (`VoxelMeshBuilder.HEIGHT_SCALE`).
+const SEAM_HEIGHT_SCALE: f64 = 200.0;
+
+/// A chunk as the native runtime builds it: generated, then anchored to the
+/// newest layers artifact (ocean mask and river carving).
+fn generate_anchored_runtime_chunk(
+    seed: u32,
+    world_x: f64,
+    world_y: f64,
+    macro_map: &BiomeMap,
+    river_network: &RiverNetwork,
+) -> BiomeMap {
+    let mut map = generate_runtime_micro_map(seed, world_x, world_y);
+    map.anchor_to_macro(
+        macro_map,
+        river_network,
+        seed,
+        world_x,
+        world_y,
+        MICRO_CHUNK_WORLD_SIZE,
+        MICRO_CHUNK_WORLD_SIZE,
+        mg_noise::LOD_THRESHOLD_MICRO,
+        0.2,
+        true,
+    );
+    map
+}
+
+fn run_inspect_chunk_seam(seed: u32, chunk_x: u32, chunk_y: u32) {
+    let store = ArtifactStore::new().unwrap_or_else(|e| {
+        eprintln!("error: artifact store: {e}");
+        std::process::exit(1);
+    });
+    let Some((tag, ..)) = find_newest_layer_image(&store, "macromap.png") else {
+        eprintln!("error: no layers artifact found; the runtime anchors chunks to one");
+        std::process::exit(1);
+    };
+    let (macro_map, river_network) = store.load_layers_data(&tag).unwrap_or_else(|e| {
+        eprintln!("error: could not load layers data for '{tag}': {e}");
+        std::process::exit(1);
+    });
+    let chunk = |x: f64, y: f64| generate_anchored_runtime_chunk(seed, x, y, &macro_map, &river_network);
+
+    let (x, y) = (chunk_x as f64, chunk_y as f64);
+    let here = chunk(x, y);
+    let east = chunk(x + 1.0, y);
+    let south = chunk(x, y + 1.0);
+    let (w, h) = (here.width, here.height);
+    let blocks = |map: &BiomeMap, column: usize, row: usize| {
+        (map.heightmap[row * w + column] * SEAM_HEIGHT_SCALE).floor()
+    };
+
+    let report = |label: &str, steps: Vec<f64>| {
+        let mismatched = steps.iter().filter(|&&step| step != 0.0).count();
+        let blocking = steps.iter().filter(|&&step| step.abs() >= 2.0).count();
+        let largest = steps.iter().fold(0.0f64, |largest, step| largest.max(step.abs()));
+        println!(
+            "{label}: {mismatched} of {} border samples differ, {blocking} by 2 blocks or more, largest step {largest} blocks",
+            steps.len()
+        );
+    };
+    println!("chunk ({chunk_x}, {chunk_y}), seed {seed}, {w}x{h} samples, anchored to layers '{tag}'");
+    report(
+        "east border ",
+        (0..h).map(|row| blocks(&east, 0, row) - blocks(&here, w - 1, row)).collect(),
+    );
+    report(
+        "south border",
+        (0..w).map(|column| blocks(&south, column, 0) - blocks(&here, column, h - 1)).collect(),
+    );
+}
+
 // ─── LifeGen inputs ──────────────────────────────────────────────────────────
 
 /// The macro map covers the whole world, one cell per chunk, and the world is
