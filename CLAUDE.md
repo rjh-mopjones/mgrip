@@ -127,7 +127,9 @@ Build on these seams. Do not create parallel ownership paths.
 
 Rivers are drawn from one shared geometry (`RiverCourse`, see `specs/012`):
 the macro map, map tiles and game chunks all sample the same courses. Do not
-add a second way of rasterising rivers.
+add a second way of rasterising rivers. The invariants below are enforced in
+`mark_surface_rivers` (`mg_noise/src/rivers.rs`): a river is drawn only where
+its water stays liquid all the way to a body of water.
 
 - Rivers only form where precipitation exceeds evaporation — the terminus band
 - No surface rivers on deep dayside (water evaporates) or deep nightside (frozen solid)

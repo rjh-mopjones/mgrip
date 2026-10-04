@@ -79,6 +79,35 @@ How a course is built from a river segment:
    grows along a segment from what flows in at its head to its own total, so
    a river widens downstream and a tributary is never wider than its trunk.
 4. River systems that never reach Strahler order 3 are not drawn.
+5. A river's final segment straightens over its last 6 world units, so the
+   meander cannot swing the mouth away from the water.
+
+## Where rivers run
+
+A river is drawn only where its water stays liquid all the way to a body of
+water. This enforces the river invariants in `CLAUDE.md`.
+
+- **Liquid on land:** light level 0.18 to 0.62 and temperature 0 C to 42 C.
+  These are the light levels at which the sea freezes over and at which
+  shallow sea dries out, so rivers and seas agree on where water is liquid.
+- **A body of water** is a connected stretch of at least 12 cells below sea
+  level. Anything smaller is a pond. For drainage a pond counts as land, so
+  rivers run through ponds and on to the sea. Before this, the largest river
+  on seed 42 drained into a single cell that happened to lie below sea level.
+- **Each segment** carries a surface river from the first point after which
+  its whole path is liquid, provided every segment downstream is liquid from
+  end to end and the last one meets a body of water whose water is liquid at
+  that point. `RiverSegment::surface_from` records this. So rivers start
+  where the country turns wet enough, and none stops on dry land. A river
+  that starts partway along a segment starts at minimum width.
+- **Mouths** are carried past the coast to open water (more than 0.05 below
+  sea level, or the deepest water within 8 cells). Where the coast is drawn
+  is not exactly where ground drops below sea level, so stopping at the first
+  cell below sea level could leave a mouth on dry land. The site map export
+  clips rivers at the coast.
+
+River systems that drain towards the day side or the night side, or into a
+frozen or dried-out sea, are not drawn at all.
 
 On any grid a river covers at least half a sample either side of its centre
 line, so a river thinner than a cell still marks the cells it runs through.
@@ -97,17 +126,21 @@ reports how many border samples differ in block height; it should be zero.
 ## Results on seed 42
 
 - Rivers are dendritic lines that widen downstream, on the map and in tiles.
-- 44 provinces have a major river (18 before). Corazon and Furrow, the
-  lore's river states, both have their capital on one.
+- 126 river courses, about 1,040 world units in all. All 15 mouths meet the
+  sea. Before the rules in "Where rivers run": 436 courses and 4,330 world
+  units, most of them on the dry day side.
+- 26 provinces have a major river. Corazon and Furrow, the lore's river
+  states, both have their capital on one.
 - 0 of 512 border samples differ on every chunk border checked.
 - Macro pack: 14.5 MB. World ready in 1.3 s natively and 2.0 s in the browser.
 
 ## Open questions
 
-1. Some trunk rivers end on land a little short of open water. The flow
-   solve treats cells below sea level as the sea, but some of those cells are
-   drawn as land (coast, dried basin).
-2. Rivers are drawn across dry dayside terrain as narrow seasonal channels.
-   The river invariants say surface rivers exist only in the terminus.
+1. Rivers are sparse: 126 courses on a 1024 by 512 world. Whole systems are
+   dropped if any stretch downstream is too dry or too cold. An alternative
+   is to let such rivers end in a terminal lake, which the invariants
+   currently forbid.
+2. Climate decides only where rivers are drawn, not how much water they
+   carry beyond a coarse weighting by light level.
 3. In the game a river is a biome colour on the ground, not water.
 4. The river code assumes a 1024 by 512 macro grid; other sizes panic.

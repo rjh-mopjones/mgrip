@@ -1467,8 +1467,15 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
             .courses
             .iter()
             .map(|course| {
-                let last = course.points.len().saturating_sub(1);
-                (0..course.points.len())
+                // A mouth runs on into open water; draw it only to the coast.
+                let in_sea = |&(x, y): &(f32, f32)| {
+                    let cell_x = (x.floor() as i64).rem_euclid(map.width as i64) as usize;
+                    let cell_y = (y.max(0.0) as usize).min(map.height - 1);
+                    province_map.province_ids[cell_y * map.width + cell_x] == 0
+                };
+                let on_land = course.points.iter().rposition(|point| !in_sea(point));
+                let last = on_land.map_or(0, |point| (point + 1).min(course.points.len() - 1));
+                (0..=last)
                     .filter(|index| index % SITE_MAP_RIVER_POINT_STRIDE == 0 || *index == last)
                     .flat_map(|index| {
                         let (x, y) = course.points[index];

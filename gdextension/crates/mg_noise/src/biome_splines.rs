@@ -294,6 +294,14 @@ impl BiomeSplines {
         }
     }
 
+    /// Whether ground below sea level holds liquid sea, rather than ice
+    /// (night side) or a dried basin (day side).
+    pub fn sea_is_liquid(&self, elevation: f64, temp: f64, tectonic: f64, light_level: f64) -> bool {
+        crate::biome_map::tile_has_fluid_surface(
+            self.below_sea_biome(elevation, temp, tectonic, light_level),
+        )
+    }
+
     fn below_sea_biome(&self, elevation: f64, temp: f64, tectonic: f64, light_level: f64) -> TileType {
         let depth = self.sea_level - elevation;
 

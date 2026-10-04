@@ -227,17 +227,6 @@ impl RiverCharacter {
         }
     }
 
-    fn is_visible_channel(&self) -> bool {
-        // Only liquid surface water in the habitable terminus renders.
-        // No frozen rivers (nightside), no desert rivers (dayside), no
-        // buried ice. Per river invariants in CLAUDE.md.
-        matches!(
-            self,
-            RiverCharacter::SeasonalFlow
-                | RiverCharacter::Permanent
-        )
-    }
-
     pub fn width_multiplier(&self) -> f64 {
         match self {
             RiverCharacter::DryWadi => 0.3,
@@ -254,6 +243,83 @@ impl RiverCharacter {
     }
 }
 
+/// Surface water freezes on land darker than this (the same light level at
+/// which the sea freezes over).
+const RIVER_MIN_LIGHT: f64 = 0.18;
+/// Surface water evaporates on land brighter than this (the same light level
+/// at which shallow sea dries out).
+const RIVER_MAX_LIGHT: f64 = 0.62;
+const RIVER_MIN_TEMPERATURE_C: f64 = 0.0;
+const RIVER_MAX_TEMPERATURE_C: f64 = 42.0;
+
+/// Whether a river on land holds liquid water: only in the terminus, neither
+/// frozen nor evaporated.
+fn river_water_is_liquid(light_level: f64, temperature_c: f64) -> bool {
+    (RIVER_MIN_LIGHT..=RIVER_MAX_LIGHT).contains(&light_level)
+        && (RIVER_MIN_TEMPERATURE_C..=RIVER_MAX_TEMPERATURE_C).contains(&temperature_c)
+}
+
+/// Set `surface_from` on every segment. `is_wet(x, y)` says whether liquid
+/// water can lie at a point: on land in the terminus, or in liquid sea.
+///
+/// A river is drawn only where its water stays liquid all the way to the sea.
+/// So a segment carries a surface river from the first point after which its
+/// whole path is wet, provided every segment downstream of it is wet from end
+/// to end and the last one ends in a body of water (`is_open_sea`), not in a
+/// pond.
+/// Rivers therefore start where the country turns wet enough, and never stop
+/// on dry land.
+fn mark_surface_rivers(
+    segments: &mut [RiverSegment],
+    is_wet: impl Fn(f64, f64) -> bool,
+    is_open_sea: impl Fn(f64, f64) -> bool,
+) {
+    let meets_sea_at = |segment: &RiverSegment| {
+        segment.path.iter().position(|&(x, y)| is_open_sea(x, y))
+    };
+    // First point from which the rest of the path is wet; None if the foot is
+    // dry. The river ends where it meets a body of water: the path beyond
+    // only anchors the mouth, and the water there may be frozen further out.
+    let wet_from: Vec<Option<usize>> = segments
+        .iter()
+        .map(|segment| {
+            let river = match meets_sea_at(segment) {
+                Some(sea) => &segment.path[..=sea],
+                None => &segment.path[..],
+            };
+            match river.iter().rposition(|&(x, y)| !is_wet(x, y)) {
+                None => Some(0),
+                Some(last_dry) if last_dry + 1 < river.len() => Some(last_dry + 1),
+                Some(_) => None,
+            }
+        })
+        .collect();
+
+    let ends_in_open_sea = |segment: &RiverSegment| meets_sea_at(segment).is_some();
+    // Whether water leaving a segment's foot stays liquid down to the sea.
+    let reaches_sea: Vec<bool> = (0..segments.len())
+        .map(|start| {
+            let mut current = start;
+            for _ in 0..segments.len() {
+                match segments[current].downstream {
+                    Some(next) if next < segments.len() => {
+                        if wet_from[next] != Some(0) {
+                            return false;
+                        }
+                        current = next;
+                    }
+                    _ => return ends_in_open_sea(&segments[current]),
+                }
+            }
+            false
+        })
+        .collect();
+
+    for (index, segment) in segments.iter_mut().enumerate() {
+        segment.surface_from = wet_from[index].filter(|_| reaches_sea[index]);
+    }
+}
+
 // ─── River Segment ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -266,6 +332,11 @@ pub struct RiverSegment {
     pub character: RiverCharacter,
     pub meander_offsets: Vec<f64>,
     pub strahler_order: u32,
+    /// Index of the first point of `path` from which liquid water runs on the
+    /// surface all the way to the sea. `None` if this segment carries no such
+    /// river: it lies in country too dry or too cold, or the water it would
+    /// carry does not reach liquid sea. Only this part is drawn.
+    pub surface_from: Option<usize>,
 }
 
 // ─── River Chain (connected headwater → mouth path) ────────────────────────
@@ -465,6 +536,20 @@ impl RiverNetwork {
         let world_width: f64 = 1024.0;
         let world_height: f64 = 512.0;
 
+        // Rivers drain to bodies of water. A pond (a few cells below sea
+        // level) is not one: for drainage it counts as land, so a river runs
+        // through it and on to the sea instead of ending there.
+        let in_sea_body = sea_bodies(continentalness, width, height, sea_level);
+        let drainage_continentalness: Vec<f64> = continentalness
+            .iter()
+            .zip(&in_sea_body)
+            .map(|(&cont, &in_body)| {
+                if in_body || cont > sea_level { cont } else { sea_level + POND_RAISED_ABOVE_SEA }
+            })
+            .collect();
+        let real_continentalness = continentalness;
+        let continentalness = &drainage_continentalness[..];
+
         // Step 0: Condition heightmap for coherent drainage
         let conditioned = condition_heightmap_for_drainage(
             heightmap, continentalness, tectonic_stress, width, height, sea_level,
@@ -564,12 +649,36 @@ impl RiverNetwork {
             seg.meander_offsets = vec![0.0; seg.path.len()];
         }
 
+        // Step 6.5: Keep surface rivers to where liquid water can run, and
+        // only where it reaches the sea.
+        let splines = crate::biome_splines::BiomeSplines::new(sea_level);
+        let cell_at = |x: f64, y: f64| {
+            let px = (x / world_width * width as f64).floor().rem_euclid(width as f64) as usize;
+            let py = ((y / world_height * height as f64) as usize).min(height - 1);
+            py * width + px
+        };
+        let is_wet = |x: f64, y: f64| {
+            let idx = cell_at(x, y);
+            let light = light_level.get(idx).copied().unwrap_or(0.5);
+            let temp = temperature.get(idx).copied().unwrap_or(15.0);
+            // A pond on the river's way holds water like the sea does.
+            let cont = real_continentalness.get(idx).copied().unwrap_or(0.0);
+            if cont < sea_level {
+                let tectonic = tectonic_stress.get(idx).copied().unwrap_or(0.5);
+                splines.sea_is_liquid(cont, temp, tectonic, light)
+            } else {
+                river_water_is_liquid(light, temp)
+            }
+        };
+        let is_open_sea = |x: f64, y: f64| in_sea_body[cell_at(x, y)];
+        mark_surface_rivers(&mut segments, is_wet, is_open_sea);
+
         // Diagnostics
         {
             let max_drainage = segments.iter().map(|s| s.drainage_area).max().unwrap_or(0);
             let segs_above_500 = segments.iter().filter(|s| s.drainage_area >= 500).count();
             let segs_above_100 = segments.iter().filter(|s| s.drainage_area >= 100).count();
-            let visible = segments.iter().filter(|s| s.character.is_visible_channel()).count();
+            let visible = segments.iter().filter(|s| s.surface_from.is_some()).count();
             let buried = segments.iter().filter(|s| matches!(s.character, RiverCharacter::BuriedIce)).count();
             let dry = segments.iter().filter(|s| matches!(s.character, RiverCharacter::DryWadi)).count();
             let frozen = segments.iter().filter(|s| matches!(s.character, RiverCharacter::Frozen)).count();
@@ -1025,6 +1134,114 @@ pub(crate) fn compute_flow_accumulation(
     accumulation
 }
 
+/// Below sea level by more than this, ground is open water however the coast
+/// is drawn: biome classification moves the coast by at most this much.
+const MOUTH_OPEN_WATER_DEPTH: f64 = 0.05;
+/// A river mouth is carried at most this many cells past the coast.
+const MOUTH_MAX_CELLS_INTO_SEA: usize = 8;
+
+/// Cells from `start` (below sea level, not included) to the nearest open
+/// water, through cells below sea level. If no water in reach is that deep (a
+/// shallow sea or a lake), the path goes to the deepest cell there is. Empty
+/// if `start` is already the deepest.
+///
+/// Where the coast is drawn is not exactly where ground drops below sea
+/// level (biome classification shifts it a little), so a river that stopped
+/// at the first cell below sea level could end on dry land.
+fn path_to_open_water(
+    start: usize,
+    continentalness: &[f64],
+    width: usize,
+    height: usize,
+    sea_level: f64,
+) -> Vec<usize> {
+    let depth = |cell: usize| sea_level - continentalness.get(cell).copied().unwrap_or(0.0);
+    let mut came_from: HashMap<usize, usize> = HashMap::new();
+    let path_to = |cell: usize, came_from: &HashMap<usize, usize>| {
+        let mut path = Vec::new();
+        let mut current = cell;
+        while current != start {
+            path.push(current);
+            current = came_from[&current];
+        }
+        path.reverse();
+        path
+    };
+    let mut deepest = start;
+    let mut frontier = std::collections::VecDeque::from([(start, 0usize)]);
+    while let Some((cell, steps)) = frontier.pop_front() {
+        if depth(cell) > MOUTH_OPEN_WATER_DEPTH {
+            return path_to(cell, &came_from);
+        }
+        if depth(cell) > depth(deepest) {
+            deepest = cell;
+        }
+        if steps == MOUTH_MAX_CELLS_INTO_SEA {
+            continue;
+        }
+        for (dx, dy) in D8_OFFSETS {
+            let x = crate::wrap::wrap_grid_x((cell % width) as i32 + dx, width) as usize;
+            let y = (cell / width) as i32 + dy;
+            if y < 0 || y >= height as i32 {
+                continue;
+            }
+            let neighbour = y as usize * width + x;
+            if neighbour != start && depth(neighbour) >= 0.0 && !came_from.contains_key(&neighbour) {
+                came_from.insert(neighbour, cell);
+                frontier.push_back((neighbour, steps + 1));
+            }
+        }
+    }
+    path_to(deepest, &came_from)
+}
+
+/// A stretch of ground below sea level counts as a body of water, somewhere
+/// a river can end, if it covers at least this many cells. Smaller ones are
+/// ponds.
+const SEA_BODY_MIN_CELLS: usize = 12;
+/// For drainage, a pond's bed is treated as this far above sea level.
+const POND_RAISED_ABOVE_SEA: f64 = 0.001;
+
+/// For every cell, whether it lies in a body of water: a connected stretch
+/// of at least `SEA_BODY_MIN_CELLS` cells below sea level. The map joins east
+/// to west.
+fn sea_bodies(continentalness: &[f64], width: usize, height: usize, sea_level: f64) -> Vec<bool> {
+    let below_sea = |cell: usize| continentalness[cell] <= sea_level;
+    let mut in_body = vec![false; width * height];
+    let mut seen = vec![false; width * height];
+    for first in 0..width * height {
+        if seen[first] || !below_sea(first) {
+            continue;
+        }
+        // Flood-fill this stretch of water.
+        let mut stretch = vec![first];
+        seen[first] = true;
+        let mut next = 0;
+        while next < stretch.len() {
+            let cell = stretch[next];
+            next += 1;
+            for (dx, dy) in D8_OFFSETS {
+                let x = crate::wrap::wrap_grid_x((cell % width) as i32 + dx, width) as usize;
+                let y = (cell / width) as i32 + dy;
+                if y < 0 || y >= height as i32 {
+                    continue;
+                }
+                let neighbour = y as usize * width + x;
+                if !seen[neighbour] && below_sea(neighbour) {
+                    seen[neighbour] = true;
+                    stretch.push(neighbour);
+                }
+            }
+        }
+        if stretch.len() >= SEA_BODY_MIN_CELLS {
+            for cell in stretch {
+                in_body[cell] = true;
+            }
+        }
+    }
+    in_body
+}
+
 // ─── River Tree Building ────────────────────────────────────────────────────
 
 fn build_river_tree(
@@ -1120,6 +1337,7 @@ fn build_river_tree(
             upstream: Vec::new(),
             character: RiverCharacter::Permanent,
             strahler_order: 1,
+            surface_from: None,
         });
     }
 
@@ -1134,8 +1352,19 @@ fn build_river_tree(
             + (last.0 * px_to_wx.recip()) as usize;
         cur_idx = cur_idx.min(width * height - 1);
         let mut bridge_path: Vec<(f64, f64)> = Vec::new();
+        let to_world =
+            |cell: usize| ((cell % width) as f64 * px_to_wx, (cell / width) as f64 * px_to_wy);
 
-        for _ in 0..width.max(height) {
+        // A segment that already ends below sea level is at the sea: carry
+        // it on to open water and look no further downstream.
+        let ends_at_sea = continentalness.get(cur_idx).copied().unwrap_or(0.0) <= sea_level;
+        if ends_at_sea {
+            let onward = path_to_open_water(cur_idx, continentalness, width, height, sea_level);
+            bridge_path.extend(onward.into_iter().map(to_world));
+        }
+        let downstream_steps = if ends_at_sea { 0 } else { width.max(height) };
+
+        for _ in 0..downstream_steps {
             if flow_dir[cur_idx] == NO_FLOW { break; }
             let x = cur_idx % width;
             let y = cur_idx / width;
@@ -1151,26 +1380,11 @@ fn build_river_tree(
                 }
                 break;
             }
-            // When we reach ocean, extend 5 cells INTO the water so the river
-            // visually overlaps with the ocean render. A single cell wasn't
-            // enough — the river mouth needs to extend into the ocean far
-            // enough that the confluence overlay in terrain_render paints a
-            // visible estuary/mouth where river meets sea.
+            // At the sea, carry the river on to open water.
             if continentalness.get(next).copied().unwrap_or(0.0) <= sea_level {
-                bridge_path.push((nx as f64 * px_to_wx, (ny as usize) as f64 * px_to_wy));
-                // Walk a few more cells into ocean
-                let mut ocean_cur = next;
-                for _ in 0..5 {
-                    if flow_dir[ocean_cur] == NO_FLOW { break; }
-                    let ox = ocean_cur % width;
-                    let oy = ocean_cur / width;
-                    let (odx, ody) = D8_OFFSETS[flow_dir[ocean_cur] as usize];
-                    let onx = crate::wrap::wrap_grid_x(ox as i32 + odx, width) as usize;
-                    let ony = oy as i32 + ody;
-                    if ony < 0 || ony >= height as i32 { break; }
-                    ocean_cur = ony as usize * width + onx;
-                    bridge_path.push((onx as f64 * px_to_wx, (ony as usize) as f64 * px_to_wy));
-                }
+                bridge_path.push(to_world(next));
+                let onward = path_to_open_water(next, continentalness, width, height, sea_level);
+                bridge_path.extend(onward.into_iter().map(to_world));
                 break;
             }
             // Add bridge cell to this segment's path
@@ -1407,6 +1621,9 @@ const MEANDER_WIGGLE_FREQUENCY: f64 = 0.18;
 /// At any resolution a river covers at least this many samples either side of
 /// its centre line, so thin rivers do not vanish on coarse grids.
 const COURSE_MIN_HALF_WIDTH_SAMPLES: f64 = 0.5;
+/// A river's last stretch before the sea straightens out over this length,
+/// so its meander cannot swing the mouth away from the water.
+const MOUTH_STRAIGHTEN_WU: f64 = 6.0;
 
 /// One river segment's final course.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1488,6 +1705,17 @@ pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
         }
         order
     };
+    // Drainage of the largest surface river flowing into a segment's head.
+    let surface_inflow = |index: usize| {
+        segments[index]
+            .upstream
+            .iter()
+            .filter_map(|&upstream| segments.get(upstream))
+            .filter(|upstream| upstream.surface_from.is_some())
+            .map(|upstream| upstream.drainage_area)
+            .max()
+            .unwrap_or(0) as f64
+    };
     // Width follows drainage, so a river widens downstream and a tributary
     // is never wider than the river it joins.
     let half_width = |drainage: f64, character: RiverCharacter| {
@@ -1500,13 +1728,15 @@ pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
     segments
         .iter()
         .enumerate()
-        .filter(|&(index, segment)| {
-            segment.path.len() >= 2 && system_order(index) >= COURSE_MIN_SYSTEM_STRAHLER
+        .filter_map(|(index, segment)| Some((index, segment, segment.surface_from?)))
+        .filter(|&(index, segment, surface_from)| {
+            segment.path.len() - surface_from >= 2
+                && system_order(index) >= COURSE_MIN_SYSTEM_STRAHLER
         })
-        .map(|(index, segment)| {
+        .map(|(index, segment, surface_from)| {
             // A segment's path stops a cell short of the segment it flows
             // into. Carry it on to that segment's head so the river is unbroken.
-            let mut raw_path = segment.path.clone();
+            let mut raw_path = segment.path[surface_from..].to_vec();
             let downstream_head = segment
                 .downstream
                 .and_then(|next| segments.get(next))
@@ -1522,15 +1752,36 @@ pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
             );
             // Drainage grows along the segment from what flows in at its head
             // to its own total at its foot.
-            let inflow = network.upstream_drainage_for(index) as f64;
+            // A river that starts partway along a segment starts from nothing.
+            let inflow = if surface_from == 0 {
+                surface_inflow(index)
+            } else {
+                0.0
+            };
             let outflow = segment.drainage_area as f64;
             let last = (path.len() - 1).max(1) as f64;
+            // Only a river's final segment straightens, and only by its foot:
+            // its head keeps the full meander so tributaries still meet it.
+            let length = last * COURSE_POINT_SPACING_WU;
+            let straighten_over = MOUTH_STRAIGHTEN_WU.min(length);
+            let meander_share = |point: usize| {
+                if segment.downstream.is_some() || straighten_over <= 0.0 {
+                    return 1.0;
+                }
+                let to_foot = (last - point as f64) * COURSE_POINT_SPACING_WU;
+                (to_foot / straighten_over).min(1.0)
+            };
             RiverCourse {
                 points: path
                     .iter()
-                    .map(|&(x, y)| {
+                    .enumerate()
+                    .map(|(point, &(x, y))| {
                         let (warped_x, warped_y) = meander_warp(x, y);
-                        (warped_x as f32, warped_y as f32)
+                        let share = meander_share(point);
+                        (
+                            (x + (warped_x - x) * share) as f32,
+                            (y + (warped_y - y) * share) as f32,
+                        )
                     })
                     .collect(),
                 half_widths: (0..path.len())
@@ -1827,6 +2078,7 @@ mod course_tests {
             character: RiverCharacter::Permanent,
             meander_offsets: Vec::new(),
             strahler_order: 3,
+            surface_from: Some(0),
         }
     }
 
@@ -1884,6 +2136,141 @@ mod course_tests {
         assert!(trunk.half_widths.first() < trunk.half_widths.last());
         assert!(tributary.half_widths.last() <= trunk.half_widths.first());
         assert!(*trunk.half_widths.last().unwrap() <= COURSE_MAX_HALF_WIDTH_WU as f32);
+    }
+
+    /// A headwater (0) flowing into a trunk (1) that ends at the sea.
+    fn headwater_and_trunk() -> Vec<RiverSegment> {
+        vec![
+            segment(0, &[(100.0, 100.0), (100.0, 110.0), (100.0, 120.0)], 100, Some(1), &[]),
+            segment(1, &[(100.0, 121.0), (100.0, 130.0), (100.0, 140.0)], 400, None, &[0]),
+        ]
+    }
+
+    #[test]
+    fn a_river_in_wet_country_runs_its_whole_length() {
+        let mut segments = headwater_and_trunk();
+        mark_surface_rivers(&mut segments, |_, _| true, |_, y| y >= 140.0);
+
+        assert_eq!(segments[0].surface_from, Some(0));
+        assert_eq!(segments[1].surface_from, Some(0));
+    }
+
+    #[test]
+    fn a_river_starts_where_the_country_turns_wet() {
+        let mut segments = headwater_and_trunk();
+        // Dry north of y = 105.
+        mark_surface_rivers(&mut segments, |_, y| y > 105.0, |_, y| y >= 140.0);
+
+        assert_eq!(segments[0].surface_from, Some(1));
+        assert_eq!(segments[1].surface_from, Some(0));
+    }
+
+    #[test]
+    fn no_river_is_drawn_above_a_dry_stretch() {
+        let mut segments = headwater_and_trunk();
+        // The trunk crosses dry ground at y = 130 before reaching the sea.
+        mark_surface_rivers(&mut segments, |_, y| y != 130.0, |_, y| y >= 140.0);
+
+        assert_eq!(segments[0].surface_from, None);
+        assert_eq!(segments[1].surface_from, Some(2));
+    }
+
+    #[test]
+    fn no_river_is_drawn_if_it_does_not_end_in_liquid_sea() {
+        let mut segments = headwater_and_trunk();
+        // The trunk's foot is frozen or dried out.
+        mark_surface_rivers(&mut segments, |_, y| y < 140.0, |_, y| y >= 140.0);
+
+        assert_eq!(segments[0].surface_from, None);
+        assert_eq!(segments[1].surface_from, None);
+    }
+
+    #[test]
+    fn no_river_is_drawn_if_it_ends_in_a_pond() {
+        let mut segments = headwater_and_trunk();
+        mark_surface_rivers(&mut segments, |_, _| true, |_, _| false);
+
+        assert_eq!(segments[0].surface_from, None);
+        assert_eq!(segments[1].surface_from, None);
+    }
+
+    #[test]
+    fn a_river_is_drawn_even_if_the_sea_is_frozen_further_out() {
+        let mut segments = headwater_and_trunk();
+        segments[1].path.extend([(100.0, 150.0), (100.0, 160.0)]);
+        // The sea begins at y = 140 and is frozen from y = 150.
+        mark_surface_rivers(&mut segments, |_, y| y < 150.0, |_, y| y >= 140.0);
+
+        assert_eq!(segments[0].surface_from, Some(0));
+        assert_eq!(segments[1].surface_from, Some(0));
+    }
+
+    #[test]
+    fn a_mouth_is_carried_through_the_shallows_to_open_water() {
+        // One row, sea level 0: land, then two shallow cells, then open water.
+        let continentalness = [0.2, -0.01, -0.02, -0.2, -0.3];
+        assert_eq!(path_to_open_water(1, &continentalness, 5, 1, 0.0), vec![2, 3]);
+        // Already in open water: nothing to add.
+        assert!(path_to_open_water(3, &continentalness, 5, 1, 0.0).is_empty());
+    }
+
+    #[test]
+    fn in_a_shallow_sea_a_mouth_is_carried_to_the_deepest_water_in_reach() {
+        // Nothing here is deep enough to count as open water.
+        let continentalness = [0.2, -0.01, -0.03, -0.02, 0.2, 0.2];
+        assert_eq!(path_to_open_water(1, &continentalness, 6, 1, 0.0), vec![2]);
+    }
+
+    #[test]
+    fn a_body_of_water_is_a_stretch_of_sea_of_some_size() {
+        // A 20-cell row: one pond cell, land, then a 14-cell lake.
+        let mut continentalness = vec![0.2; 20];
+        continentalness[1] = -0.1;
+        for cell in continentalness.iter_mut().skip(4).take(14) {
+            *cell = -0.1;
+        }
+
+        let in_body = sea_bodies(&continentalness, 20, 1, 0.0);
+
+        assert!(!in_body[1]);
+        assert!(!in_body[2]);
+        assert!(in_body[4] && in_body[17]);
+    }
+
+    #[test]
+    fn only_the_surface_part_of_a_segment_becomes_a_course() {
+        let mut network = RiverNetwork::empty(1024, 512);
+        network.segments = headwater_and_trunk();
+        network.segments[0].surface_from = None;
+        network.segments[1].surface_from = Some(1);
+        network.rebuild_spatial_index();
+
+        assert_eq!(network.courses.len(), 1);
+        let course = &network.courses[0];
+        let (start_x, start_y) = meander_warp(100.0, 130.0);
+        assert_eq!(course.points[0], (start_x as f32, start_y as f32));
+        // It starts from nothing: as narrow as a river gets.
+        assert_eq!(course.half_widths[0], COURSE_MIN_HALF_WIDTH_WU as f32);
+    }
+
+    #[test]
+    fn rivers_run_only_in_the_terminus() {
+        assert!(river_water_is_liquid(0.4, 15.0));
+        assert!(!river_water_is_liquid(0.1, 15.0));
+        assert!(!river_water_is_liquid(0.8, 15.0));
+        assert!(!river_water_is_liquid(0.4, -5.0));
+        assert!(!river_water_is_liquid(0.4, 60.0));
+    }
+
+    #[test]
+    fn a_river_mouth_is_not_moved_by_the_meander() {
+        let courses = forked_network().courses;
+        let trunk = &courses[2];
+
+        // The trunk runs from (500, 250) to its mouth at (500, 270).
+        assert_eq!(*trunk.points.last().unwrap(), (500.0, 270.0));
+        let (head_x, head_y) = meander_warp(500.0, 250.0);
+        assert_eq!(trunk.points[0], (head_x as f32, head_y as f32));
     }
 
     #[test]

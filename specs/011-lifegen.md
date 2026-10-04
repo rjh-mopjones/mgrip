@@ -441,6 +441,15 @@ Resulting land-cell distributions (p5 / median / p95): habitability
 0.20 / 0.36 / 0.75, navigation cost 0.09 / 0.29 / 0.85, resource
 desirability 0.25 / 0.34 / 0.55.
 
+## Figures after the river rules (spec 012)
+
+The per-stage results above were measured before rivers were limited to
+where water is liquid. On seed 42, civ seed 1, after that change: 1169
+provinces, 26 with a major river; 689 claimed (37% of land), 381 unclaimed,
+99 uninhabited; 3646 settlements (64 metropolises, 81 cities, 361 towns);
+4499 roads; 3492 trade flows. Corazon's and Furrow's capitals are still on
+major rivers.
+
 ## Open questions
 
 1. Temperature comfort peaks at 15 C and reaches zero at -20 C and 50 C. The
