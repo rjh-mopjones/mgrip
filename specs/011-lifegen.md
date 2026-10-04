@@ -1,6 +1,6 @@
 # Spec 011 - LifeGen: Civilisation Layers
 
-**Status:** In progress (stages 1 to 4 implemented)
+**Status:** All six stages implemented at macro resolution. Calibration open (see Open questions).
 **Priority:** Medium
 **Depends On:** Spec 010 (macro map), `mg_core::TerrainQuery`
 
@@ -192,17 +192,65 @@ onto `SizeClass`, so only the size class is kept.
 Result on seed 42, civ seed 1: 3686 settlements. Metropolis 64, City 1043,
 Town 1159, Village 1045, Outpost 375, Ruins 0.
 
-### Stage 5 - Roads
+### Stage 5 - Roads (implemented)
 
-A* between settlements over navigation cost.
+Which settlements are linked is decided on straight-line distance. Each
+link is then routed over the navigation grid, so roads bend around hard
+terrain and never cross open water. Nothing in this stage is random.
 
-### Stage 6 - Trade
+1. **Links.**
+   - A minimum spanning tree over all settlements, so everything connects.
+   - A spanning tree over faction capitals, plus one extra link from each
+     capital to its nearest unlinked capital within 187.5 world units.
+   - Up to two extra links from each town or larger to the nearest towns or
+     larger within 37.5 world units.
+2. **Kinds.** Highway between two capitals; Road if either end is a capital
+   or city; Trail otherwise.
+3. **Highway waypoints.** A highway is split to pass through towns or larger
+   lying within 25 world units of its straight line, at least 7.5 apart.
+4. **Routing.** A* (8-connected) inside a box around the two ends padded by
+   25 world units. Stepping onto a cell costs the step length divided by its
+   navigation ease. Links over 250 world units, and links with no land
+   route, are dropped.
+5. **Simplification.** Douglas-Peucker with a tolerance of 0.375 world units.
 
-Trade graph between settlements along roads.
+API: `mg_life::build_roads(settlements, navigation_cost, width, height,
+cells_per_world_unit)` returns roads with the settlement at each end, a
+kind, a simplified path and a travel cost.
+
+Differences from Randlebrot: kinds are named Highway, Road and Trail instead
+of Imperial, Provincial and Trail; each road keeps the two settlements it
+joins and one cost for the whole route, instead of being flattened into
+anonymous segments.
+
+Result on seed 42, civ seed 1: 6949 roads. Highway 378 (7,084 chunks),
+Road 2790 (20,757 chunks), Trail 3781 (42,798 chunks). 50 settlements are on
+no road (islands).
+
+### Stage 6 - Trade (implemented)
+
+Every settlement sends its trade to the nearest strictly larger settlement
+it can reach by road. Flows only go from smaller to larger, so they form a
+directed acyclic graph. The value of a flow is the mean habitability of the
+source settlement's province.
+
+API: `mg_life::build_trade_flows(settlements, roads, province_map)`.
+
+Difference from Randlebrot: its trade stage was a stub that treated any two
+settlements near any road as connected. Here two settlements are connected
+only if the road network joins them (union-find over roads).
+
+Result on seed 42, civ seed 1: 3448 flows. 238 settlements send none (the 64
+capitals, which have nothing larger to send to, and settlements with no
+larger settlement on their road network).
+
+Export for stages 5 and 6: "Roads" and "Trade" layers. The trade layer draws
+each flow as a straight line from source to market; the line is schematic
+and may cross water that the road does not.
 
 ## Storage
 
-Stages 1 to 4 take about a second on the macro map and are computed at
+All six stages together take about a second on the macro map and are computed at
 export time; nothing is stored. A stored LifeGen artifact
 (`generate lifegen <layers_tag> <civ_seed>`) is introduced when a stage
 becomes slow or when the runtime needs to load LifeGen data.
@@ -215,7 +263,10 @@ becomes slow or when the runtime needs to load LifeGen data.
   capital spacing, no capital in barren land, growth stops at barren land,
   province limit per faction, determinism per seed; stage 4: counts and
   sizes by habitability, site spacing, settlements stand in their own
-  province, one metropolis per faction).
+  province, one metropolis per faction; stage 5: routes pass through gaps
+  and never cross water, every settlement connected on open ground, road
+  kinds, highway waypoints, simplification; stage 6: trade goes to the
+  nearest larger settlement on the same road network, capitals send none).
 - `margins_grip inspect layer-stats <layers_tag>` prints layer percentiles,
   LifeGen grid percentiles and province counts and areas.
 - Each stage's layers are inspected on the site map page against the terrain
@@ -264,3 +315,8 @@ desirability 0.25 / 0.34 / 0.55.
 7. No ruins are generated: no province is below 0.05 habitability. The lore's
    ruins (elevator wreckage, Himaya-era sites) are authored, not derived from
    habitability, so this class may need a different source.
+8. The lore's great railway and its neutral operators are not represented.
+   Highways are the nearest equivalent.
+9. Trade has no goods. A flow is one number. The economy in the lore
+   (energy, food, steel, water, graphene) would need resource types per
+   province and flows per resource.
