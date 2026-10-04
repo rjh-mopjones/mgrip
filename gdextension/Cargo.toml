@@ -68,5 +68,9 @@ rayon.workspace = true
 ron.workspace = true
 image.workspace = true
 
+# Web build: godot-rust's wasm support is opt-in and experimental.
+[target.'cfg(target_os = "emscripten")'.dependencies]
+godot = { workspace = true, features = ["experimental-wasm", "lazy-function-tables"] }
+
 [lints]
 workspace = true

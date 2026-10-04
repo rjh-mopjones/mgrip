@@ -1,0 +1,14 @@
+# Web build (threaded). Requires nightly, rust-src and emscripten 4.0.0
+# (older emscripten cannot read the wasm features current rustc emits):
+#   source ~/emsdk/emsdk_env.sh
+#   cargo +nightly build --release --lib -Zbuild-std --target wasm32-unknown-emscripten
+[target.wasm32-unknown-emscripten]
+rustflags = [
+    "-C", "link-args=-pthread",
+    "-C", "target-feature=+atomics",
+    "-C", "link-args=-sSIDE_MODULE=2",
+    "-Zlink-native-libraries=no",
+    "-Cllvm-args=-enable-emscripten-cxx-exceptions=0",
+    # Godot 4.3's web templates have no wasm exception-handling support.
+    "-Zemscripten-wasm-eh=no",
+]

@@ -1,6 +1,7 @@
 //! BiomeMap: complete terrain snapshot for a given LOD tile.
 //! Holds all base and derived noise layers plus the computed biome grid.
 
+#[cfg(not(target_os = "emscripten"))]
 use crate::gpu::GpuNoiseContext;
 use mg_core::{NoiseStrategy, TileType};
 use noise::OpenSimplex;
@@ -312,6 +313,9 @@ impl BiomeMap {
         //     freq_scale is intentionally ignored here; the scaled coords were causing
         //     coast_perturb to flip shallow-ocean cells to land.
         let scale = sample_world_step(world_size_x, tile_w);
+        #[cfg(target_os = "emscripten")]
+        let gpu_layers: Option<crate::gpu::GpuNoiseResultF64> = None;
+        #[cfg(not(target_os = "emscripten"))]
         let gpu_layers = GpuNoiseContext::global().map(|gpu| {
             gpu.generate_layers(
                 seed,

@@ -9,11 +9,14 @@ noise = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 image = { workspace = true }
+rand = { workspace = true }
+rand_xorshift = { workspace = true }
+
+# GPU noise is native-only. The web build (emscripten) uses the CPU fallback.
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 pollster = { workspace = true }
-rand = { workspace = true }
-rand_xorshift = { workspace = true }
 
 [lints]
 workspace = true

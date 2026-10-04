@@ -6,12 +6,18 @@
 //!
 //! Falls back transparently to the CPU rayon path if no GPU is available.
 
+//! Not compiled for the web build (emscripten), which always takes the CPU path.
+
+#[cfg(not(target_os = "emscripten"))]
 mod context;
 mod perm_table;
+#[cfg(not(target_os = "emscripten"))]
 mod pipelines;
 
+#[cfg(not(target_os = "emscripten"))]
 pub use context::GpuNoiseContext;
 pub use perm_table::{generate_permutation_table, permutation_table_to_u32};
+#[cfg(not(target_os = "emscripten"))]
 pub use pipelines::NoisePipelines;
 
 /// All 5 GPU-generated base layers for a single tile.
