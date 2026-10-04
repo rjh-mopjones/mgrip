@@ -10,6 +10,11 @@ verification, and a developer-only agent playtest runtime.
 Not yet a full gameplay runtime. Do not invent APIs for inventory, crafting,
 combat, quests, or survival systems — they don't exist yet.
 
+LifeGen (provinces, factions, settlements, roads, trade) is being ported from
+the Bevy prototype in stages under `specs/011`. Only stage 1 exists: analysis
+grids in `gdextension/crates/mg_life`. Nothing in the Godot runtime reads
+LifeGen data yet.
+
 ## Quick reference
 
 Build Rust extension:
@@ -69,6 +74,7 @@ python3 tools/test_fly_swim.py [--windowed]
 - `chunk_streamer.gd` — chunk lifecycle, LOD, prewarm, horizon streaming, collision
 - `fps_controller.gd` — player movement, scripted motion seam, fly/swim states
 - `agent_runtime.gd` — developer-only agent session, action dispatch, observation API
+- `mg_life` (Rust crate) — LifeGen; reads terrain only through `mg_core::TerrainQuery`
 
 Build on these seams. Do not create parallel ownership paths.
 
