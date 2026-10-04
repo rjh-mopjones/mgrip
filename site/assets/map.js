@@ -96,6 +96,27 @@ function factionText(provinceId) {
 	return `${province.faction}: ${faction.provinces} provinces`;
 }
 
+// "City, 3 chunks away": the settlement closest to the spawn chunk.
+function nearestSettlementText() {
+	const { settlements, settlement_sizes: sizes } = worldMap.meta;
+	if (!settlements?.length) return "none";
+	let nearest = null;
+	let nearestDistance = Number.POSITIVE_INFINITY;
+	for (const settlement of settlements) {
+		const distance = Math.hypot(
+			settlement[0] - spawn.x,
+			settlement[1] - spawn.y,
+		);
+		if (distance < nearestDistance) {
+			nearest = settlement;
+			nearestDistance = distance;
+		}
+	}
+	const chunks = Math.round(nearestDistance);
+	const where = chunks === 0 ? "here" : `${chunks} chunks away`;
+	return `${sizes[nearest[2]]}, ${where}`;
+}
+
 const chunkText = () => `${spawn.x}, ${spawn.y}`;
 
 function renderSpawn() {
@@ -115,6 +136,8 @@ function renderSpawn() {
 	document.getElementById("spawnFaction").textContent = factionText(
 		chunk.provinceId,
 	);
+	document.getElementById("spawnSettlement").textContent =
+		nearestSettlementText();
 	document.getElementById("spawnSeed").textContent = meta.seed;
 }
 

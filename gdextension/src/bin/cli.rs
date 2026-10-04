@@ -1049,6 +1049,21 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         "provinces claimed {claimed} ({claimed_area:.0}% of land), unclaimed {unclaimed} ({unclaimed_area:.0}%), uninhabited {uninhabited} ({uninhabited_area:.0}%)"
     );
 
+    let settlements = mg_life::place_settlements(
+        &province_map,
+        &faction_map,
+        &analysis,
+        map.width as f64 / map.world_width,
+    );
+    let by_size: Vec<String> = mg_life::SizeClass::ALL
+        .iter()
+        .map(|size| {
+            let count = settlements.iter().filter(|s| s.size_class == *size).count();
+            format!("{size:?} {count}")
+        })
+        .collect();
+    println!("settlements: {} total ({})", settlements.len(), by_size.join(", "));
+
     let mut biome_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for (index, &biome) in map.biomes.iter().enumerate() {
         let entry = biome_counts.entry(format!("{biome:?}")).or_default();
@@ -1109,6 +1124,7 @@ const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 4] = [
             "lifegen_resource_desirability",
             "lifegen_provinces",
             "lifegen_factions",
+            "lifegen_settlements",
         ],
     ),
 ];
@@ -1213,6 +1229,21 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     .unwrap_or_else(|e| fail(format!("saving {factions_file}: {e}")));
     layer_files.push(factions_file.to_string());
 
+    // LifeGen stage 4: settlements.
+    let settlements =
+        mg_life::place_settlements(&province_map, &faction_map, &analysis, cells_per_world_unit);
+    let settlements_file = "lifegen_settlements.png";
+    let settlement_scale = (image_w / province_map.width).max(1);
+    RgbaImage::from_raw(
+        (province_map.width * settlement_scale) as u32,
+        (province_map.height * settlement_scale) as u32,
+        settlement_map_rgba(&province_map, &faction_map, &settlements, settlement_scale),
+    )
+    .expect("settlement image matches its dimensions")
+    .save(output_dir.join(settlements_file))
+    .unwrap_or_else(|e| fail(format!("saving {settlements_file}: {e}")));
+    layer_files.push(settlements_file.to_string());
+
     // Per-chunk data: the macro map has one cell per chunk.
     let mut chunks = Vec::with_capacity(map.width * map.height * SITE_MAP_CHUNK_FIELDS.len());
     let mut biome_names: BTreeMap<u8, String> = BTreeMap::new();
@@ -1266,6 +1297,26 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
                 })
             })
             .collect::<Vec<_>>(),
+        "settlement_sizes": mg_life::SizeClass::ALL
+            .iter()
+            .map(|size| format!("{size:?}"))
+            .collect::<Vec<_>>(),
+        // [chunk x, chunk y, index into settlement_sizes, province id]
+        "settlements": settlements
+            .iter()
+            .map(|settlement| {
+                let size_index = mg_life::SizeClass::ALL
+                    .iter()
+                    .position(|size| *size == settlement.size_class)
+                    .unwrap_or(0);
+                serde_json::json!([
+                    settlement.position.0,
+                    settlement.position.1,
+                    size_index,
+                    settlement.province_id
+                ])
+            })
+            .collect::<Vec<_>>(),
         // Indexed by faction id - 1.
         "factions": faction_map
             .factions
@@ -1284,13 +1335,14 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         .unwrap_or_else(|e| fail(format!("writing map.json: {e}")));
 
     println!(
-        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks, {} provinces, {} factions (layers '{tag}', seed {}, civ seed {civ_seed})",
+        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks, {} provinces, {} factions, {} settlements (layers '{tag}', seed {}, civ seed {civ_seed})",
         output_dir.display(),
         layer_files.len(),
         map.width,
         map.height,
         province_map.provinces.len(),
         faction_map.factions.len(),
+        settlements.len(),
         manifest.seed
     );
 }
@@ -1416,6 +1468,68 @@ fn faction_map_rgba(
             for x in site_x.saturating_sub(1)..=(site_x + 1).min(province_map.width - 1) {
                 let offset = (y * province_map.width + x) * 4;
                 pixels[offset..offset + 3].copy_from_slice(&[255, 255, 255]);
+            }
+        }
+    }
+    pixels
+}
+
+/// Dot radius in output pixels and colour for each settlement size.
+fn settlement_dot(size_class: mg_life::SizeClass) -> (i32, [u8; 3]) {
+    match size_class {
+        mg_life::SizeClass::Metropolis => (3, [255, 255, 255]),
+        mg_life::SizeClass::City => (2, [255, 214, 120]),
+        mg_life::SizeClass::Town => (1, [240, 170, 110]),
+        mg_life::SizeClass::Village => (0, [205, 195, 220]),
+        mg_life::SizeClass::Outpost => (0, [140, 130, 165]),
+        mg_life::SizeClass::Ruins => (0, [170, 70, 80]),
+    }
+}
+
+/// Settlements as dots over a dimmed faction map, at `scale` output pixels per
+/// cell so small dots stay distinct. Larger settlements are drawn last.
+fn settlement_map_rgba(
+    province_map: &mg_life::ProvinceMap,
+    faction_map: &mg_life::FactionMap,
+    settlements: &[mg_life::Settlement],
+    scale: usize,
+) -> Vec<u8> {
+    const BACKDROP_DIM: f32 = 0.5;
+    let (cells_w, cells_h) = (province_map.width, province_map.height);
+    let (width, height) = (cells_w * scale, cells_h * scale);
+    let backdrop = faction_map_rgba(province_map, faction_map);
+
+    let mut pixels = vec![0u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let source = ((y / scale) * cells_w + x / scale) * 4;
+            let target = (y * width + x) * 4;
+            for channel in 0..3 {
+                pixels[target + channel] = (backdrop[source + channel] as f32 * BACKDROP_DIM) as u8;
+            }
+            pixels[target + 3] = 255;
+        }
+    }
+
+    let mut by_size: Vec<&mg_life::Settlement> = settlements.iter().collect();
+    by_size.sort_by_key(|settlement| std::cmp::Reverse(settlement.size_class));
+    for settlement in by_size {
+        let (radius, colour) = settlement_dot(settlement.size_class);
+        let centre_x = (settlement.position.0 * scale + scale / 2) as i32;
+        let centre_y = (settlement.position.1 * scale + scale / 2) as i32;
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let (x, y) = (centre_x + dx, centre_y + dy);
+                if dx * dx + dy * dy > radius * radius + 1
+                    || x < 0
+                    || y < 0
+                    || x >= width as i32
+                    || y >= height as i32
+                {
+                    continue;
+                }
+                let target = (y as usize * width + x as usize) * 4;
+                pixels[target..target + 3].copy_from_slice(&colour);
             }
         }
     }
