@@ -337,13 +337,18 @@ larger settlement on their road network).
 `margins_grip export site-map <dir>` runs all six stages on the macro map and
 writes, alongside the terrain layers:
 
-- three base layers, one per analysis grid, under a "LifeGen" group
-- five transparent overlays, drawn over any base layer on the map page:
-  Provinces (borders), Factions (translucent territory, borders, capitals),
-  Settlements (dots by size), Roads (lines by kind), Trade (lines by value)
+- three raw layers, one per analysis grid, under a "LifeGen" group
+- three transparent overlays: Settlements (dots by size), Roads (lines by
+  kind), Trade (lines by value)
 - in `chunks.bin`, the province id of every chunk
-- in `map.json`, the province table, the faction table (name, capital, capital
-  position), the settlement list, and the colours used, for the legend
+- in `map.json`, the province table (biome, area, habitability, light,
+  resources, owner), the faction table (name, capital, capital position), the
+  settlement list, and the colours used, for the legend
+
+The map page draws provinces and factions itself from that data: a texture of
+province ids plus a table of one colour per province. Map modes (political,
+terrain, habitability, light, resources), hover and selection only rewrite
+the table. Province and state borders are drawn in the shader.
 
 `--civ-seed <n>` (default 1) regenerates everything from stage 2 on without
 touching terrain.

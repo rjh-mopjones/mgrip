@@ -1,31 +1,43 @@
 <h1>Map</h1>
-<p>Click to set a spawn point. Drag to pan; the map wraps east to west. Pinch, or use the buttons, to zoom. North is the night side, south is the day side.</p>
+<p>Click a province to select it and set the spawn point there. Drag to pan; the map wraps east to west. Scroll to zoom. North is the night side, south is the day side.</p>
 <div class="spawn" aria-live="polite">
   <dl>
+    <div><dt>Spawn chunk</dt><dd id="spawnChunk"></dd></div>
     <div><dt>Zone</dt><dd id="spawnZone"></dd></div>
     <div><dt>Biome</dt><dd id="spawnBiome"></dd></div>
-    <div><dt>Chunk</dt><dd id="spawnChunk"></dd></div>
     <div><dt>Light level</dt><dd id="spawnLight"></dd></div>
-    <div><dt>Province</dt><dd id="spawnProvince"></dd></div>
-    <div><dt>Faction</dt><dd id="spawnFaction"></dd></div>
     <div><dt>Nearest settlement</dt><dd id="spawnSettlement"></dd></div>
     <div><dt>Seed</dt><dd id="spawnSeed"></dd></div>
   </dl>
   <button id="playButton" type="button">Play here</button>
 </div>
-<div class="layers" id="layers" role="radiogroup" aria-label="Base layer"></div>
-<div class="layer-group" id="overlays" role="group" aria-label="Overlays">
-  <span class="layer-group-name">Overlays</span>
+<div class="layers">
+  <div class="layer-group" id="mapModes" role="radiogroup" aria-label="Map mode">
+    <span class="layer-group-name">Map mode</span>
+  </div>
+  <div class="layer-group" id="overlays" role="group" aria-label="Overlays">
+    <span class="layer-group-name">Show</span>
+  </div>
 </div>
-<div class="map-frame" id="mapFrame" tabindex="0" role="application" aria-label="World map. Click to set the spawn point, drag to pan. Arrow keys move the spawn point by one chunk; plus and minus zoom.">
+<div class="map-frame" id="mapFrame" tabindex="0" role="application" aria-label="World map. Click a province to select it and set the spawn point; drag to pan; scroll to zoom. Arrow keys move the spawn point by one chunk; plus and minus zoom.">
   <canvas id="mapCanvas"></canvas>
+  <canvas id="labelCanvas" aria-hidden="true"></canvas>
   <div class="map-zoom">
     <button id="zoomIn" type="button" aria-label="Zoom in">+</button>
     <button id="zoomOut" type="button" aria-label="Zoom out">&minus;</button>
     <button id="zoomReset" type="button">Reset</button>
   </div>
+  <div class="map-hover" id="mapHover" hidden></div>
+  <section class="province-panel" id="provincePanel" aria-live="polite" hidden>
+    <h2 id="panelTitle"></h2>
+    <dl id="panelFacts"></dl>
+  </section>
 </div>
 <div class="legend" id="legend"></div>
+<details class="raw-layers">
+  <summary>Raw generation layers</summary>
+  <div class="layers" id="layers" role="radiogroup" aria-label="Raw layer"></div>
+</details>
 <p class="muted" id="mapStatus"></p>
 
 <dialog id="play" aria-labelledby="playTitle">

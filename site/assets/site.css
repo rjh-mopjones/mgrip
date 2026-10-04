@@ -234,11 +234,73 @@ button.plain {
 	border: 1px solid var(--text);
 	cursor: grab;
 }
+.map-frame.panning {
+	cursor: grabbing;
+}
 .map-frame canvas {
 	display: block;
 	width: 100%;
 	aspect-ratio: 2 / 1;
 	touch-action: none;
+}
+/* Labels and the spawn pin, drawn over the map; this canvas takes the input. */
+.map-frame #labelCanvas {
+	position: absolute;
+	inset: 0;
+}
+.map-hover,
+.province-panel {
+	position: absolute;
+	left: 8px;
+	border: 1px solid var(--text);
+	background: var(--bg);
+	font-size: 0.8125rem;
+	pointer-events: none;
+}
+.map-hover {
+	bottom: 8px;
+	padding: 2px 8px;
+	font-family: var(--mono);
+}
+.province-panel {
+	top: 8px;
+	width: min(17rem, calc(100% - 16px));
+	padding: 10px 12px;
+}
+.province-panel h2 {
+	margin: 0 0 6px;
+	font-size: 0.9375rem;
+}
+.province-panel dl {
+	display: grid;
+	gap: 3px;
+	margin: 0;
+}
+.province-panel dl div {
+	display: grid;
+	grid-template-columns: 6rem 1fr;
+	gap: 8px;
+}
+.province-panel dt {
+	color: var(--muted);
+}
+.province-panel dd {
+	margin: 0;
+}
+.raw-layers {
+	margin-top: 12px;
+	font-size: 0.8125rem;
+}
+.raw-layers summary {
+	cursor: pointer;
+	color: var(--muted);
+}
+@media (max-width: 640px) {
+	.province-panel {
+		position: static;
+		width: auto;
+		border-width: 1px 0 0;
+	}
 }
 .map-zoom {
 	position: absolute;
@@ -253,8 +315,10 @@ button.plain {
 	background: var(--bg);
 	color: var(--text);
 }
-#overlays {
+.layers:has(#mapModes) {
 	margin-bottom: 10px;
+}
+#overlays {
 	gap: 4px 16px;
 }
 #overlays label {
