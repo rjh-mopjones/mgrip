@@ -24,7 +24,7 @@ pub use derived::{
 pub use erosion_sim::{simulate_erosion, ErosionParams, ErosionResult};
 pub use rivers::{
     rasterize_from_network, rasterize_to_tile, RiverCharacter, RiverConstraint, RiverNetwork,
-    RiverSegment, LOD_THRESHOLD_MACRO, LOD_THRESHOLD_MESO, LOD_THRESHOLD_MICRO,
+    RiverSegment, LOD_THRESHOLD_MACRO, LOD_THRESHOLD_MESO, LOD_THRESHOLD_MICRO, rasterize_courses, RiverCourse,
 };
 pub use runtime_presentation::{
     AtmosphereClass, LandformClass, PlanetZone, RuntimeChunkPresentation,

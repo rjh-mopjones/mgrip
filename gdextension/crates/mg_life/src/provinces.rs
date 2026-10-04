@@ -32,8 +32,10 @@ const SATURATION_REJECTIONS: usize = 20_000;
 const MIN_NAVIGATION_EASE: f32 = 0.05;
 /// A province is coastal if any of its cells is this close to ocean.
 const COAST_SEARCH_RADIUS_WU: f64 = 0.375;
-/// A river cell draining more than this many cells marks a major river.
-const RIVER_JUNCTION_DRAINAGE: f64 = 2000.0;
+/// A river of at least this size (share of the largest possible river, as
+/// `TerrainQuery::river_at` reports it) is a major river. 0.4 is a river about
+/// 0.8 world units wide.
+const MAJOR_RIVER_SIZE: f64 = 0.4;
 /// Each stage derives its own random stream from `civ_seed`.
 const PROVINCE_SEED_OFFSET: u32 = 2;
 
@@ -350,7 +352,7 @@ fn bake_province_attributes(
             });
         }
 
-        if terrain.is_river(x, y) && terrain.drainage_at(x, y) > RIVER_JUNCTION_DRAINAGE {
+        if terrain.river_at(x, y) >= MAJOR_RIVER_SIZE {
             province.is_river_junction = true;
         }
     }

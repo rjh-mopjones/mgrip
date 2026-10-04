@@ -9,7 +9,7 @@ mod mesh;
 use godot::prelude::*;
 use mg_artifacts::MacroPack;
 use mg_noise::{
-    generate_macro_map, AtmosphereClass, BiomeMap, LandformClass, PlanetZone,
+    generate_macro_map, AtmosphereClass, BiomeMap, LandformClass, PlanetZone, RiverCourse,
     RuntimeChunkPresentation, RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids,
     SurfacePaletteClass, SurfaceWaterState, LOD_THRESHOLD_MICRO, SEA_LEVEL,
 };
@@ -28,7 +28,18 @@ static MACRO_SEMANTICS: Mutex<Option<Arc<MacroSemantics>>> = Mutex::new(None);
 
 struct MacroSemantics {
     macro_map: BiomeMap,
+    river_courses: Vec<RiverCourse>,
     seed: u32,
+}
+
+impl MacroSemantics {
+    fn from_pack(pack: &MacroPack) -> Self {
+        Self {
+            macro_map: pack.to_biome_map(),
+            river_courses: pack.river_courses().to_vec(),
+            seed: pack.seed,
+        }
+    }
 }
 
 /// The macro semantics already in memory, if any.
@@ -49,10 +60,7 @@ fn macro_semantics_for(seed: u32) -> Arc<MacroSemantics> {
     );
     // Go through the pack so generated and loaded macro data are bit-identical.
     let pack = MacroPack::from_macro_map(seed, &generate_macro_map(seed));
-    let semantics = Arc::new(MacroSemantics {
-        macro_map: pack.to_biome_map(),
-        seed,
-    });
+    let semantics = Arc::new(MacroSemantics::from_pack(&pack));
     *slot = Some(Arc::clone(&semantics));
     semantics
 }
@@ -61,6 +69,7 @@ fn apply_macro_semantics(map: &mut BiomeMap, seed: u32, world_x: f64, world_y: f
     let semantics = macro_semantics_for(seed);
     map.anchor_to_macro(
         &semantics.macro_map,
+        &semantics.river_courses,
         seed,
         world_x,
         world_y,
@@ -516,10 +525,7 @@ impl MgTerrainGen {
             );
             return false;
         }
-        *MACRO_SEMANTICS.lock().unwrap() = Some(Arc::new(MacroSemantics {
-            macro_map: pack.to_biome_map(),
-            seed,
-        }));
+        *MACRO_SEMANTICS.lock().unwrap() = Some(Arc::new(MacroSemantics::from_pack(&pack)));
         true
     }
 

@@ -4,7 +4,7 @@
 //! Runtime chunks are anchored to the macro map (ocean mask, heights, rivers).
 //! Generating that map takes several seconds, so the game loads it from a pack
 //! instead. A pack holds the layers anchoring and macro sampling read, as
-//! 32-bit floats, gzip-compressed.
+//! 32-bit floats, plus the river courses, gzip-compressed.
 //!
 //! A pack is only valid for the seed and the generator code it was made with.
 //! It carries a low-resolution probe of the terrain; `matches_generator`
@@ -15,11 +15,11 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use mg_core::TileType;
-use mg_noise::{generate_macro_probe, BiomeMap};
+use mg_noise::{generate_macro_probe, BiomeMap, RiverCourse};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-const MAGIC: &[u8; 6] = b"MGMP01";
+const MAGIC: &[u8; 6] = b"MGMP02";
 /// Largest probe difference still counted as the same generator. Allows for
 /// maths library differences between native and web builds.
 const PROBE_TOLERANCE: f32 = 1.0e-4;
@@ -42,6 +42,7 @@ pub struct MacroPack {
     temperature: Vec<f32>,
     aridity: Vec<f32>,
     biomes: Vec<TileType>,
+    river_courses: Vec<RiverCourse>,
 }
 
 fn narrowed(layer: &[f64]) -> Vec<f32> {
@@ -72,7 +73,17 @@ impl MacroPack {
             temperature: narrowed(&map.temperature),
             aridity: narrowed(&map.aridity),
             biomes: map.biomes.clone(),
+            river_courses: map
+                .river_network
+                .as_ref()
+                .map(|network| network.courses.clone())
+                .unwrap_or_default(),
         }
+    }
+
+    /// The world's river courses, which chunks draw their rivers from.
+    pub fn river_courses(&self) -> &[RiverCourse] {
+        &self.river_courses
     }
 
     /// The macro map as the runtime uses it. Only the packed layers are

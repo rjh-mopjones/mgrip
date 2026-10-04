@@ -365,6 +365,7 @@ fn generate_macro_tile(
 
     tile.anchor_to_macro(
         macro_map,
+        &river_network.courses,
         seed,
         wx,
         wy,
@@ -948,10 +949,12 @@ fn generate_anchored_runtime_chunk(
     world_x: f64,
     world_y: f64,
     macro_map: &BiomeMap,
+    river_courses: &[mg_noise::RiverCourse],
 ) -> BiomeMap {
     let mut map = generate_runtime_micro_map(seed, world_x, world_y);
     map.anchor_to_macro(
         macro_map,
+        river_courses,
         seed,
         world_x,
         world_y,
@@ -966,10 +969,11 @@ fn generate_anchored_runtime_chunk(
 
 fn run_inspect_chunk_seam(seed: u32, chunk_x: u32, chunk_y: u32) {
     // The same macro data the game uses: generated, then passed through a pack.
-    let macro_map =
-        mg_artifacts::MacroPack::from_macro_map(seed, &mg_noise::generate_macro_map(seed))
-            .to_biome_map();
-    let chunk = |x: f64, y: f64| generate_anchored_runtime_chunk(seed, x, y, &macro_map);
+    let pack = mg_artifacts::MacroPack::from_macro_map(seed, &mg_noise::generate_macro_map(seed));
+    let macro_map = pack.to_biome_map();
+    let chunk = |x: f64, y: f64| {
+        generate_anchored_runtime_chunk(seed, x, y, &macro_map, pack.river_courses())
+    };
 
     let (x, y) = (chunk_x as f64, chunk_y as f64);
     let here = chunk(x, y);
@@ -2148,6 +2152,7 @@ fn run_compare_scale(
             let _ = &macro_ocean_mask; // retained above for the macro receipt; unused here.
             micro.anchor_to_macro(
                 &macro_map,
+                &river_network.courses,
                 seed,
                 cx,
                 cy,

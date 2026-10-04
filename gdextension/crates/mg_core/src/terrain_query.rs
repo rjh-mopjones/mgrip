@@ -12,6 +12,8 @@ pub trait TerrainQuery: Send + Sync {
     fn erosion_at(&self, x: usize, y: usize) -> f64;
     fn light_level_at(&self, x: usize, y: usize) -> f64;
     fn rock_hardness_at(&self, x: usize, y: usize) -> f64;
+    /// Size of the river here as a share of the largest possible river:
+    /// 0.0 where there is none, 1.0 for one two world units wide.
     fn river_at(&self, x: usize, y: usize) -> f64;
     fn drainage_at(&self, x: usize, y: usize) -> f64;
     /// Tectonic stress: 1.0 at a plate boundary, 0.0 in a quiet plate interior.

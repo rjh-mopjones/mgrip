@@ -14,6 +14,7 @@
 //! Tiles call `RiverNetwork::query_chunk()` which returns segments filtered
 //! by a drainage threshold that varies with LOD level.
 
+use crate::biome_map::{WORLD_HEIGHT, WORLD_WIDTH};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -402,6 +403,10 @@ pub struct RiverNetwork {
     /// `rasterize_from_network` use the same connected river systems.
     #[serde(skip)]
     pub chains: Vec<RiverChain>,
+    /// The rivers' final courses in world space, derived from `segments`.
+    /// Every raster of the rivers, at any scale, is drawn from these.
+    #[serde(skip)]
+    pub courses: Vec<RiverCourse>,
     pub width: usize,
     pub height: usize,
 }
@@ -422,11 +427,11 @@ impl Clone for RiverNetwork {
             segments: self.segments.clone(),
             spatial_index: HashMap::new(),
             chains: Vec::new(),
+            courses: Vec::new(),
             width: self.width,
             height: self.height,
         };
         cloned.rebuild_spatial_index();
-        cloned.chains = build_river_chains(&cloned.segments);
         cloned
     }
 }
@@ -437,6 +442,7 @@ impl RiverNetwork {
             segments: Vec::new(),
             spatial_index: HashMap::new(),
             chains: Vec::new(),
+            courses: Vec::new(),
             width,
             height,
         }
@@ -601,12 +607,22 @@ impl RiverNetwork {
             );
         }
 
-        Self { segments, spatial_index, chains, width, height }
+        let mut network = Self {
+            segments,
+            spatial_index,
+            chains,
+            courses: Vec::new(),
+            width,
+            height,
+        };
+        network.courses = build_river_courses(&network);
+        network
     }
 
     pub fn rebuild_spatial_index(&mut self) {
         self.spatial_index = build_spatial_index(&self.segments);
         self.chains = build_river_chains(&self.segments);
+        self.courses = build_river_courses(self);
     }
 
     /// Returns the maximum drainage of any upstream tributary at the
@@ -691,80 +707,19 @@ impl RiverNetwork {
     /// rasterize call per chain means no gaps at confluences, width grows
     /// smoothly from headwater to mouth, and meander applies to the whole
     /// river system as a coherent curve.
+    /// The rivers on a grid covering the whole world. A cell's value is the
+    /// size of the river running through it, as a share of the largest
+    /// possible river (0.0 = no river, 1.0 = two world units wide). Drawn from
+    /// the same courses as every other scale; on a coarse grid a river
+    /// narrower than a cell still marks the cells it runs through.
     pub fn to_flow_grid(&self, width: usize, height: usize) -> Vec<f64> {
-        let mut grid = vec![0.0f64; width * height];
-        let global_max_drainage = self.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
-        let pixels_per_wu = width as f64 / 1024.0;
-        let py_per_wu = height as f64 / 512.0;
-        let target_spacing = 0.08 / pixels_per_wu.max(0.0001);
-        let min_px = FLOW_GRID_MIN_HALF_WIDTH_WU * pixels_per_wu;
-        let max_px = FLOW_GRID_MAX_HALF_WIDTH_WU * pixels_per_wu;
-
-        let chains = build_river_chains(&self.segments);
-
-        for chain in &chains {
-            if chain.path.len() < 2 {
-                continue;
-            }
-            // Only render chains with max Strahler >= 4 on the macro flow grid.
-            // S1-S3 are too numerous at 1024×512 and produce scattered fragments
-            // that don't read as connected drainage systems at full-map zoom.
-            // S4+ chains are the mid-to-large rivers that form the visible
-            // dendritic skeleton.
-            if chain.max_strahler < 3 {
-                continue;
-            }
-            let unwrapped = unwrap_path_x(&chain.path, 1024.0);
-            let smoothed = subdivide_to_spacing(&unwrapped, target_spacing);
-            if smoothed.len() < 2 {
-                continue;
-            }
-
-            // Width from the chain's max Strahler order — the trunk drives
-            // the visual weight; interior drainage modulation handles tapering.
-            let max_half_width = (macro_strahler_half_width_wu(chain.max_strahler)
-                * chain.character.width_multiplier()
-                * pixels_per_wu)
-                .clamp(min_px, max_px);
-            let half_width_wu = max_half_width / pixels_per_wu;
-            // Aggressive meander: base 10 wu + 3× river width. For S1 tribs
-            // (hw=1.4 wu): 14 wu amplitude = 14 px at 1 px/wu. The D8
-            // staircase step is 1 wu = 1 px. 14× displacement >> step →
-            // meander visually dominates the staircase. For S7 mains
-            // (hw=11 wu): 43 wu amplitude = big sweeping curves.
-            let meander_amplitude = 10.0 + half_width_wu * 3.0;
-            let smoothed = meander_path(&smoothed, meander_amplitude);
-
-            // Interpolate drainage_per_point to match smoothed path length.
-            let n = smoothed.len();
-            let orig_n = chain.drainage_per_point.len();
-            let drainage_per_point: Vec<u32> = (0..n)
-                .map(|i| {
-                    let t = i as f64 / (n - 1).max(1) as f64;
-                    let src = (t * (orig_n - 1).max(1) as f64) as usize;
-                    chain.drainage_per_point[src.min(orig_n - 1)]
-                })
-                .collect();
-
-            let min_half_width = (max_half_width * 0.15).clamp(min_px * 0.3, max_half_width);
-
-            // World → pixel conversion.
-            let pixel_path: Vec<(f64, f64)> = smoothed
-                .iter()
-                .map(|&(wx, wy)| (wx * pixels_per_wu, wy * py_per_wu))
-                .collect();
-            rasterise_smooth_line_with_min(
-                &mut grid,
-                width,
-                height,
-                &pixel_path,
-                &drainage_per_point,
-                global_max_drainage,
-                max_half_width,
-                min_half_width,
-            );
-        }
-        grid
+        paint_courses(
+            &self.courses,
+            (0.0, 0.0),
+            (WORLD_WIDTH, WORLD_HEIGHT),
+            (width, height),
+            |_coverage, half_width| (half_width / COURSE_MAX_HALF_WIDTH_WU).clamp(0.01, 1.0),
+        )
     }
 
     pub fn segment_count(&self) -> usize {
@@ -1423,6 +1378,268 @@ pub fn rasterise_smooth_line_with_min(
     }
 }
 
+// ─── River courses: one geometry for every scale ────────────────────────────
+//
+// A river is the same river whether it is drawn on the world map, in a map
+// tile or in a game chunk. Each segment's final course is built once, in
+// world space, and every raster samples that geometry at its own resolution.
+// Whether a point is in a river is then a function of its world position
+// alone, so scales cannot disagree and neighbouring tiles meet exactly.
+
+/// Distance between points along a course.
+const COURSE_POINT_SPACING_WU: f64 = 0.08;
+/// River systems that never reach this Strahler order are not drawn: they are
+/// too numerous and too short to read as drainage.
+const COURSE_MIN_SYSTEM_STRAHLER: u32 = 3;
+/// Half-width of the smallest headwater and of the largest river. CLAUDE.md
+/// river invariant: a river is at most two world units wide.
+const COURSE_MIN_HALF_WIDTH_WU: f64 = 0.08;
+const COURSE_MAX_HALF_WIDTH_WU: f64 = 1.0;
+/// Rivers are bent by warping the plane with noise: a broad sweep plus a
+/// shorter wiggle. The warp depends only on position, so a tributary and the
+/// river it joins are moved together and still meet. Amplitudes are small
+/// enough for their wavelengths that the warp never folds the plane, which
+/// would make rivers cross themselves.
+const MEANDER_SWEEP_WU: f64 = 2.0;
+const MEANDER_SWEEP_FREQUENCY: f64 = 0.05;
+const MEANDER_WIGGLE_WU: f64 = 0.4;
+const MEANDER_WIGGLE_FREQUENCY: f64 = 0.18;
+/// At any resolution a river covers at least this many samples either side of
+/// its centre line, so thin rivers do not vanish on coarse grids.
+const COURSE_MIN_HALF_WIDTH_SAMPLES: f64 = 0.5;
+
+/// One river segment's final course.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RiverCourse {
+    /// World positions from upstream to downstream. Where a course crosses
+    /// the east-west seam, x runs on past the edge of the world.
+    pub points: Vec<(f32, f32)>,
+    /// Half-width in world units at each point.
+    pub half_widths: Vec<f32>,
+}
+
+/// Where the meander warp moves a world position to.
+fn meander_warp(x: f64, y: f64) -> (f64, f64) {
+    use noise::NoiseFn;
+    let noise = meander_noise_instance();
+    // Sampled on a cylinder so the warp is continuous across the seam.
+    let offsets = |frequency: f64, amplitude: f64, shift: f64| {
+        let [cx, cz, cy] =
+            crate::wrap::cylindrical_noise_coords(x, y, frequency, 1.0, WORLD_WIDTH);
+        (
+            noise.get([cx + shift, cz, cy]) * amplitude,
+            noise.get([cx, cz + shift, cy + shift]) * amplitude,
+        )
+    };
+    let sweep = offsets(MEANDER_SWEEP_FREQUENCY, MEANDER_SWEEP_WU, 300.0);
+    let wiggle = offsets(MEANDER_WIGGLE_FREQUENCY, MEANDER_WIGGLE_WU, 700.0);
+    (x + sweep.0 + wiggle.0, y + sweep.1 + wiggle.1)
+}
+
+/// Points every `spacing` along a path, keeping its first and last point.
+fn resample_evenly(path: &[(f64, f64)], spacing: f64) -> Vec<(f64, f64)> {
+    if path.len() < 2 || spacing <= 0.0 {
+        return path.to_vec();
+    }
+    let mut resampled = vec![path[0]];
+    // Distance still to travel before the next point is due.
+    let mut until_next = spacing;
+    for pair in path.windows(2) {
+        let (dx, dy) = (pair[1].0 - pair[0].0, pair[1].1 - pair[0].1);
+        let length = (dx * dx + dy * dy).sqrt();
+        let mut travelled = 0.0;
+        while length - travelled >= until_next {
+            travelled += until_next;
+            let along = travelled / length;
+            resampled.push((pair[0].0 + dx * along, pair[0].1 + dy * along));
+            until_next = spacing;
+        }
+        until_next -= length - travelled;
+    }
+    let last = path[path.len() - 1];
+    if resampled.last() != Some(&last) {
+        resampled.push(last);
+    }
+    resampled
+}
+
+/// Build the final course of every drawn river segment. Segments share their
+/// junction points, and the warp moves a point the same way whichever segment
+/// it belongs to, so courses meet end to end.
+pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
+    let segments = &network.segments;
+    let largest_drainage = segments.iter().map(|s| s.drainage_area).max().unwrap_or(0) as f64;
+    if largest_drainage <= 0.0 {
+        return Vec::new();
+    }
+
+    // Highest Strahler order between a segment and the mouth of its system.
+    let system_order = |start: usize| {
+        let mut order = segments[start].strahler_order;
+        let mut current = start;
+        for _ in 0..segments.len() {
+            match segments[current].downstream {
+                Some(next) if next < segments.len() => {
+                    current = next;
+                    order = order.max(segments[current].strahler_order);
+                }
+                _ => break,
+            }
+        }
+        order
+    };
+    // Width follows drainage, so a river widens downstream and a tributary
+    // is never wider than the river it joins.
+    let half_width = |drainage: f64, character: RiverCharacter| {
+        let share = (drainage / largest_drainage).clamp(0.0, 1.0).sqrt();
+        let width = COURSE_MIN_HALF_WIDTH_WU
+            + (COURSE_MAX_HALF_WIDTH_WU - COURSE_MIN_HALF_WIDTH_WU) * share;
+        width * character.width_multiplier()
+    };
+
+    segments
+        .iter()
+        .enumerate()
+        .filter(|&(index, segment)| {
+            segment.path.len() >= 2 && system_order(index) >= COURSE_MIN_SYSTEM_STRAHLER
+        })
+        .map(|(index, segment)| {
+            // A segment's path stops a cell short of the segment it flows
+            // into. Carry it on to that segment's head so the river is unbroken.
+            let mut raw_path = segment.path.clone();
+            let downstream_head = segment
+                .downstream
+                .and_then(|next| segments.get(next))
+                .and_then(|next| next.path.first());
+            if let Some(&head) = downstream_head {
+                if raw_path.last() != Some(&head) {
+                    raw_path.push(head);
+                }
+            }
+            let path = resample_evenly(
+                &unwrap_path_x(&raw_path, WORLD_WIDTH),
+                COURSE_POINT_SPACING_WU,
+            );
+            // Drainage grows along the segment from what flows in at its head
+            // to its own total at its foot.
+            let inflow = network.upstream_drainage_for(index) as f64;
+            let outflow = segment.drainage_area as f64;
+            let last = (path.len() - 1).max(1) as f64;
+            RiverCourse {
+                points: path
+                    .iter()
+                    .map(|&(x, y)| {
+                        let (warped_x, warped_y) = meander_warp(x, y);
+                        (warped_x as f32, warped_y as f32)
+                    })
+                    .collect(),
+                half_widths: (0..path.len())
+                    .map(|point| {
+                        let drainage = inflow + (outflow - inflow) * point as f64 / last;
+                        half_width(drainage, segment.character) as f32
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+/// Draw river courses onto a grid covering a rectangle of the world. Samples
+/// lie on the rectangle's edges as well as inside it (`tile_w` samples span
+/// `world_w` inclusive), the same positions `BiomeMap::generate` uses, so
+/// neighbouring tiles share their border samples and agree on them.
+///
+/// Returns 1.0 inside a river, fading to 0.0 at its bank over one sample.
+pub fn rasterize_courses(
+    courses: &[RiverCourse],
+    origin_x: f64,
+    origin_y: f64,
+    world_w: f64,
+    world_h: f64,
+    tile_w: usize,
+    tile_h: usize,
+) -> Vec<f64> {
+    paint_courses(
+        courses,
+        (origin_x, origin_y),
+        (world_w, world_h),
+        (tile_w, tile_h),
+        |coverage, _half_width| coverage,
+    )
+}
+
+/// Visit every sample covered by a river and keep the largest
+/// `value(coverage, half_width)` for it. `coverage` is 1.0 inside the river,
+/// fading to 0.0 at its bank; `half_width` is the river's own half-width
+/// there, in world units.
+fn paint_courses(
+    courses: &[RiverCourse],
+    (origin_x, origin_y): (f64, f64),
+    (world_w, world_h): (f64, f64),
+    (tile_w, tile_h): (usize, usize),
+    value: impl Fn(f64, f64) -> f64,
+) -> Vec<f64> {
+    let mut grid = vec![0.0f64; tile_w * tile_h];
+    if courses.is_empty() || tile_w < 2 || tile_h < 2 {
+        return grid;
+    }
+    let step_x = world_w / (tile_w - 1) as f64;
+    let step_y = world_h / (tile_h - 1) as f64;
+    let sample_size = step_x.max(step_y);
+    let min_half_width = COURSE_MIN_HALF_WIDTH_SAMPLES * sample_size;
+    let (max_x, max_y) = (origin_x + world_w, origin_y + world_h);
+
+    for course in courses {
+        for lap in [-WORLD_WIDTH, 0.0, WORLD_WIDTH] {
+            for (ends, widths) in course.points.windows(2).zip(course.half_widths.windows(2)) {
+                let (ax, ay) = (ends[0].0 as f64 + lap, ends[0].1 as f64);
+                let (bx, by) = (ends[1].0 as f64 + lap, ends[1].1 as f64);
+                let (own_a, own_b) = (widths[0] as f64, widths[1] as f64);
+                let half_a = own_a.max(min_half_width);
+                let half_b = own_b.max(min_half_width);
+                let reach = half_a.max(half_b);
+                let (low_x, high_x) = (ax.min(bx) - reach, ax.max(bx) + reach);
+                let (low_y, high_y) = (ay.min(by) - reach, ay.max(by) + reach);
+                if high_x < origin_x || low_x > max_x || high_y < origin_y || low_y > max_y {
+                    continue;
+                }
+
+                let first_px = ((low_x - origin_x) / step_x).floor().max(0.0) as usize;
+                let last_px = (((high_x - origin_x) / step_x).ceil() as usize).min(tile_w - 1);
+                let first_py = ((low_y - origin_y) / step_y).floor().max(0.0) as usize;
+                let last_py = (((high_y - origin_y) / step_y).ceil() as usize).min(tile_h - 1);
+                let (dx, dy) = (bx - ax, by - ay);
+                let length_squared = dx * dx + dy * dy;
+
+                for py in first_py..=last_py {
+                    let wy = origin_y + py as f64 * step_y;
+                    for px in first_px..=last_px {
+                        let wx = origin_x + px as f64 * step_x;
+                        // Nearest point on the segment, as a fraction along it.
+                        let along = if length_squared > 0.0 {
+                            (((wx - ax) * dx + (wy - ay) * dy) / length_squared).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let (off_x, off_y) = (wx - (ax + dx * along), wy - (ay + dy * along));
+                        let distance = (off_x * off_x + off_y * off_y).sqrt();
+                        let half_width = half_a + (half_b - half_a) * along;
+                        if distance >= half_width {
+                            continue;
+                        }
+                        let bank = sample_size.min(half_width * 0.5);
+                        let coverage = ((half_width - distance) / bank).min(1.0);
+                        let painted = value(coverage, own_a + (own_b - own_a) * along);
+                        let cell = &mut grid[py * tile_w + px];
+                        *cell = cell.max(painted);
+                    }
+                }
+            }
+        }
+    }
+    grid
+}
+
 // ─── Rasterize from Global Network ──────────────────────────────────────────
 
 /// Rasterize rivers from the global network onto a tile grid.
@@ -1588,4 +1805,164 @@ pub fn rasterize_from_network_flat(
     network: &RiverNetwork, width: usize, height: usize, _threshold: f64,
 ) -> Vec<f64> {
     network.to_flow_grid(width, height)
+}
+
+#[cfg(test)]
+mod course_tests {
+    use super::*;
+
+    fn segment(
+        id: usize,
+        path: &[(f64, f64)],
+        drainage_area: u32,
+        downstream: Option<usize>,
+        upstream: &[usize],
+    ) -> RiverSegment {
+        RiverSegment {
+            id,
+            path: path.to_vec(),
+            drainage_area,
+            downstream,
+            upstream: upstream.to_vec(),
+            character: RiverCharacter::Permanent,
+            meander_offsets: Vec::new(),
+            strahler_order: 3,
+        }
+    }
+
+    /// Two tributaries joining at (500, 250) into a trunk running south.
+    fn forked_network() -> RiverNetwork {
+        let mut network = RiverNetwork::empty(1024, 512);
+        network.segments = vec![
+            segment(0, &[(490.0, 240.0), (500.0, 250.0)], 100, Some(2), &[]),
+            segment(1, &[(510.0, 240.0), (500.0, 250.0)], 60, Some(2), &[]),
+            segment(2, &[(500.0, 250.0), (500.0, 270.0)], 400, None, &[0, 1]),
+        ];
+        network.rebuild_spatial_index();
+        network
+    }
+
+    fn straight_course(from: (f32, f32), to: (f32, f32), half_width: f32) -> RiverCourse {
+        RiverCourse {
+            points: vec![from, to],
+            half_widths: vec![half_width, half_width],
+        }
+    }
+
+    #[test]
+    fn tributaries_end_exactly_where_the_river_they_join_begins() {
+        let courses = forked_network().courses;
+
+        assert_eq!(courses.len(), 3);
+        let trunk_head = courses[2].points[0];
+        assert_eq!(*courses[0].points.last().unwrap(), trunk_head);
+        assert_eq!(*courses[1].points.last().unwrap(), trunk_head);
+    }
+
+    #[test]
+    fn a_segment_that_stops_short_is_carried_on_to_the_river_it_flows_into() {
+        let mut network = RiverNetwork::empty(1024, 512);
+        network.segments = vec![
+            // Ends at (500, 249), one cell before the trunk's head at (500, 250).
+            segment(0, &[(490.0, 240.0), (500.0, 249.0)], 100, Some(1), &[]),
+            segment(1, &[(500.0, 250.0), (500.0, 270.0)], 400, None, &[0]),
+        ];
+        network.rebuild_spatial_index();
+
+        assert_eq!(
+            network.courses[0].points.last(),
+            network.courses[1].points.first()
+        );
+    }
+
+    #[test]
+    fn a_river_widens_downstream_and_a_tributary_is_no_wider_than_its_trunk() {
+        let courses = forked_network().courses;
+        let (tributary, trunk) = (&courses[0], &courses[2]);
+
+        assert!(tributary.half_widths.first() < tributary.half_widths.last());
+        assert!(trunk.half_widths.first() < trunk.half_widths.last());
+        assert!(tributary.half_widths.last() <= trunk.half_widths.first());
+        assert!(*trunk.half_widths.last().unwrap() <= COURSE_MAX_HALF_WIDTH_WU as f32);
+    }
+
+    #[test]
+    fn resampling_spaces_points_evenly_and_keeps_both_ends() {
+        let path = [(0.0, 0.0), (1.0, 0.0), (1.0, 0.5)];
+        let resampled = resample_evenly(&path, 0.25);
+
+        assert_eq!(resampled.first(), Some(&(0.0, 0.0)));
+        assert_eq!(resampled.last(), Some(&(1.0, 0.5)));
+        assert_eq!(resampled.len(), 7);
+        assert_eq!(resampled[1], (0.25, 0.0));
+        assert_eq!(resampled[5], (1.0, 0.25));
+    }
+
+    #[test]
+    fn a_river_system_that_stays_small_is_not_drawn() {
+        let mut network = RiverNetwork::empty(1024, 512);
+        let mut stream = segment(0, &[(100.0, 100.0), (110.0, 100.0)], 30, None, &[]);
+        stream.strahler_order = 2;
+        network.segments = vec![stream];
+        network.rebuild_spatial_index();
+
+        assert!(network.courses.is_empty());
+    }
+
+    #[test]
+    fn a_course_marks_the_samples_it_runs_through_and_nothing_far_away() {
+        // 17 samples across 16 world units: one sample per world unit.
+        let course = straight_course((0.0, 8.0), (16.0, 8.0), 1.0);
+        let grid = rasterize_courses(&[course], 0.0, 0.0, 16.0, 16.0, 17, 17);
+
+        for x in 0..17 {
+            assert_eq!(grid[8 * 17 + x], 1.0, "on the river, column {x}");
+            assert_eq!(grid[2 * 17 + x], 0.0, "far from the river, column {x}");
+        }
+    }
+
+    #[test]
+    fn a_river_thinner_than_a_sample_still_shows_on_a_coarse_grid() {
+        let hairline = straight_course((0.0, 8.0), (16.0, 8.0), 0.01);
+        let grid = rasterize_courses(&[hairline], 0.0, 0.0, 16.0, 16.0, 17, 17);
+
+        assert!((0..17).all(|x| grid[8 * 17 + x] > 0.0));
+    }
+
+    #[test]
+    fn neighbouring_tiles_agree_on_the_samples_along_their_shared_border() {
+        let course = straight_course((3.0, 1.0), (13.0, 7.0), 0.6);
+        let west = rasterize_courses(&[course.clone()], 0.0, 0.0, 8.0, 8.0, 33, 33);
+        let east = rasterize_courses(&[course], 8.0, 0.0, 8.0, 8.0, 33, 33);
+
+        for row in 0..33 {
+            assert_eq!(west[row * 33 + 32], east[row * 33], "row {row}");
+        }
+        assert!((0..33).any(|row| west[row * 33 + 32] > 0.0));
+    }
+
+    #[test]
+    fn the_world_grid_records_how_large_each_river_is() {
+        let network = forked_network();
+        let grid = network.to_flow_grid(1024, 512);
+        let largest = grid.iter().cloned().fold(0.0f64, f64::max);
+        let smallest_river = grid.iter().cloned().filter(|&v| v > 0.0).fold(1.0f64, f64::min);
+
+        // The trunk drains the most, so it has the largest value on the grid.
+        let trunk_foot = network.courses[2].half_widths.last().copied().unwrap() as f64;
+        assert!((largest - trunk_foot / COURSE_MAX_HALF_WIDTH_WU).abs() < 0.02);
+        assert!(smallest_river < largest);
+    }
+
+    #[test]
+    fn a_course_that_crosses_the_seam_is_drawn_on_both_sides() {
+        // Runs east past the edge of the world: x goes on beyond 1024.
+        let course = straight_course((1020.0, 100.0), (1028.0, 100.0), 0.5);
+        let east_edge = rasterize_courses(&[course.clone()], 1016.0, 96.0, 8.0, 8.0, 9, 9);
+        let west_edge = rasterize_courses(&[course], 0.0, 96.0, 8.0, 8.0, 9, 9);
+
+        assert_eq!(east_edge[4 * 9 + 6], 1.0);
+        assert_eq!(west_edge[4 * 9 + 2], 1.0);
+        assert_eq!(west_edge[4 * 9 + 7], 0.0);
+    }
 }

@@ -10,7 +10,9 @@ use std::sync::Arc;
 use crate::biome_splines::BiomeSplines;
 use crate::derived;
 use crate::erosion_sim::{simulate_erosion, ErosionParams};
-use crate::rivers::{rasterize_to_tile, RiverNetwork, LOD_THRESHOLD_MACRO};
+use crate::rivers::{
+    rasterize_courses, rasterize_to_tile, RiverCourse, RiverNetwork, LOD_THRESHOLD_MACRO,
+};
 use crate::strategy::{
     ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
     RockHardnessStrategy, TectonicPlatesStrategy,
@@ -641,6 +643,7 @@ impl BiomeMap {
     pub fn anchor_to_macro(
         &mut self,
         macro_map: &BiomeMap,
+        river_courses: &[RiverCourse],
         seed: u32,
         origin_x: f64,
         origin_y: f64,
@@ -749,29 +752,19 @@ impl BiomeMap {
             }
         }
 
-        // Sample rivers from the GLOBAL macro flow grid instead of per-tile
-        // chain rasterisation. Uses NEAREST-NEIGHBOR (not bilinear) to preserve
-        // crisp river edges. Bilinear smears the solid-line output across wide
-        // areas, triggering the river > 0.02 threshold far from actual channels.
-        if !macro_map.rivers.is_empty() {
-            let macro_w = macro_map.width;
-            let macro_h = macro_map.height;
-            for py in 0..tile_h {
-                for px in 0..tile_w {
-                    let idx = py * tile_w + px;
-                    let wx = sample_world_coord(origin_x, world_size_x, tile_w, px);
-                    let wy = sample_world_coord(origin_y, world_size_y, tile_h, py);
-                    let wrapped_x = crate::wrap::wrap_x(wx, macro_map.world_width);
-                    let mpx = ((wrapped_x / macro_map.world_width * macro_w as f64) as usize)
-                        .min(macro_w - 1);
-                    let mpy = ((wy.clamp(0.0, macro_map.world_height)
-                        / macro_map.world_height
-                        * macro_h as f64) as usize)
-                        .min(macro_h - 1);
-                    self.rivers[idx] = macro_map.rivers[mpy * macro_w + mpx];
-                }
-            }
-        }
+        // Rivers are drawn from the world's river courses at this tile's own
+        // resolution. The same geometry is drawn at every scale, so a river
+        // here is the river on the macro map, and neighbouring tiles agree
+        // along their shared border.
+        self.rivers = rasterize_courses(
+            river_courses,
+            origin_x,
+            origin_y,
+            world_size_x,
+            world_size_y,
+            tile_w,
+            tile_h,
+        );
 
         // Secondary derives that depend on rivers.
         for i in 0..tile_w * tile_h {
@@ -1034,7 +1027,7 @@ mod tests {
     /// A small chunk anchored to `macro_map`, the way the runtime builds one.
     fn anchored_chunk(macro_map: &BiomeMap, x: f64, y: f64) -> BiomeMap {
         let mut chunk = BiomeMap::generate(SEED, x, y, 1.0, 1.0, 32, 32, 2, false, false, 8.0);
-        chunk.anchor_to_macro(macro_map, SEED, x, y, 1.0, 1.0, LOD_THRESHOLD_MICRO, 0.2, true);
+        chunk.anchor_to_macro(macro_map, &[], SEED, x, y, 1.0, 1.0, LOD_THRESHOLD_MICRO, 0.2, true);
         chunk
     }
 
