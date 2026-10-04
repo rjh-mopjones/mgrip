@@ -1064,6 +1064,45 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         .collect();
     println!("settlements: {} total ({})", settlements.len(), by_size.join(", "));
 
+    let roads = mg_life::build_roads(
+        &settlements,
+        &analysis.navigation_cost,
+        map.width,
+        map.height,
+        map.width as f64 / map.world_width,
+    );
+    let by_kind: Vec<String> = mg_life::RoadKind::ALL
+        .iter()
+        .map(|kind| {
+            let of_kind: Vec<&mg_life::Road> = roads.iter().filter(|road| road.kind == *kind).collect();
+            let length: f64 = of_kind
+                .iter()
+                .flat_map(|road| road.path.windows(2))
+                .map(|pair| {
+                    let (dx, dy) = (pair[0].0 as f64 - pair[1].0 as f64, pair[0].1 as f64 - pair[1].1 as f64);
+                    (dx * dx + dy * dy).sqrt()
+                })
+                .sum();
+            format!("{kind:?} {} ({length:.0} chunks)", of_kind.len())
+        })
+        .collect();
+    let on_a_road: std::collections::BTreeSet<u32> = roads
+        .iter()
+        .flat_map(|road| [road.from_settlement, road.to_settlement])
+        .collect();
+    println!(
+        "roads: {} total: {}; {} settlements on no road",
+        roads.len(),
+        by_kind.join(", "),
+        settlements.len() - on_a_road.len()
+    );
+    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map);
+    println!(
+        "trade: {} flows; {} settlements send none",
+        trade_flows.len(),
+        settlements.len() - trade_flows.len()
+    );
+
     let mut biome_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for (index, &biome) in map.biomes.iter().enumerate() {
         let entry = biome_counts.entry(format!("{biome:?}")).or_default();
@@ -1125,6 +1164,8 @@ const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 4] = [
             "lifegen_provinces",
             "lifegen_factions",
             "lifegen_settlements",
+            "lifegen_roads",
+            "lifegen_trade",
         ],
     ),
 ];
@@ -1244,6 +1285,37 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     .unwrap_or_else(|e| fail(format!("saving {settlements_file}: {e}")));
     layer_files.push(settlements_file.to_string());
 
+    // LifeGen stages 5 and 6: roads and trade.
+    let roads = mg_life::build_roads(
+        &settlements,
+        &analysis.navigation_cost,
+        province_map.width,
+        province_map.height,
+        cells_per_world_unit,
+    );
+    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map);
+    let overlays = [
+        (
+            "lifegen_roads.png",
+            road_map_rgba(&province_map, &faction_map, &settlements, &roads, settlement_scale),
+        ),
+        (
+            "lifegen_trade.png",
+            trade_map_rgba(&province_map, &faction_map, &settlements, &trade_flows, settlement_scale),
+        ),
+    ];
+    for (file_name, pixels) in overlays {
+        RgbaImage::from_raw(
+            (province_map.width * settlement_scale) as u32,
+            (province_map.height * settlement_scale) as u32,
+            pixels,
+        )
+        .expect("overlay image matches its dimensions")
+        .save(output_dir.join(file_name))
+        .unwrap_or_else(|e| fail(format!("saving {file_name}: {e}")));
+        layer_files.push(file_name.to_string());
+    }
+
     // Per-chunk data: the macro map has one cell per chunk.
     let mut chunks = Vec::with_capacity(map.width * map.height * SITE_MAP_CHUNK_FIELDS.len());
     let mut biome_names: BTreeMap<u8, String> = BTreeMap::new();
@@ -1335,7 +1407,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         .unwrap_or_else(|e| fail(format!("writing map.json: {e}")));
 
     println!(
-        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks, {} provinces, {} factions, {} settlements (layers '{tag}', seed {}, civ seed {civ_seed})",
+        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks, {} provinces, {} factions, {} settlements, {} roads, {} trade flows (layers '{tag}', seed {}, civ seed {civ_seed})",
         output_dir.display(),
         layer_files.len(),
         map.width,
@@ -1343,6 +1415,8 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         province_map.provinces.len(),
         faction_map.factions.len(),
         settlements.len(),
+        roads.len(),
+        trade_flows.len(),
         manifest.seed
     );
 }
@@ -1486,51 +1560,147 @@ fn settlement_dot(size_class: mg_life::SizeClass) -> (i32, [u8; 3]) {
     }
 }
 
-/// Settlements as dots over a dimmed faction map, at `scale` output pixels per
-/// cell so small dots stay distinct. Larger settlements are drawn last.
+/// The faction map, darkened and enlarged to `scale` output pixels per cell,
+/// as a backdrop for point and line overlays.
+fn dimmed_faction_backdrop(
+    province_map: &mg_life::ProvinceMap,
+    faction_map: &mg_life::FactionMap,
+    scale: usize,
+    dim: f32,
+) -> Vec<u8> {
+    let (cells_w, cells_h) = (province_map.width, province_map.height);
+    let (width, height) = (cells_w * scale, cells_h * scale);
+    let source_pixels = faction_map_rgba(province_map, faction_map);
+    let mut pixels = vec![255u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let source = ((y / scale) * cells_w + x / scale) * 4;
+            let target = (y * width + x) * 4;
+            for channel in 0..3 {
+                pixels[target + channel] = (source_pixels[source + channel] as f32 * dim) as u8;
+            }
+        }
+    }
+    pixels
+}
+
+/// Filled dot centred on a cell. `radius` is in output pixels.
+fn draw_dot(pixels: &mut [u8], width: usize, cell: (usize, usize), scale: usize, radius: i32, colour: [u8; 3]) {
+    let height = pixels.len() / 4 / width;
+    let centre_x = (cell.0 * scale + scale / 2) as i32;
+    let centre_y = (cell.1 * scale + scale / 2) as i32;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let (x, y) = (centre_x + dx, centre_y + dy);
+            if dx * dx + dy * dy > radius * radius + 1
+                || x < 0
+                || y < 0
+                || x >= width as i32
+                || y >= height as i32
+            {
+                continue;
+            }
+            let target = (y as usize * width + x as usize) * 4;
+            pixels[target..target + 3].copy_from_slice(&colour);
+        }
+    }
+}
+
+/// One-pixel line between the centres of two cells (Bresenham).
+fn draw_line(pixels: &mut [u8], width: usize, from: (usize, usize), to: (usize, usize), scale: usize, colour: [u8; 3]) {
+    let centre = |cell: (usize, usize)| ((cell.0 * scale + scale / 2) as i32, (cell.1 * scale + scale / 2) as i32);
+    let ((mut x, mut y), (end_x, end_y)) = (centre(from), centre(to));
+    let (dx, dy) = ((end_x - x).abs(), -(end_y - y).abs());
+    let (step_x, step_y) = (if x < end_x { 1 } else { -1 }, if y < end_y { 1 } else { -1 });
+    let mut error = dx + dy;
+    loop {
+        let target = (y as usize * width + x as usize) * 4;
+        pixels[target..target + 3].copy_from_slice(&colour);
+        if x == end_x && y == end_y {
+            break;
+        }
+        let doubled = 2 * error;
+        if doubled >= dy {
+            error += dy;
+            x += step_x;
+        }
+        if doubled <= dx {
+            error += dx;
+            y += step_y;
+        }
+    }
+}
+
+/// Settlements as dots over a dimmed faction map. Larger settlements are drawn last.
 fn settlement_map_rgba(
     province_map: &mg_life::ProvinceMap,
     faction_map: &mg_life::FactionMap,
     settlements: &[mg_life::Settlement],
     scale: usize,
 ) -> Vec<u8> {
-    const BACKDROP_DIM: f32 = 0.5;
-    let (cells_w, cells_h) = (province_map.width, province_map.height);
-    let (width, height) = (cells_w * scale, cells_h * scale);
-    let backdrop = faction_map_rgba(province_map, faction_map);
-
-    let mut pixels = vec![0u8; width * height * 4];
-    for y in 0..height {
-        for x in 0..width {
-            let source = ((y / scale) * cells_w + x / scale) * 4;
-            let target = (y * width + x) * 4;
-            for channel in 0..3 {
-                pixels[target + channel] = (backdrop[source + channel] as f32 * BACKDROP_DIM) as u8;
-            }
-            pixels[target + 3] = 255;
-        }
-    }
-
+    let width = province_map.width * scale;
+    let mut pixels = dimmed_faction_backdrop(province_map, faction_map, scale, 0.5);
     let mut by_size: Vec<&mg_life::Settlement> = settlements.iter().collect();
     by_size.sort_by_key(|settlement| std::cmp::Reverse(settlement.size_class));
     for settlement in by_size {
         let (radius, colour) = settlement_dot(settlement.size_class);
-        let centre_x = (settlement.position.0 * scale + scale / 2) as i32;
-        let centre_y = (settlement.position.1 * scale + scale / 2) as i32;
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                let (x, y) = (centre_x + dx, centre_y + dy);
-                if dx * dx + dy * dy > radius * radius + 1
-                    || x < 0
-                    || y < 0
-                    || x >= width as i32
-                    || y >= height as i32
-                {
-                    continue;
-                }
-                let target = (y as usize * width + x as usize) * 4;
-                pixels[target..target + 3].copy_from_slice(&colour);
-            }
+        draw_dot(&mut pixels, width, settlement.position, scale, radius, colour);
+    }
+    pixels
+}
+
+/// Roads over a dimmed faction map: trails faint, roads amber, highways
+/// white, with faction capitals marked. Highways are drawn last.
+fn road_map_rgba(
+    province_map: &mg_life::ProvinceMap,
+    faction_map: &mg_life::FactionMap,
+    settlements: &[mg_life::Settlement],
+    roads: &[mg_life::Road],
+    scale: usize,
+) -> Vec<u8> {
+    let width = province_map.width * scale;
+    let mut pixels = dimmed_faction_backdrop(province_map, faction_map, scale, 0.3);
+    let mut by_kind: Vec<&mg_life::Road> = roads.iter().collect();
+    by_kind.sort_by_key(|road| std::cmp::Reverse(road.kind));
+    for road in by_kind {
+        let colour = match road.kind {
+            mg_life::RoadKind::Highway => [255, 255, 255],
+            mg_life::RoadKind::Road => [240, 170, 110],
+            mg_life::RoadKind::Trail => [120, 110, 150],
+        };
+        for pair in road.path.windows(2) {
+            draw_line(&mut pixels, width, pair[0], pair[1], scale, colour);
+        }
+    }
+    for settlement in settlements {
+        if settlement.size_class == mg_life::SizeClass::Metropolis {
+            draw_dot(&mut pixels, width, settlement.position, scale, 2, [255, 255, 255]);
+        }
+    }
+    pixels
+}
+
+/// Trade flows as straight lines from each settlement to its market,
+/// coloured by value, with faction capitals marked.
+fn trade_map_rgba(
+    province_map: &mg_life::ProvinceMap,
+    faction_map: &mg_life::FactionMap,
+    settlements: &[mg_life::Settlement],
+    flows: &[mg_life::TradeFlow],
+    scale: usize,
+) -> Vec<u8> {
+    let width = province_map.width * scale;
+    let mut pixels = dimmed_faction_backdrop(province_map, faction_map, scale, 0.3);
+    let position = |id: u32| settlements[(id - 1) as usize].position;
+    let mut by_value: Vec<&mg_life::TradeFlow> = flows.iter().collect();
+    by_value.sort_by(|a, b| a.value.total_cmp(&b.value));
+    for flow in by_value {
+        let [r, g, b, _] = score_to_rgba(flow.value);
+        draw_line(&mut pixels, width, position(flow.from_settlement), position(flow.to_settlement), scale, [r, g, b]);
+    }
+    for settlement in settlements {
+        if settlement.size_class == mg_life::SizeClass::Metropolis {
+            draw_dot(&mut pixels, width, settlement.position, scale, 2, [255, 255, 255]);
         }
     }
     pixels
