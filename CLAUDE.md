@@ -175,8 +175,9 @@ World map for the site (generated, gitignored, needs a layers artifact):
 ./gdextension/target/release/margins_grip export site-map site/dist/map
 ```
 
-Writes `macromap.png`, `chunks.bin` (per chunk: light level, zone, biome) and
-`map.json`. The map's seed must match `GameState.world_seed`, or the map and
+Writes one PNG per layer in the artifact (macromap, heightmap, temperature, …,
+shown as switchable layers on the map page), `chunks.bin` (per chunk: light
+level, zone, biome) and `map.json`. The map's seed must match `GameState.world_seed`, or the map and
 the spawned terrain will disagree.
 
 Lore content:
