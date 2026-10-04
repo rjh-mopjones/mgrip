@@ -58,6 +58,7 @@ python3 tools/test_fly_swim.py [--windowed]
 | `gdextension/` | Rust workspace for terrain generation and mesh data |
 | `specs/` | Numbered markdown specs |
 | `tools/` | Python test harnesses for agent bridge |
+| `site/` | Public website (currently `site/mockup/` only) |
 
 ## Key ownership boundaries
 
@@ -102,6 +103,73 @@ Build on these seams. Do not create parallel ownership paths.
 - Rivers follow terrain — they sit in valleys, not painted on flat ground
 - Rivers form dendritic drainage networks — tributaries branch and merge into trunk systems
 - No rivers rendered in ocean cells — river stops at coastline
+
+## Website (planned)
+
+The project is growing a public website: lore, design approach, devlog, an
+interactive world map, and in-browser play launched from that map. It lives in
+`site/`. Only `site/mockup/` exists so far — a static clickable mockup, not the
+real site. Do not treat mockup data (map, zone thresholds, seed) as real.
+
+Phases:
+
+1. Site shell with lore, design and devlog (static)
+2. Interactive world map built from the Rust crates (CLI-rendered macromap
+   tiles or `mg_noise` compiled to wasm) — no Godot involved
+3. In-browser play: Godot web export, launched from the map with seed +
+   `chunk_coord` in the URL. Starts with a time-boxed spike.
+
+In-browser play is the primary target. Native download comes later.
+
+Tone: matter-of-fact, portfolio style, mainly for the author's own reference.
+No marketing copy, no decorative fonts, no scroll-driven layouts. State what
+exists and what doesn't.
+
+Constraints this puts on runtime work:
+
+- Web export only supports the Compatibility renderer (WebGL2); the project is
+  currently Forward+. Flag any new Forward+-only feature — it needs a
+  Compatibility fallback
+- The `wgpu` compute path in `mg_noise/src/gpu` cannot run in the web build —
+  keep a CPU path working
+- `rayon` threads on web need SharedArrayBuffer, so the host must send
+  COOP/COEP headers (rules out GitHub Pages)
+- Keep `mg_core` and `mg_noise` free of Godot dependencies so they can compile
+  to wasm for the map
+- GPU noise is compiled out on web (`cfg(target_os = "emscripten")`), so web
+  terrain always comes from the CPU path while native may use the GPU path
+
+Web build (spike passed 2026-10-04: extension loads, chunks stream, terrain
+renders in Chrome):
+
+```sh
+# Toolchain: Rust nightly + rust-src, emscripten 4.0.0 in ~/emsdk,
+# Godot 4.3 web export templates (web_dlink_*)
+source ~/emsdk/emsdk_env.sh
+(cd gdextension && cargo +nightly build --release --lib -Zbuild-std --target wasm32-unknown-emscripten)
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . --export-debug "Web" site/play/index.html
+python3 tools/serve_web.py   # http://localhost:8060/play/
+```
+
+- wasm rustflags live in `gdextension/.cargo/config.toml`
+- Emscripten 3.1.64 (Godot 4.3's own version) cannot link current-nightly
+  output; 4.0.0 can and loads fine
+- `site/play/` is build output and gitignored
+- Spawn point on web: pass `--agent-runtime-quick-launch` and
+  `--agent-runtime-world-origin=x,y` through `GODOT_CONFIG.args` in the HTML
+- Shaders: in the Compatibility renderer `TIME` only exists inside the shader
+  entry function — pass it into helpers as a parameter
+
+Lore content:
+
+- Source of truth is the Obsidian vault at
+  `~/Documents/mop-jones-brain/Notes/` (`Margin's Grip - <Topic>.md`, index in
+  `Margin's Grip Game World Primer.md`)
+- Vault technical notes predate the Godot migration (Bevy, 2D top-down) — the
+  repo wins on any technical disagreement
+- The vault contains main-quest spoilers (History, Main Quest). Never publish a
+  note to the site without checking its visibility tier; tiers are not final —
+  ask
 
 ## Git
 
