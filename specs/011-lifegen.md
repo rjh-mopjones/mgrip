@@ -99,8 +99,6 @@ Ocean cells score 0 for habitability and navigation cost.
 
 API: `mg_life::compute_analysis_grids(terrain, cells_per_world_unit)`.
 
-Export: `margins_grip export site-map` renders the three grids as PNGs under
-a "LifeGen" layer group.
 
 ### Stage 2 - Provinces (implemented)
 
@@ -116,15 +114,15 @@ Every land cell belongs to exactly one province; ocean belongs to none.
    navigation cost, so borders tend to follow hard terrain.
 3. **Islets.** Land no seed reached joins the nearest province across water.
 4. **Attributes.** Per province: seed site, dominant biome, mean habitability,
-   area, coastal flag, major-river flag, mean elevation, mean terrain cost.
+   area, coastal flag, major-river flag, mean elevation, mean terrain cost,
+   mean light level, mean resource desirability. A province has a major river
+   if a river of at least 0.4 of the largest possible size (about 0.8 world
+   units wide) runs through it; see spec 012.
    Province adjacency is recorded for stage 3.
 
 API: `mg_life::generate_provinces(terrain, analysis, cells_per_world_unit,
 civ_seed)`.
 
-Export: a "Provinces" layer, the province id of every chunk in `chunks.bin`,
-and the province table in `map.json`. `export site-map --civ-seed <n>`
-(default 1).
 
 Differences from Randlebrot:
 
@@ -140,7 +138,7 @@ Differences from Randlebrot:
   Revisit if LifeGen moves to a finer grid.
 - **Islets are attached** to the nearest province instead of left without one.
 
-Result on seed 42, civ seed 1: 1181 provinces, 33 of them spanning the seam.
+Result on seed 42, civ seed 1: 1170 provinces.
 Small where habitable (median about 110 chunks over 0.60 habitability),
 large where barren (median about 840 under 0.25).
 
@@ -167,7 +165,10 @@ habitability, plus 0.3 for a wanted coast or major river, plus elevation,
 half the resource score or half the habitability again for Mountains,
 Resources or Fertile. Capital spacing is tried at 18.75 world units, then
 half, then none; a state is only left out if its band holds no free province,
-and is then reported as unplaced. Authored states get ids 1 to N in file
+and is then reported as unplaced. A state larger than a city-state also wants
+at least three free, claimable provinces next to its capital, so it does not
+start on an island or a headland; that requirement is dropped before the
+state is left out. Authored states get ids 1 to N in file
 order.
 
 The steps below then run for all factions together.
@@ -185,23 +186,22 @@ The steps below then run for all factions together.
    level lies outside the state's band costs a further 100 per unit of light
    outside it, so states spread along their band before leaving it. The
    cheapest claim wins. A faction stops at its budget. Provinces with
-   habitability under 0.1 cannot be claimed.
+   habitability under 0.25 cannot be claimed. Authored states grow first, all
+   at once; generated states then grow into what is left, so the many
+   generated states cannot box the lore's states in.
 4. **Absorption.** Leftover claimable provinces next to a faction with room
    join the smallest such neighbour, repeated until nothing changes. This
    closes holes between factions. Generated states have room up to 25
    provinces; authored states only up to their own budget, so a city-state
    stays a city-state.
 5. **States.** Every province ends as Claimed (by a faction), Unclaimed
-   (habitable, no faction holds it) or Uninhabited (habitability under 0.1).
+   (habitable, no faction holds it) or Uninhabited (habitability under 0.25).
 
 API: `mg_life::generate_factions(province_map, authored_states,
 cells_per_world_unit, civ_seed)` returns a `FactionMap`: a political state
 per province, a faction table (name, capital name, capital province, province
 count, area) and the names of any unplaced states.
 
-Export: a "Factions" layer (capitals marked white, unclaimed land grey), the
-faction and state of every province in `map.json`, and name labels for the
-authored states on the map page.
 
 Differences from Randlebrot:
 
@@ -212,36 +212,33 @@ Differences from Randlebrot:
 - **No generated names.** Randlebrot produced names like "Kingdom of
   Valdris". Generated minor states here are numbered.
 
-Result on seed 42, civ seed 1: 64 factions (19 authored, 45 generated), 1 to
-25 provinces each (median 10). 754 provinces claimed (44% of land), 427
-unclaimed (56%), none uninhabited. All 19 authored states were placed. Six
-factions span the seam, among them Furrow, Hollowvein Republic, Nightwall
-Covenant and Shuttered Hearth.
+Result on seed 42, civ seed 1: 64 factions (19 authored, 45 generated). 719
+provinces claimed (40% of land), 352 unclaimed (42%), 99 uninhabited (17%).
+All 19 authored states were placed, and all are within their size range.
 
-| Authored state | Provinces | Capital light | Capital habitability |
-|---|---|---|---|
-| Corazon | 22 | 0.33 | 0.88 |
-| Furrow | 5 | 0.34 | 0.85 |
-| Tidewall | 3 | 0.31 | 0.81 |
-| Vestara | 1 | 0.35 | 0.85 |
-| Ashenmere | 6 | 0.30 | 0.79 |
-| Cinderline | 10 | 0.52 | 0.68 |
-| Breakwater | 16 | 0.29 | 0.88 |
-| Ashward Dominion | 17 | 0.58 | 0.65 |
-| Emberspike Regime | 12 | 0.59 | 0.64 |
-| Searing Compact | 15 | 0.82 | 0.27 |
-| Kermans | 5 | 0.32 | 0.78 |
-| Radiant Ordinance | 7 | 0.46 | 0.74 |
-| Hollowvein Republic | 7 | 0.31 | 0.78 |
-| Nightwall Covenant | 16 | 0.28 | 0.86 |
-| Shuttered Hearth | 5 | 0.32 | 0.76 |
-| Quiet Holdings | 5 | 0.32 | 0.81 |
-| Umbral Sovereignty | 20 | 0.11 | 0.46 |
-| Frostdelve Communion | 7 | 0.07 | 0.41 |
-| The Pale | 9 | 0.20 | 0.61 |
+| Authored state | Size | Provinces | Capital light | Capital habitability |
+|---|---|---|---|---|
+| Corazon | Large | 22 | 0.33 | 0.81 |
+| Furrow | Medium | 15 | 0.36 | 0.81 |
+| Tidewall | CityState | 3 | 0.31 | 0.81 |
+| Vestara | CityState | 1 | 0.33 | 0.80 |
+| Ashenmere | Medium | 11 | 0.30 | 0.79 |
+| Cinderline | Medium | 16 | 0.52 | 0.68 |
+| Breakwater | Medium | 16 | 0.29 | 0.80 |
+| Ashward Dominion | Medium | 17 | 0.58 | 0.63 |
+| Emberspike Regime | Medium | 12 | 0.59 | 0.61 |
+| Searing Compact | Medium | 15 | 0.82 | 0.27 |
+| Kermans | Medium | 14 | 0.32 | 0.77 |
+| Radiant Ordinance | Small | 7 | 0.46 | 0.74 |
+| Hollowvein Republic | Medium | 14 | 0.34 | 0.76 |
+| Nightwall Covenant | Medium | 16 | 0.27 | 0.78 |
+| Shuttered Hearth | Small | 5 | 0.35 | 0.75 |
+| Quiet Holdings | Small | 5 | 0.31 | 0.81 |
+| Umbral Sovereignty | Large | 20 | 0.11 | 0.46 |
+| Frostdelve Communion | Small | 7 | 0.07 | 0.41 |
+| The Pale | Small | 9 | 0.20 | 0.59 |
 
-Several medium states ended below their size range (Furrow 5, Ashenmere 6,
-Kermans 5): neighbours hemmed them in before their budget was spent.
+Corazon's and Furrow's capitals are on major rivers.
 
 ### Stage 4 - Settlements (implemented)
 
@@ -253,25 +250,32 @@ Nothing in this stage is random.
 2. **Sites.** The most habitable cells of the province, each at least 7.5
    world units from the others. A province with no room for its full count
    gets fewer.
-3. **Size.** From the province's mean habitability: over 0.7 City (also over
-   0.5 with a major river), over 0.3 Town, over 0.15 Village, over 0.05
-   Outpost, otherwise Ruins. The first site in a faction's capital province
-   is a Metropolis.
-4. **No faction, nothing large.** In Unclaimed and Uninhabited provinces,
+3. **Main settlement.** The first site holds the province's main settlement.
+   In a faction's capital province it is a Metropolis. Otherwise its size
+   follows the province's mean habitability: City at 0.78 or over (0.70 with
+   a major river), Town at 0.55, Village at 0.30, Outpost below.
+4. **Other settlements.** Villages around a town or larger; outposts
+   otherwise.
+5. **No faction, nothing large.** In Unclaimed and Uninhabited provinces,
    cities and towns become villages and villages become outposts.
 
-API: `mg_life::place_settlements(province_map, faction_map, analysis,
-cells_per_world_unit)` returns settlements with a cell position, province
-and size class.
+API: `mg_life::place_settlements(province_map, faction_map, analysis, grid)`
+returns settlements with a cell position, province and size class.
 
-Export: a "Settlements" layer (dots over a dimmed faction map), the
-settlement list in `map.json`, and a nearest-settlement readout.
+Differences from Randlebrot:
 
-Difference from Randlebrot: its separate `SettlementTier` mapped one-to-one
-onto `SizeClass`, so only the size class is kept.
+- Its thresholds (city over 0.7, town over 0.3) assumed habitability spread
+  over 0 to 1. Here province habitability runs from 0.14 to 0.82 with median
+  0.53, and the old rule made every settlement in the upper half of provinces
+  a city: 1076 of them. Thresholds are recalibrated to this world, and only a
+  province's main settlement takes the full size.
+- Its separate `SettlementTier` mapped one-to-one onto `SizeClass`, so only
+  the size class is kept.
+- No ruins are generated. Every province here is above the old ruins
+  threshold, and the lore's ruins are authored places.
 
-Result on seed 42, civ seed 1: 3654 settlements. Metropolis 64, City 1029,
-Town 1125, Village 1061, Outpost 375, Ruins 0.
+Result on seed 42, civ seed 1: 3653 settlements. Metropolis 64, City 80,
+Town 370, Village 1393, Outpost 1746.
 
 ### Stage 5 - Roads (implemented)
 
@@ -304,9 +308,11 @@ of Imperial, Provincial and Trail; each road keeps the two settlements it
 joins and one cost for the whole route, instead of being flattened into
 anonymous segments.
 
-Result on seed 42, civ seed 1: 6865 roads. Highway 385 (7,496 chunks),
-Road 2772 (20,418 chunks), Trail 3708 (41,375 chunks). 49 settlements are on
-no road (islands).
+Result on seed 42, civ seed 1: 4506 roads. Highway 298 (5,814 chunks),
+Road 458 (4,077 chunks), Trail 3749 (33,056 chunks). 50 settlements are on
+no road (islands). Fewer roads than before calibration: links between towns
+and larger are the bulk of the extra links, and there are now far fewer
+towns and cities.
 
 ### Stage 6 - Trade (implemented)
 
@@ -321,13 +327,26 @@ Difference from Randlebrot: its trade stage was a stub that treated any two
 settlements near any road as connected. Here two settlements are connected
 only if the road network joins them (union-find over roads).
 
-Result on seed 42, civ seed 1: 3415 flows. 239 settlements send none (the 64
+Result on seed 42, civ seed 1: 3444 flows. 209 settlements send none (the 64
 capitals, which have nothing larger to send to, and settlements with no
 larger settlement on their road network).
 
-Export for stages 5 and 6: "Roads" and "Trade" layers. The trade layer draws
-each flow as a straight line from source to market; the line is schematic
-and may cross water that the road does not.
+
+## Map export
+
+`margins_grip export site-map <dir>` runs all six stages on the macro map and
+writes, alongside the terrain layers:
+
+- three base layers, one per analysis grid, under a "LifeGen" group
+- five transparent overlays, drawn over any base layer on the map page:
+  Provinces (borders), Factions (translucent territory, borders, capitals),
+  Settlements (dots by size), Roads (lines by kind), Trade (lines by value)
+- in `chunks.bin`, the province id of every chunk
+- in `map.json`, the province table, the faction table (name, capital, capital
+  position), the settlement list, and the colours used, for the legend
+
+`--civ-seed <n>` (default 1) regenerates everything from stage 2 on without
+touching terrain.
 
 ## Storage
 
@@ -383,40 +402,24 @@ desirability 0.25 / 0.34 / 0.55.
    temperature model here is wider (-119 C to 123 C on land) than
    Randlebrot's (-40 C to 40 C). Habitability still concentrates in the
    terminus, but the band has not been tuned.
-2. Province scale. The smallest provinces are about 30 chunks, the median
-   about 290. Whether that is the right size for a province is a design call;
+2. Province scale. The smallest provinces are about 40 chunks, the median
+   about 300. Whether that is the right size for a province is a design call;
    it is set by the two seed radii.
 3. The light bands, sizes and preferences in `lifegen_states.ron` are a first
    reading of the lore, not checked against it state by state.
-4. No province is Uninhabited. The 0.1 habitability threshold is below every
-   province's mean on this world (the lowest are about 0.2), so factions can
-   expand to the sub-stellar point and the deep night. A threshold near 0.25
-   would leave about 98 provinces uninhabited.
-5. Unclaimed land is one undifferentiated state. The lore has nomads and
+4. Unclaimed land is one undifferentiated state. The lore has nomads and
    orders operating there; nothing represents them yet.
-6. Settlement counts are high for the lore's population of about a million:
-   1029 cities and 64 metropolises. Every settlement in a province over 0.7
-   habitability is a city, and 554 provinces qualify. Sizes probably need to
-   be rarer, or scaled to faction size.
-7. No ruins are generated: no province is below 0.05 habitability. The lore's
-   ruins (elevator wreckage, Himaya-era sites) are authored, not derived from
-   habitability, so this class may need a different source.
-8. The lore's great railway and its neutral operators are not represented.
+5. The lore's great railway and its neutral operators are not represented.
    Highways are the nearest equivalent.
-9. Trade has no goods. A flow is one number. The economy in the lore
+6. Trade has no goods. A flow is one number. The economy in the lore
    (energy, food, steel, water, graphene) would need resource types per
    province and flows per resource.
-10. Major rivers are rare: about 18 provinces carry the flag (a river cell
-    draining over 2000 cells). No province with one fell inside Corazon's or
-    Furrow's band with enough habitability, so neither capital is on a major
-    river although both prefer one.
-11. Fixed in terrain: light level (and humidity, which derives from it) had a
-    visible seam where the world wraps, because its warp and scatter noise is
-    planar. It is now crossfaded across the last 64 world units before the
-    east edge. Layers artifacts made before the fix still carry the seam.
-12. `BiomeMap`'s `slope_at` clamps at the east and west edges instead of
-    wrapping, because a `BiomeMap` can also be a single tile that is not a
-    ring. Slope in the two edge columns of the macro map is slightly off.
-13. Lore relationships are not used: Vestara is not placed at a crossroads,
-    rivals are not placed next to each other, and Quiet Holdings is one
-    contiguous state rather than a scattered network.
+7. `BiomeMap`'s `slope_at` clamps at the east and west edges instead of
+   wrapping, because a `BiomeMap` can also be a single tile that is not a
+   ring. Slope in the two edge columns of the macro map is slightly off.
+8. Lore relationships are not used: Vestara is not placed at a crossroads,
+   rivals are not placed next to each other, and Quiet Holdings is one
+   contiguous state rather than a scattered network.
+9. Settlement counts are calibrated by eye against the lore's population of
+   about a million (64 capitals, 80 cities, 370 towns). No population model
+   backs them.

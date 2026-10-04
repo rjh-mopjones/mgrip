@@ -16,6 +16,8 @@ Bevy prototype under `specs/011`. All six stages exist in
 
 - The lore's named states are authored in `gdextension/data/lifegen_states.ron`
   and placed first; generated minor states fill the rest
+- A "major river" is read from the macro river layer, whose value is the
+  river's relative size (`TerrainQuery::river_at`)
 - Every stage takes an `mg_life::Grid` (resolution + whether the grid is a
   ring). Measure distances and step between columns through it, never with
   raw `x` arithmetic, so the east-west seam is handled in one place
@@ -114,8 +116,15 @@ Build on these seams. Do not create parallel ownership paths.
 - Temperature derives from light level and altitude, not Earth-like latitude
 - No green vegetation palette anywhere — if it looks Earth-green, it's wrong
 - Dayside liquid water evaporates — not normal Earth rivers or oceans
+- Most of the world is land and most of it is hostile, by design. On seed 42:
+  89% of chunks are land, 11% liquid sea; by zone, 55% dayside, 22% terminus,
+  23% nightside. Do not "fix" this towards Earth-like proportions
 
 ## River invariants
+
+Rivers are drawn from one shared geometry (`RiverCourse`, see `specs/012`):
+the macro map, map tiles and game chunks all sample the same courses. Do not
+add a second way of rasterising rivers.
 
 - Rivers only form where precipitation exceeds evaporation — the terminus band
 - No surface rivers on deep dayside (water evaporates) or deep nightside (frozen solid)
