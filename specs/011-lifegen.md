@@ -410,11 +410,10 @@ desirability 0.25 / 0.34 / 0.55.
     draining over 2000 cells). No province with one fell inside Corazon's or
     Furrow's band with enough habitability, so neither capital is on a major
     river although both prefer one.
-11. Terrain has a visible seam in light level and humidity: the east and
-    west edge columns differ far more than neighbouring columns do (heightmap,
-    continentalness and tectonic are seamless). Biomes derived from light
-    level therefore break at the seam, and LifeGen inherits it. A terrain bug,
-    not a LifeGen one.
+11. Fixed in terrain: light level (and humidity, which derives from it) had a
+    visible seam where the world wraps, because its warp and scatter noise is
+    planar. It is now crossfaded across the last 64 world units before the
+    east edge. Layers artifacts made before the fix still carry the seam.
 12. `BiomeMap`'s `slope_at` clamps at the east and west edges instead of
     wrapping, because a `BiomeMap` can also be a single tile that is not a
     ring. Slope in the two edge columns of the macro map is slightly off.

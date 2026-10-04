@@ -186,6 +186,15 @@ python3 tools/serve_web.py   # serves site/dist at http://localhost:8060/
 - Shaders: in the Compatibility renderer `TIME` only exists inside the shader
   entry function — pass it into helpers as a parameter
 
+Layers artifact (the macro world map, stored under `~/.margins_grip/layers/`):
+
+```sh
+MG_NOISE_FORCE_CPU=1 ./gdextension/target/release/margins_grip generate layers 42 <tag>
+```
+
+Always force the CPU path when generating an artifact. See "GPU and CPU
+terrain differ" below.
+
 World map for the site (generated, gitignored, needs a layers artifact):
 
 ```sh
@@ -205,6 +214,20 @@ Lore content:
 - Vault technical notes predate the Godot migration (Bevy, 2D top-down) — the
   repo wins on any technical disagreement
 - All lore in the Primer is public, including History and Main Quest
+
+## Known issues
+
+- **GPU and CPU terrain differ.** `mg_noise` uses a GPU compute path when a GPU
+  is available and a CPU path otherwise. The GPU shaders only have planar 2D
+  noise; the CPU strategies sample continentalness, humidity, rock hardness
+  and peaks on a cylinder. The same seed and chunk can come out as sea on one
+  path and land on the other. The web build and the layers artifacts use the
+  CPU path; the native game uses the GPU when it has one. Light level is the
+  one layer kept identical on both. `MG_NOISE_FORCE_CPU=1` forces the CPU path
+- `runtime_presentation::tests::classifies_reference_chunks_for_dayside_terminus_and_nightside`
+  fails (expects `DeepNightIce`, gets `FrozenCoast`), on both paths
+- The agent runtime smoke test fails with `action_timed_out` on `move_to_block`
+- `res://assets/icon.svg` is missing; an error is logged on every launch
 
 ## Git
 
