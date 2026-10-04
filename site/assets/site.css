@@ -65,6 +65,9 @@ a {
 	background: var(--bg);
 	border: 1px solid var(--text);
 }
+.page-wide {
+	max-width: none;
+}
 .nav {
 	display: flex;
 	flex-wrap: wrap;
@@ -194,13 +197,36 @@ button.plain {
 	color: var(--accent);
 }
 
-/* Map page */
-.map-layout {
+/* Map page: controls on top, the map takes the full page width */
+.layers {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) 220px;
-	gap: 24px;
-	align-items: start;
-	margin-top: 16px;
+	gap: 4px;
+	margin: 12px 0 10px;
+}
+.layer-group {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+}
+.layer-group-name {
+	width: 5.5rem;
+	font-size: 0.8125rem;
+	color: var(--muted);
+}
+.layers button {
+	padding: 3px 9px;
+	border-color: var(--line);
+	background: transparent;
+	color: var(--text);
+	font-size: 0.8125rem;
+	font-weight: 400;
+}
+.layers button[aria-checked="true"] {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: var(--bg);
+	font-weight: 600;
 }
 .map-frame {
 	position: relative;
@@ -222,20 +248,26 @@ button.plain {
 	box-shadow: 0 0 0 2px #000;
 	pointer-events: none;
 }
-.spawn td,
-.spawn th {
-	border: 0;
-	padding: 3px 16px 3px 0;
+.spawn {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px 32px;
+	margin: 16px 0 4px;
 }
-.spawn th {
-	font-weight: 400;
+.spawn dl {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 32px;
+	margin: 0;
+}
+.spawn dt {
+	font-size: 0.8125rem;
 	color: var(--muted);
 }
-.spawn td {
-	font: 400 0.875rem / 1.75 var(--mono);
-}
-.spawn + button {
-	margin-top: 16px;
+.spawn dd {
+	margin: 0;
+	font: 400 0.875rem / 1.5 var(--mono);
 }
 
 dialog {
@@ -273,9 +305,6 @@ dialog::backdrop {
 	}
 	.page {
 		border-width: 0 0 1px;
-	}
-	.map-layout {
-		grid-template-columns: 1fr;
 	}
 	tbody th,
 	tr > th:first-child {

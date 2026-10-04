@@ -34,6 +34,7 @@ use mg_noise::{
     RuntimeChunkPresentation, RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids,
     LOD_THRESHOLD_MACRO,
 };
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -93,9 +94,10 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ExportKind {
-    /// Export the world map for the website: a downscaled macromap image plus
-    /// per-chunk light level, zone and biome for spawn-point readouts.
-    /// Outputs macromap.png, chunks.bin and map.json.
+    /// Export the world map for the website: every layer image (macromap,
+    /// heightmap, temperature, …) downscaled, plus per-chunk light level, zone
+    /// and biome for spawn-point readouts.
+    /// Outputs one PNG per layer, chunks.bin and map.json.
     SiteMap {
         /// Output directory (e.g. site/map)
         output_dir: String,
@@ -903,8 +905,41 @@ fn run_inspect_chunk_presentation(
 /// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
 // ─── export site-map ─────────────────────────────────────────────────────────
 
-/// The site map image is halved until it is no wider than this.
+/// Site map images are halved until they are no wider than this.
 const SITE_MAP_MAX_IMAGE_WIDTH: usize = 2048;
+/// Layer hierarchy shown on the site map, following BiomeMap's base/derived
+/// split. Layers are matched by image file stem, case-insensitively; derived
+/// layers are listed in dependency order. Unlisted layers go under "Other".
+const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 3] = [
+    ("Composite", &["macromap"]),
+    (
+        "Base",
+        &[
+            "continentalness",
+            "tectonic",
+            "humidity",
+            "rock_hardness",
+            "light_level",
+        ],
+    ),
+    (
+        "Derived",
+        &[
+            "peaks_valleys",
+            "temperature",
+            "heightmap",
+            "erosion",
+            "aridity",
+            "rivers",
+            "precipitation_type",
+            "snowpack",
+            "water_table",
+            "resource_richness",
+            "soil_type",
+            "vegetation_density",
+        ],
+    ),
+];
 /// chunks.bin layout: one record per chunk, row-major, fields in this order.
 const SITE_MAP_CHUNK_FIELDS: [&str; 3] = ["light_level", "zone", "biome"];
 
@@ -929,21 +964,30 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
     fs::create_dir_all(output_dir)
         .unwrap_or_else(|e| fail(format!("creating {}: {e}", output_dir.display())));
 
-    // Image: the macromap, halved until it is a sensible download size.
-    let macromap = image::open(store.layer_image_path(&tag, "macromap.png"))
-        .unwrap_or_else(|e| fail(format!("could not load macromap.png for '{tag}': {e}")))
-        .to_rgba8();
-    let (mut image_w, mut image_h) = (macromap.width() as usize, macromap.height() as usize);
-    let mut pixels = macromap.into_raw();
-    while image_w > SITE_MAP_MAX_IMAGE_WIDTH && image_w % 2 == 0 && image_h % 2 == 0 {
-        pixels = downscale_rgba_2x_box(&pixels, image_w, image_h);
-        image_w /= 2;
-        image_h /= 2;
-    }
-    RgbaImage::from_raw(image_w as u32, image_h as u32, pixels)
-        .expect("downscaled buffer matches its dimensions")
-        .save(output_dir.join("macromap.png"))
-        .unwrap_or_else(|e| fail(format!("saving macromap.png: {e}")));
+    // Layer images, each halved until it is a sensible download size.
+    // Independent files, so decode/downscale/encode them in parallel.
+    let layer_sizes: Vec<(usize, usize)> = manifest
+        .layer_images
+        .par_iter()
+        .map(|file_name| {
+            let layer = image::open(store.layer_image_path(&tag, file_name))
+                .unwrap_or_else(|e| fail(format!("could not load {file_name} for '{tag}': {e}")))
+                .to_rgba8();
+            let (mut image_w, mut image_h) = (layer.width() as usize, layer.height() as usize);
+            let mut pixels = layer.into_raw();
+            while image_w > SITE_MAP_MAX_IMAGE_WIDTH && image_w % 2 == 0 && image_h % 2 == 0 {
+                pixels = downscale_rgba_2x_box(&pixels, image_w, image_h);
+                image_w /= 2;
+                image_h /= 2;
+            }
+            RgbaImage::from_raw(image_w as u32, image_h as u32, pixels)
+                .expect("downscaled buffer matches its dimensions")
+                .save(output_dir.join(file_name))
+                .unwrap_or_else(|e| fail(format!("saving {file_name}: {e}")));
+            (image_w, image_h)
+        })
+        .collect();
+    let (image_w, image_h) = layer_sizes.first().copied().unwrap_or((0, 0));
 
     // Per-chunk data: the macro map has one cell per chunk.
     let mut chunks = Vec::with_capacity(map.width * map.height * SITE_MAP_CHUNK_FIELDS.len());
@@ -969,6 +1013,9 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
         "chunks_wide": map.width,
         "chunks_high": map.height,
         "chunk_fields": SITE_MAP_CHUNK_FIELDS,
+        "layer_groups": site_map_layer_groups(&manifest.layer_images),
+        "image_width": image_w,
+        "image_height": image_h,
         "zones": PlanetZone::ALL.iter().map(|zone| format!("{zone:?}")).collect::<Vec<_>>(),
         "biomes": biome_names,
     });
@@ -977,12 +1024,34 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
         .unwrap_or_else(|e| fail(format!("writing map.json: {e}")));
 
     println!(
-        "site map exported to {}: macromap.png {image_w}x{image_h}, chunks.bin {}x{} chunks (layers '{tag}', seed {})",
+        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks (layers '{tag}', seed {})",
         output_dir.display(),
+        manifest.layer_images.len(),
         map.width,
         map.height,
         manifest.seed
     );
+}
+
+/// Sort layer image files into `SITE_MAP_LAYER_GROUPS`, dropping empty groups.
+fn site_map_layer_groups(layer_images: &[String]) -> Vec<serde_json::Value> {
+    let stem = |file_name: &str| file_name.trim_end_matches(".png").to_lowercase();
+    let mut ungrouped: Vec<&String> = layer_images.iter().collect();
+    let mut groups = Vec::new();
+    for (group_name, stems) in SITE_MAP_LAYER_GROUPS {
+        let files: Vec<&String> = stems
+            .iter()
+            .filter_map(|wanted| layer_images.iter().find(|file| stem(file) == *wanted))
+            .collect();
+        ungrouped.retain(|file| !files.contains(file));
+        if !files.is_empty() {
+            groups.push(serde_json::json!({ "name": group_name, "layers": files }));
+        }
+    }
+    if !ungrouped.is_empty() {
+        groups.push(serde_json::json!({ "name": "Other", "layers": ungrouped }));
+    }
+    groups
 }
 
 fn find_newest_layer_image(

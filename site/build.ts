@@ -261,6 +261,8 @@ function renderPage(page: {
 	activeNav: string;
 	body: string;
 	scripts?: string[];
+	/** Use the full window width instead of the reading column. */
+	wide?: boolean;
 }): string {
 	const navLinks = NAV.map(({ label, url }) => {
 		const current = url === page.activeNav ? ' aria-current="page"' : "";
@@ -286,7 +288,7 @@ function renderPage(page: {
 ${scripts}
 </head>
 <body>
-<div class="page">
+<div class="page${page.wide ? " page-wide" : ""}">
   <nav class="nav" aria-label="Site">
     <strong>Margin's Grip</strong>
     ${navLinks}
@@ -401,6 +403,7 @@ function build(): void {
 			activeNav: "/map/",
 			body: readFileSync(join(SITE_DIR, "content", "map.html"), "utf8"),
 			scripts: ["/assets/map.js"],
+			wide: true,
 		}),
 	);
 

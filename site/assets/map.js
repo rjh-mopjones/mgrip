@@ -1,10 +1,11 @@
 // Map page: pick a spawn chunk on the world map and launch the web build there.
 //
 // Map data is exported by the Rust CLI (`margins_grip export site-map`) into
-// this page's directory: macromap.png, plus chunks.bin with one record per
-// chunk as described by map.json.
+// this page's directory: one PNG per layer (macromap, heightmap, …), plus
+// chunks.bin with one record per chunk as described by map.json.
 
 const DEFAULT_SPAWN_CHUNK = { x: 440, y: 220 };
+const DEFAULT_LAYER_STEM = "macromap";
 const spawn = { ...DEFAULT_SPAWN_CHUNK };
 let worldMap = null;
 
@@ -22,6 +23,48 @@ function chunkAt(x, y) {
 		zone: meta.zones[chunks[offset + 1]],
 		biome: meta.biomes[chunks[offset + 2]],
 	};
+}
+
+// 'light_level.png' -> 'Light level'; the macromap is the default terrain view.
+function layerLabel(fileName) {
+	const stem = fileName.replace(/\.png$/, "");
+	if (stem === DEFAULT_LAYER_STEM) return "Terrain";
+	const words = stem.replace(/_/g, " ").toLowerCase();
+	return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function showLayer(fileName) {
+	document.getElementById("mapImage").src = fileName;
+	for (const button of document.querySelectorAll("#layers button")) {
+		button.setAttribute(
+			"aria-checked",
+			String(button.dataset.layer === fileName),
+		);
+	}
+}
+
+// One labelled row of layer buttons per group in map.json.
+function renderLayerButtons() {
+	const container = document.getElementById("layers");
+	for (const group of worldMap.meta.layer_groups ?? []) {
+		const row = document.createElement("div");
+		row.className = "layer-group";
+		const name = document.createElement("span");
+		name.className = "layer-group-name";
+		name.textContent = group.name;
+		row.append(name);
+		for (const fileName of group.layers) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.role = "radio";
+			button.dataset.layer = fileName;
+			button.textContent = layerLabel(fileName);
+			button.addEventListener("click", () => showLayer(fileName));
+			row.append(button);
+		}
+		container.append(row);
+	}
+	showLayer(`${DEFAULT_LAYER_STEM}.png`);
 }
 
 const chunkText = () => `${spawn.x}, ${spawn.y}`;
@@ -55,6 +98,7 @@ async function loadWorldMap() {
 			fetch("chunks.bin").then((response) => response.arrayBuffer()),
 		]);
 		worldMap = { meta, chunks: new Uint8Array(chunks) };
+		renderLayerButtons();
 		renderSpawn();
 	} catch {
 		document.getElementById("mapStatus").textContent =
