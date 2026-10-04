@@ -6,6 +6,7 @@
 pub mod analysis;
 pub mod factions;
 pub mod grid;
+pub mod names;
 pub mod provinces;
 pub mod roads;
 pub mod settlements;
@@ -18,6 +19,7 @@ pub use factions::{
     generate_factions, AuthoredState, Faction, FactionMap, PoliticalState, Preference, StateSize,
 };
 pub use grid::Grid;
+pub use names::{generate_names, NameParts, Names};
 pub use provinces::{generate_provinces, Province, ProvinceMap};
 pub use roads::{build_roads, Road, RoadKind};
 pub use settlements::{place_settlements, Settlement, SizeClass};

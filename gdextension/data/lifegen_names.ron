@@ -1,0 +1,67 @@
+// Word lists for generated names (LifeGen stage 7, `mg_life::names`).
+//
+// The lore's own state names are compounds of a mood word and a ground word
+// (Tidewall, Ashenmere, Frostdelve, Emberspike), so generated names are built
+// the same way: one first half chosen by how much light the place gets, one
+// second half chosen by the ground it stands on.
+//
+// Authored states and their capitals keep the names given in
+// lifegen_states.ron; nothing here renames them.
+//
+// No green-world words (green, leaf, grove): see the world invariants.
+(
+    // First halves, by light level.
+    night: [
+        "Frost", "Rime", "Gloom", "Umber", "Pale", "Hoar", "Black", "Still", "Star", "Dusk",
+        "Cold", "Shiver", "Glass", "Night", "Ice", "Hush", "Drift", "Grey", "Winter", "Shade",
+        "Lantern", "Hollow", "Mirk", "Silent", "Bleak", "Sleet", "Slate", "Dim",
+    ],
+    terminus: [
+        "Tide", "Ash", "Quiet", "Long", "Amber", "Rust", "Violet", "Mist", "Rain", "Low",
+        "Red", "Salt", "Iron", "Fallow", "Marl", "Reed", "Thorn", "Brack", "Loam", "Harrow",
+        "Mill", "Bell", "Wend", "Copper", "Plum", "Dun", "Stone", "Weir", "Fen", "Clay",
+        "Pewter", "Tallow", "Sable", "Cobble",
+    ],
+    day: [
+        "Ember", "Cinder", "Sear", "Scorch", "Glare", "Sun", "Dust", "Blaze", "Kiln", "Brass",
+        "Sand", "Flint", "Char", "Bright", "Dry", "Gold", "Furnace", "Slag", "White", "Heat",
+        "Bone", "Ochre", "Parch", "Flare", "Tinder", "Smelt", "Noon", "Burn",
+    ],
+    anywhere: [
+        "Old", "High", "Far", "Lone", "Wide", "Deep", "Broad", "Hard", "Last", "Rail",
+    ],
+
+    // Second halves, by ground.
+    coastal: [
+        "haven", "port", "wall", "quay", "mouth", "strand", "water", "mere", "sound", "shore",
+        "bay", "reach", "wharf", "cove", "sands", "head", "ness", "spit", "landing", "harbour",
+    ],
+    river: [
+        "ford", "run", "bridge", "weir", "bend", "brook", "water", "wash", "ferry", "fork",
+        "mill", "banks",
+    ],
+    highland: [
+        "delve", "spike", "crag", "peak", "ridge", "hold", "fell", "scar", "tor", "spire",
+        "height", "pass", "rock", "cliff",
+    ],
+    lowland: [
+        "line", "field", "stead", "ham", "ton", "wick", "hollow", "moor", "flat", "dale",
+        "row", "well", "garth", "acre",
+    ],
+    any_ground: [
+        "gate", "watch", "hearth", "rest", "cross", "hall", "march", "stone", "end", "ward",
+        "keep", "holm",
+    ],
+
+    // An outpost is named for its province's main settlement: "Ashford Relay".
+    outposts: ["Watch", "Post", "Station", "Cairn", "Relay", "Gate", "Depot", "Well", "Beacon", "Camp"],
+
+    // A generated minor state is named for its capital. {} is the capital's name.
+    // The forms the lore's own states use (Dominion, Regime, Compact, Republic,
+    // Covenant, ...) are left to them.
+    city_state_forms: ["Free City of {}", "{} Hold", "{} Commune", "{} Charter", "{}"],
+    state_forms: [
+        "{} League", "{} Concord", "{} March", "{} Union", "{} Reach", "{} Assembly",
+        "{} Protectorate", "{} Accord",
+    ],
+)
