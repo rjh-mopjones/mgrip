@@ -607,8 +607,13 @@ impl BiomeMap {
         for py in 0..tile_h {
             for px in 0..tile_w {
                 let idx = py * tile_w + px;
-                let wx = origin_x + (px as f64 + 0.5) * world_size_x / tile_w as f64;
-                let wy = origin_y + (py as f64 + 0.5) * world_size_y / tile_h as f64;
+                // Same sample positions as `generate`: the first and last sample
+                // of a tile lie on its edges, so a tile's last column and its
+                // neighbour's first column are the same world positions and must
+                // come out identical. Sampling cell centres here instead put a
+                // step in the terrain along one chunk border in eight.
+                let wx = sample_world_coord(origin_x, world_size_x, tile_w, px);
+                let wy = sample_world_coord(origin_y, world_size_y, tile_h, py);
 
                 // Anchor every base layer that feeds the biome spline from the macro
                 // artifact. Macro and runtime sample noise at different `freq_scale`
@@ -699,8 +704,8 @@ impl BiomeMap {
             for py in 0..tile_h {
                 for px in 0..tile_w {
                     let idx = py * tile_w + px;
-                    let wx = origin_x + (px as f64 + 0.5) * world_size_x / tile_w as f64;
-                    let wy = origin_y + (py as f64 + 0.5) * world_size_y / tile_h as f64;
+                    let wx = sample_world_coord(origin_x, world_size_x, tile_w, px);
+                    let wy = sample_world_coord(origin_y, world_size_y, tile_h, py);
                     let wrapped_x = crate::wrap::wrap_x(wx, macro_map.world_width);
                     let mpx = ((wrapped_x / macro_map.world_width * macro_w as f64) as usize)
                         .min(macro_w - 1);
@@ -965,8 +970,36 @@ fn apply_polar_ice_cap(
 
 #[cfg(test)]
 mod tests {
-    use super::{sample_world_coord, sample_world_step, tile_has_fluid_surface};
+    use super::{sample_world_coord, sample_world_step, tile_has_fluid_surface, BiomeMap};
+    use crate::rivers::{RiverNetwork, LOD_THRESHOLD_MICRO};
     use mg_core::TileType;
+
+    const SEED: u32 = 42;
+
+    /// A small chunk anchored to `macro_map`, the way the runtime builds one.
+    fn anchored_chunk(macro_map: &BiomeMap, rivers: &RiverNetwork, x: f64, y: f64) -> BiomeMap {
+        let mut chunk = BiomeMap::generate(SEED, x, y, 1.0, 1.0, 32, 32, 2, false, false, 8.0);
+        chunk.anchor_to_macro(macro_map, rivers, SEED, x, y, 1.0, 1.0, LOD_THRESHOLD_MICRO, 0.2, true);
+        chunk
+    }
+
+    #[test]
+    fn anchored_chunks_have_identical_heights_along_their_shared_border() {
+        // A coarse macro map without the river pass, which assumes the full-size grid.
+        let macro_map = BiomeMap::generate(SEED, 0.0, 0.0, 1024.0, 512.0, 256, 128, 0, false, false, 1.0);
+        let rivers = RiverNetwork::empty(256, 128);
+        let here = anchored_chunk(&macro_map, &rivers, 440.0, 220.0);
+        let east = anchored_chunk(&macro_map, &rivers, 441.0, 220.0);
+        let south = anchored_chunk(&macro_map, &rivers, 440.0, 221.0);
+        let (w, h) = (here.width, here.height);
+
+        for row in 0..h {
+            assert_eq!(here.heightmap[row * w + (w - 1)], east.heightmap[row * w], "east border, row {row}");
+        }
+        for column in 0..w {
+            assert_eq!(here.heightmap[(h - 1) * w + column], south.heightmap[column], "south border, column {column}");
+        }
+    }
 
     #[test]
     fn adjacent_tiles_share_the_same_border_samples() {
