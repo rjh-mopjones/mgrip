@@ -1,6 +1,6 @@
 # Spec 011 - LifeGen: Civilisation Layers
 
-**Status:** In progress (stages 1 to 3 implemented)
+**Status:** In progress (stages 1 to 4 implemented)
 **Priority:** Medium
 **Depends On:** Spec 010 (macro map), `mg_core::TerrainQuery`
 
@@ -162,10 +162,35 @@ Result on seed 42, civ seed 1: 64 factions, 1 to 25 provinces each (median
 9). 778 provinces claimed (48% of land), 416 unclaimed (52%), none
 uninhabited. Capitals sit along the terminus coasts.
 
-### Stage 4 - Settlements
+### Stage 4 - Settlements (implemented)
 
-Zero to three settlements per province by habitability and area, with size
-class and tier. Unclaimed provinces get villages and outposts only.
+Habitability decides how big settlements are, not whether they exist.
+Nothing in this stage is random.
+
+1. **Count.** Three per province; four if mean habitability is over 0.5, five
+   if over 0.7; one if the province is under 3.125 square world units.
+2. **Sites.** The most habitable cells of the province, each at least 7.5
+   world units from the others. A province with no room for its full count
+   gets fewer.
+3. **Size.** From the province's mean habitability: over 0.7 City (also over
+   0.5 with a major river), over 0.3 Town, over 0.15 Village, over 0.05
+   Outpost, otherwise Ruins. The first site in a faction's capital province
+   is a Metropolis.
+4. **No faction, nothing large.** In Unclaimed and Uninhabited provinces,
+   cities and towns become villages and villages become outposts.
+
+API: `mg_life::place_settlements(province_map, faction_map, analysis,
+cells_per_world_unit)` returns settlements with a cell position, province
+and size class.
+
+Export: a "Settlements" layer (dots over a dimmed faction map), the
+settlement list in `map.json`, and a nearest-settlement readout.
+
+Difference from Randlebrot: its separate `SettlementTier` mapped one-to-one
+onto `SizeClass`, so only the size class is kept.
+
+Result on seed 42, civ seed 1: 3686 settlements. Metropolis 64, City 1043,
+Town 1159, Village 1045, Outpost 375, Ruins 0.
 
 ### Stage 5 - Roads
 
@@ -177,7 +202,7 @@ Trade graph between settlements along roads.
 
 ## Storage
 
-Stages 1 to 3 take about a second on the macro map and are computed at
+Stages 1 to 4 take about a second on the macro map and are computed at
 export time; nothing is stored. A stored LifeGen artifact
 (`generate lifegen <layers_tag> <civ_seed>`) is introduced when a stage
 becomes slow or when the runtime needs to load LifeGen data.
@@ -188,7 +213,9 @@ becomes slow or when the runtime needs to load LifeGen data.
   river bonuses, traversability; stage 2: full land coverage, no province
   spans ocean, determinism per seed, symmetric adjacency, islets; stage 3:
   capital spacing, no capital in barren land, growth stops at barren land,
-  province limit per faction, determinism per seed).
+  province limit per faction, determinism per seed; stage 4: counts and
+  sizes by habitability, site spacing, settlements stand in their own
+  province, one metropolis per faction).
 - `margins_grip inspect layer-stats <layers_tag>` prints layer percentiles,
   LifeGen grid percentiles and province counts and areas.
 - Each stage's layers are inspected on the site map page against the terrain
@@ -230,3 +257,10 @@ desirability 0.25 / 0.34 / 0.55.
    would leave about 98 provinces uninhabited.
 5. Unclaimed land is one undifferentiated state. The lore has nomads and
    orders operating there; nothing represents them yet.
+6. Settlement counts are high for the lore's population of about a million:
+   1043 cities and 64 metropolises. Every settlement in a province over 0.7
+   habitability is a city, and 554 provinces qualify. Sizes probably need to
+   be rarer, or scaled to faction size.
+7. No ruins are generated: no province is below 0.05 habitability. The lore's
+   ruins (elevator wreckage, Himaya-era sites) are authored, not derived from
+   habitability, so this class may need a different source.
