@@ -58,7 +58,7 @@ python3 tools/test_fly_swim.py [--windowed]
 | `gdextension/` | Rust workspace for terrain generation and mesh data |
 | `specs/` | Numbered markdown specs |
 | `tools/` | Python test harnesses for agent bridge |
-| `site/` | Public website (currently `site/mockup/` only) |
+| `site/` | Static website generator (`build.ts`), content and assets |
 
 ## Key ownership boundaries
 
@@ -104,23 +104,30 @@ Build on these seams. Do not create parallel ownership paths.
 - Rivers form dendritic drainage networks — tributaries branch and merge into trunk systems
 - No rivers rendered in ocean cells — river stops at coastline
 
-## Website (planned)
+## Website
 
-The project is growing a public website: lore, design approach, devlog, an
-interactive world map, and in-browser play launched from that map. It lives in
-`site/`. Only `site/mockup/` exists so far — a static clickable mockup, not the
-real site. Its map and game launch are real (exported map data, web build);
-lore, design and devlog content are hand-written stubs.
+A static site lives in `site/`: overview, world map with in-browser play, lore,
+design notes and specs, devlog. Built locally; not deployed yet.
 
-Phases:
+```sh
+cd site && bun install && bun run build   # pages -> site/dist
+bun run typecheck && bun run lint         # after editing build.ts or assets
+```
 
-1. Site shell with lore, design and devlog (static)
-2. Interactive world map built from the Rust crates (CLI-rendered macromap
-   tiles or `mg_noise` compiled to wasm) — no Godot involved
-3. In-browser play: Godot web export, launched from the map with seed +
-   `chunk_coord` in the URL. Starts with a time-boxed spike.
+- `site/build.ts` — the whole generator. Sources: `site/content/` (overview,
+  design approach, map page), the Obsidian vault (lore + design notes),
+  `specs/` (spec pages), `git log` (devlog)
+- `site/assets/` — `site.css`, `map.js`
+- `site/dist/` — all output, gitignored. Also holds the web build
+  (`dist/play/`) and map data (`dist/map/`), which have their own commands
+  below and are not touched by the site build
+- Which vault notes are published, and under which heading, is decided by the
+  Primer note's groups: World and Quests go under Lore, the rest under Design
 
 In-browser play is the primary target. Native download comes later.
+
+Not done yet: deployment (the host must send COOP/COEP headers), release
+(non-debug) web export, download size reduction.
 
 Tone: matter-of-fact, portfolio style, mainly for the author's own reference.
 No marketing copy, no decorative fonts, no scroll-driven layouts. State what
@@ -148,15 +155,14 @@ renders in Chrome):
 # Godot 4.3 web export templates (web_dlink_*)
 source ~/emsdk/emsdk_env.sh
 (cd gdextension && cargo +nightly build --release --lib -Zbuild-std --target wasm32-unknown-emscripten)
-/Applications/Godot.app/Contents/MacOS/Godot --headless --path . --export-debug "Web" site/play/index.html
-python3 tools/serve_web.py   # http://localhost:8060/play/
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . --export-debug "Web" site/dist/play/index.html
+python3 tools/serve_web.py   # serves site/dist at http://localhost:8060/
 ```
 
 - wasm rustflags live in `gdextension/.cargo/config.toml`
 - Emscripten 3.1.64 (Godot 4.3's own version) cannot link current-nightly
   output; 4.0.0 can and loads fine
-- `site/play/` is build output and gitignored
-- `site/play_shell.html` is the export's HTML shell: `?origin=x,y` in the URL
+- `tools/web_shell.html` is the export's HTML shell: `?origin=x,y` in the URL
   becomes the spawn `world_origin`; without it the game opens on its menu
 - Spawn point on web: pass `--agent-runtime-quick-launch` and
   `--agent-runtime-world-origin=x,y` through `GODOT_CONFIG.args` in the HTML
@@ -166,7 +172,7 @@ python3 tools/serve_web.py   # http://localhost:8060/play/
 World map for the site (generated, gitignored, needs a layers artifact):
 
 ```sh
-./gdextension/target/release/margins_grip export site-map site/map
+./gdextension/target/release/margins_grip export site-map site/dist/map
 ```
 
 Writes `macromap.png`, `chunks.bin` (per chunk: light level, zone, biome) and
@@ -180,9 +186,7 @@ Lore content:
   `Margin's Grip Game World Primer.md`)
 - Vault technical notes predate the Godot migration (Bevy, 2D top-down) — the
   repo wins on any technical disagreement
-- The vault contains main-quest spoilers (History, Main Quest). Never publish a
-  note to the site without checking its visibility tier; tiers are not final —
-  ask
+- All lore in the Primer is public, including History and Main Quest
 
 ## Git
 
