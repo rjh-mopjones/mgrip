@@ -1,0 +1,11 @@
+[package]
+name = "mg_life"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mg_core = { workspace = true }
+rayon = { workspace = true }
+
+[lints]
+workspace = true

@@ -923,6 +923,7 @@ dependencies = [
  "indicatif",
  "mg_artifacts",
  "mg_core",
+ "mg_life",
  "mg_noise",
  "rayon",
  "ron",
@@ -967,6 +968,14 @@ name = "mg_core"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "mg_life"
+version = "0.1.0"
+dependencies = [
+ "mg_core",
+ "rayon",
 ]
 
 [[package]]
