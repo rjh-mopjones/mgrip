@@ -231,8 +231,8 @@ World map for the site (generated, gitignored, needs a layers artifact):
 ./gdextension/target/release/margins_grip export site-map site/dist/map
 ```
 
-Writes one PNG per layer in the artifact, transparent overlays (settlements,
-roads, trade), `chunks.bin` (per chunk: light level, zone, biome, province
+Writes one PNG per layer in the artifact, `network.json` (road paths, trade
+flows, river courses), `chunks.bin` (per chunk: light level, zone, biome, province
 id) and `map.json` (province, faction and settlement tables). The map's seed
 must match `GameState.world_seed`, or the map and the spawned terrain will
 disagree.
@@ -240,7 +240,9 @@ disagree.
 The map page (`site/assets/map.js`) is a WebGL 2 campaign-style map: a
 province-id texture plus a per-province colour table. Map modes, hover and
 selection rewrite the table, not the images. Add a map mode by adding an
-entry to `MAP_MODES`; do not bake a new image for it.
+entry to `MAP_MODES`; do not bake a new image for it. Rivers, roads, trade
+and settlements are drawn as vectors from `network.json`, with what shows
+depending on zoom (`MAP_FEATURES`, `SETTLEMENT_STYLES`, `ROAD_STYLES`).
 
 Lore content:
 

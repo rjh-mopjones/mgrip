@@ -3,8 +3,10 @@
 // launch the web build there.
 //
 // Map data is exported by the Rust CLI (`margins_grip export site-map`) into
-// this page's directory: one PNG per generation layer, transparent overlay
-// PNGs, chunks.bin with one record per chunk, and map.json describing them.
+// this page's directory: one
+// PNG per generation layer, chunks.bin with one record per chunk, map.json
+// with the province, faction and settlement tables, and network.json with
+// the roads, trade flows and river courses.
 //
 // Drawing follows the usual campaign-map scheme: one texture holds the
 // province id of every chunk, another holds one colour per province. A map
@@ -17,9 +19,6 @@ const ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_RATE = 0.0015;
 /// A press that moves further than this many pixels is a drag, not a click.
 const DRAG_THRESHOLD_PX = 4;
-/// The shader has this many overlay slots.
-const MAX_OVERLAYS = 3;
-const STATE_NAMES_TOGGLE = "State names";
 
 const RAMP = [
 	[16, 14, 38],
@@ -96,7 +95,6 @@ let renderer = null;
 let mapMode = MAP_MODES[0];
 // File name of the raw layer on show, or null while a map mode is active.
 let rawLayer = null;
-const shown = new Set([STATE_NAMES_TOGGLE]);
 let hoveredProvince = 0;
 let selectedProvince = 0;
 // Centre of the view in chunk coordinates; zoom 1 fits the whole world.
@@ -135,6 +133,27 @@ function chunkAt(x, y) {
 		// 16-bit id, low byte first; 0 = no province (sea).
 		provinceId: chunks[offset + 3] | (chunks[offset + 4] << 8),
 	};
+}
+
+// Province id of a cell; the map joins east to west.
+function provinceOfCell(x, y) {
+	const high = worldMap.meta.chunks_high;
+	return chunkAt(wrapColumn(x), Math.max(0, Math.min(high - 1, y))).provinceId;
+}
+
+// Province at a point given in chunks. Where a cell's corner pokes into a
+// neighbouring province the corner belongs to that province, which turns
+// stair-stepped borders into diagonals. The shader's provinceAt applies the
+// same rule, so what is clicked is what is drawn.
+function provinceAtPoint(x, y) {
+	const [cellX, cellY] = [Math.floor(x), Math.floor(y)];
+	const own = provinceOfCell(cellX, cellY);
+	if (own === 0) return 0;
+	const [inX, inY] = [x - cellX, y - cellY];
+	if (Math.min(inX, 1 - inX) + Math.min(inY, 1 - inY) >= 0.5) return own;
+	const across = provinceOfCell(cellX + (inX < 0.5 ? -1 : 1), cellY);
+	const along = provinceOfCell(cellX, cellY + (inY < 0.5 ? -1 : 1));
+	return across === along && across !== 0 ? across : own;
 }
 
 const provinceById = (provinceId) => worldMap.meta.provinces[provinceId - 1];
@@ -305,19 +324,25 @@ function renderLegend() {
 	} else if (!rawLayer && mapMode.legend) {
 		parts.push(`<span class="legend-item">${mapMode.legend}</span>`);
 	}
-	if (shown.has("Settlements")) {
-		for (const dot of meta.settlement_dots ?? []) {
-			if (dot.size !== "Ruins") parts.push(swatch(dot.rgb, dot.size));
-		}
+	if (!rawLayer && shown.has("Settlements")) {
+		meta.settlement_sizes.forEach((size, index) => {
+			if (size !== "Ruins")
+				parts.push(swatch(SETTLEMENT_STYLES[index].rgb, size));
+		});
 	}
-	if (shown.has("Roads")) {
-		for (const road of meta.road_colours ?? []) {
-			parts.push(swatch(road.rgb, road.kind));
-		}
+	if (!rawLayer && shown.has("Roads")) {
+		worldMap.roadKinds.forEach((kind, index) => {
+			parts.push(swatch(ROAD_STYLES[index].rgb, kind));
+		});
 	}
-	if (shown.has("Trade")) {
+	if (!rawLayer && shown.has("Trade")) {
 		parts.push(
 			'<span class="legend-item">Trade: line from a settlement to its market <span class="swatch ramp"></span> brighter is richer</span>',
+		);
+	}
+	if (!rawLayer) {
+		parts.push(
+			'<span class="legend-item">Smaller settlements and roads appear as you zoom in.</span>',
 		);
 	}
 	document.getElementById("legend").innerHTML = parts.join("");
@@ -351,7 +376,7 @@ function chunkUnder(cssX, cssY) {
 function provinceUnder(cssX, cssY) {
 	const chunk = chunkUnder(cssX, cssY);
 	if (chunk.y < 0 || chunk.y >= worldMap.meta.chunks_high) return 0;
-	return chunkAt(wrapColumn(chunk.x), Math.floor(chunk.y)).provinceId;
+	return provinceAtPoint(chunk.x, chunk.y);
 }
 
 // Zoom by `factor`, keeping the chunk under (cssX, cssY) where it is.
@@ -394,10 +419,6 @@ precision highp int;
 uniform sampler2D uBase;        // terrain, or a raw layer
 uniform sampler2D uProvinceIds; // one texel per chunk: province id, low byte in r
 uniform sampler2D uProvinces;   // row 0: colour per province; row 1: owning faction
-uniform sampler2D uOverlay0;
-uniform sampler2D uOverlay1;
-uniform sampler2D uOverlay2;
-uniform vec3 uOverlayShown;
 uniform vec2 uCanvas;        // pixels
 uniform vec2 uWorld;         // chunks
 uniform vec2 uCentre;        // chunk at the middle of the canvas
@@ -411,27 +432,44 @@ out vec4 colour;
 
 const vec3 BORDER = vec3(0.063, 0.055, 0.149);
 const vec3 OFF_MAP = vec3(0.933, 0.945, 0.957);
+// Eight directions round a circle, for finding borders.
+const vec2 RING[8] = vec2[8](
+	vec2(1.0, 0.0), vec2(0.707, 0.707), vec2(0.0, 1.0), vec2(-0.707, 0.707),
+	vec2(-1.0, 0.0), vec2(-0.707, -0.707), vec2(0.0, -1.0), vec2(0.707, -0.707)
+);
 
 int unpackId(vec4 texel) {
 	return int(texel.r * 255.0 + 0.5) + int(texel.g * 255.0 + 0.5) * 256;
 }
 
 // The map joins east to west.
-int provinceAt(ivec2 cell) {
+int provinceOfCell(ivec2 cell) {
 	int wide = int(uWorld.x);
 	cell.x = ((cell.x % wide) + wide) % wide;
 	cell.y = clamp(cell.y, 0, int(uWorld.y) - 1);
 	return unpackId(texelFetch(uProvinceIds, cell, 0));
 }
 
-int ownerOf(int province) {
-	return unpackId(texelFetch(uProvinces, ivec2(province, 1), 0));
+// Province at a point. Province ids come one per chunk, which would give
+// stair-stepped borders; where a cell's corner pokes into a neighbouring
+// province, the corner is given to that province, turning steps into
+// diagonals. Coasts are left alone so they match the terrain image.
+// provinceAtPoint in map.js applies the same rule.
+int provinceAt(vec2 chunk) {
+	ivec2 cell = ivec2(floor(chunk));
+	int own = provinceOfCell(cell);
+	if (own == 0) return 0;
+	vec2 inCell = fract(chunk);
+	vec2 toEdge = min(inCell, 1.0 - inCell);
+	if (toEdge.x + toEdge.y >= 0.5) return own;
+	ivec2 side = ivec2(inCell.x < 0.5 ? -1 : 1, inCell.y < 0.5 ? -1 : 1);
+	int across = provinceOfCell(cell + ivec2(side.x, 0));
+	int along = provinceOfCell(cell + ivec2(0, side.y));
+	return (across == along && across != 0) ? across : own;
 }
 
-// How much of a border of the given half-width (pixels) covers a point that
-// is 'distance' pixels from the edge.
-float borderCover(float distance, float halfWidth) {
-	return clamp(halfWidth + 0.5 - distance, 0.0, 1.0);
+int ownerOf(int province) {
+	return unpackId(texelFetch(uProvinces, ivec2(province, 1), 0));
 }
 
 void main() {
@@ -441,11 +479,9 @@ void main() {
 		colour = vec4(OFF_MAP, 1.0);
 		return;
 	}
-	vec2 uv = chunk / uWorld;
-	vec3 shade = texture(uBase, uv).rgb;
+	vec3 shade = texture(uBase, chunk / uWorld).rgb;
 
-	ivec2 cell = ivec2(floor(chunk));
-	int province = provinceAt(cell);
+	int province = provinceAt(chunk);
 	if (province != 0 && uProvinceLayer > 0.0) {
 		// Tint the terrain rather than cover it, so relief shows through.
 		vec4 tint = texelFetch(uProvinces, ivec2(province, 0), 0);
@@ -457,39 +493,27 @@ void main() {
 			shade = mix(shade, vec3(1.0), 0.16);
 		}
 
-		// Distance, in pixels, to the nearest cell edge with another province
-		// beyond it, and to the nearest with another state (or the sea).
-		vec2 inCell = fract(chunk);
-		float toProvince = 1e6;
-		float toState = 1e6;
+		// A point is on a border if another province lies within the border's
+		// half-width of it. Counting how many of eight directions find one
+		// gives a soft edge.
 		int owner = ownerOf(province);
-		ivec2 steps[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
-		float edges[4] = float[4](inCell.x, 1.0 - inCell.x, inCell.y, 1.0 - inCell.y);
-		for (int side = 0; side < 4; side++) {
-			int neighbour = provinceAt(cell + steps[side]);
-			if (neighbour == province) continue;
-			float distance = edges[side] * uPixelsPerChunk;
-			toProvince = min(toProvince, distance);
-			if (neighbour == 0 || ownerOf(neighbour) != owner) {
-				toState = min(toState, distance);
-			}
+		float provinceHits = 0.0;
+		float stateHits = 0.0;
+		float outlineHits = 0.0;
+		for (int direction = 0; direction < 8; direction++) {
+			vec2 reach = RING[direction] * uPixelRatio / uPixelsPerChunk;
+			int thin = provinceAt(chunk + reach * 0.6);
+			if (thin != province) provinceHits += 1.0;
+			int thick = provinceAt(chunk + reach * 1.2);
+			if (thick != province && (thick == 0 || ownerOf(thick) != owner)) stateHits += 1.0;
+			if (province == uSelected && provinceAt(chunk + reach * 2.0) != province) outlineHits += 1.0;
 		}
-		// Province borders fade out when zoomed far out; state borders stay.
+		// Province borders fade when zoomed far out; state borders stay.
 		float provinceStrength = mix(0.25, 0.7, smoothstep(1.5, 5.0, uPixelsPerChunk / uPixelRatio));
-		shade = mix(shade, BORDER, borderCover(toProvince, 0.5 * uPixelRatio) * provinceStrength);
-		shade = mix(shade, BORDER, borderCover(toState, 1.0 * uPixelRatio) * 0.9);
-		if (province == uSelected) {
-			shade = mix(shade, vec3(1.0), borderCover(toProvince, 1.25 * uPixelRatio));
-		}
+		shade = mix(shade, BORDER, min(provinceHits / 3.0, 1.0) * provinceStrength);
+		shade = mix(shade, BORDER, min(stateHits / 3.0, 1.0) * 0.9);
+		shade = mix(shade, vec3(1.0), min(outlineHits / 3.0, 1.0));
 	}
-
-	// Overlay images are premultiplied.
-	vec4 overlay0 = texture(uOverlay0, uv) * uOverlayShown.x;
-	shade = shade * (1.0 - overlay0.a) + overlay0.rgb;
-	vec4 overlay1 = texture(uOverlay1, uv) * uOverlayShown.y;
-	shade = shade * (1.0 - overlay1.a) + overlay1.rgb;
-	vec4 overlay2 = texture(uOverlay2, uv) * uOverlayShown.z;
-	shade = shade * (1.0 - overlay2.a) + overlay2.rgb;
 
 	colour = vec4(shade, 1.0);
 }`;
@@ -524,11 +548,8 @@ function createRenderer() {
 	const [wide, high] = [meta.chunks_wide, meta.chunks_high];
 	const provinceCount = meta.provinces.length;
 
-	// Texture units: 0 base image, 1 province ids, 2 province table, 3+ overlays.
-	const samplers = ["uBase", "uProvinceIds", "uProvinces"];
-	for (let slot = 0; slot < MAX_OVERLAYS; slot++)
-		samplers.push(`uOverlay${slot}`);
-	samplers.forEach((name, unit) => {
+	// Texture units: 0 base image, 1 province ids, 2 province table.
+	["uBase", "uProvinceIds", "uProvinces"].forEach((name, unit) => {
 		gl.uniform1i(uniform(name), unit);
 	});
 
@@ -575,7 +596,7 @@ function createRenderer() {
 
 	// Images are loaded once and kept; a blank texel stands in until then.
 	const imageTextures = new Map();
-	const imageTexture = (fileName, premultiplied) => {
+	const imageTexture = (fileName) => {
 		if (imageTextures.has(fileName)) return imageTextures.get(fileName);
 		const texture = gl.createTexture();
 		imageTextures.set(fileName, texture);
@@ -596,7 +617,6 @@ function createRenderer() {
 		element.addEventListener("load", () => {
 			gl.activeTexture(gl.TEXTURE0);
 			gl.bindTexture(gl.TEXTURE_2D, texture);
-			gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, premultiplied);
 			gl.texImage2D(
 				gl.TEXTURE_2D,
 				0,
@@ -638,23 +658,10 @@ function createRenderer() {
 				table,
 			);
 		},
-		draw({ baseImage, overlayImages, showProvinces }) {
+		draw({ baseImage, showProvinces }) {
 			gl.viewport(0, 0, canvas.width, canvas.height);
 			gl.activeTexture(gl.TEXTURE0);
-			gl.bindTexture(gl.TEXTURE_2D, imageTexture(baseImage, false));
-			// Magnified terrain stays sharp: chunks are the unit.
-			gl.texParameteri(
-				gl.TEXTURE_2D,
-				gl.TEXTURE_MAG_FILTER,
-				view.zoom < 6 ? gl.LINEAR : gl.NEAREST,
-			);
-			const overlayShown = [0, 0, 0];
-			overlayImages.slice(0, MAX_OVERLAYS).forEach((fileName, slot) => {
-				gl.activeTexture(gl.TEXTURE3 + slot);
-				gl.bindTexture(gl.TEXTURE_2D, imageTexture(fileName, true));
-				overlayShown[slot] = 1;
-			});
-			gl.uniform3fv(uniform("uOverlayShown"), overlayShown);
+			gl.bindTexture(gl.TEXTURE_2D, imageTexture(baseImage));
 			gl.uniform2f(uniform("uCanvas"), canvas.width, canvas.height);
 			gl.uniform2f(uniform("uWorld"), wide, high);
 			gl.uniform2f(uniform("uCentre"), view.x, view.y);
@@ -668,7 +675,182 @@ function createRenderer() {
 	};
 }
 
-// ─── Labels and the spawn pin (2D canvas over the map) ───────────────────────
+// ─── Lines, markers and names (2D canvas over the map) ───────────────────────
+//
+// What is drawn depends on how far in the view is: `detail` is CSS pixels per
+// chunk, about 1.5 with the whole world in view and 25 fully zoomed in.
+
+const detail = () => pixelsPerChunk() / window.devicePixelRatio;
+
+// Indexed like `settlement_sizes` in map.json. `from` is the detail at which
+// a size starts to show; `radius` is in CSS pixels.
+const SETTLEMENT_STYLES = [
+	{ from: 0, radius: 3.5, rgb: [255, 255, 255], square: true },
+	{ from: 2.5, radius: 3, rgb: [255, 214, 120], square: true },
+	{ from: 5, radius: 2.5, rgb: [240, 170, 110] },
+	{ from: 9, radius: 2, rgb: [225, 215, 235] },
+	{ from: 14, radius: 1.5, rgb: [150, 140, 175] },
+	{ from: 14, radius: 1.5, rgb: [170, 70, 80] },
+];
+// Indexed like `road_kinds` in network.json. `width` is in CSS pixels.
+const ROAD_STYLES = [
+	{ from: 0, width: 1.5, rgb: [255, 255, 255] },
+	{ from: 3, width: 1.2, rgb: [240, 200, 144] },
+	{ from: 6, width: 1, rgb: [70, 58, 96], dash: [4, 3] },
+];
+const RIVER_RGB = [80, 130, 180];
+/// Below this detail the rivers in the terrain image are sharp enough.
+const RIVERS_FROM_DETAIL = 3;
+/// State names fade out, and capital names in, across this range of detail.
+const NAMES_SWAP_DETAIL = [7, 12];
+const LABEL_HALO = "rgba(16, 14, 38, 0.8)";
+
+const cssColour = (rgb, alpha = 1) => `rgba(${rgb.join(",")}, ${alpha})`;
+
+// A line of points as [x, y, ...extra] with `stride` numbers per point, made
+// continuous across the east-west seam, with its bounding box.
+function unwrappedLine(numbers, stride, offset) {
+	const wide = worldMap.meta.chunks_wide;
+	const points = [];
+	let shift = 0;
+	for (let index = 0; index < numbers.length; index += stride) {
+		const x = numbers[index] + offset;
+		const previous = points.at(-1);
+		if (previous) {
+			const step = x + shift - previous[0];
+			if (step > wide / 2) shift -= wide;
+			else if (step < -wide / 2) shift += wide;
+		}
+		points.push([x + shift, numbers[index + 1] + offset, numbers[index + 2]]);
+	}
+	const xs = points.map((point) => point[0]);
+	const ys = points.map((point) => point[1]);
+	return {
+		points,
+		box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+	};
+}
+
+// Turn network.json into lines ready to draw.
+function prepareNetwork(network) {
+	const { settlements } = worldMap.meta;
+	return {
+		// Roads run through the centres of the cells they cross.
+		roads: network.roads.map((road) => ({
+			kind: road[0],
+			...unwrappedLine(road.slice(1), 2, 0.5),
+		})),
+		rivers: network.rivers.map((river) => unwrappedLine(river, 3, 0)),
+		trade: network.trade.map(([from, to, value]) => ({
+			value,
+			...unwrappedLine([...settlements[from], ...settlements[to]], 4, 0.5),
+		})),
+	};
+}
+
+// Calls `drawAt(toScreen)` once for each place a line is on screen: the map
+// repeats east to west, so that can be more than once. `toScreen` maps a
+// point in chunks to canvas pixels.
+function forEachVisibleLap(box, drawAt) {
+	const wide = worldMap.meta.chunks_wide;
+	const scale = pixelsPerChunk();
+	const halfWidth = canvas.width / scale / 2;
+	const halfHeight = canvas.height / scale / 2;
+	if (box[3] < view.y - halfHeight || box[1] > view.y + halfHeight) return;
+	for (const lap of [-2, -1, 0, 1, 2]) {
+		const shift = lap * wide;
+		if (
+			box[2] + shift < view.x - halfWidth ||
+			box[0] + shift > view.x + halfWidth
+		)
+			continue;
+		drawAt(([x, y]) => [
+			(x + shift - view.x) * scale + canvas.width / 2,
+			(y - view.y) * scale + canvas.height / 2,
+		]);
+	}
+}
+
+// Trace a line through `points`, rounding its corners.
+function tracePath(points, toScreen) {
+	const screen = points.map(toScreen);
+	labelContext.beginPath();
+	labelContext.moveTo(screen[0][0], screen[0][1]);
+	for (let index = 1; index < screen.length - 1; index++) {
+		const [x, y] = screen[index];
+		const [nextX, nextY] = screen[index + 1];
+		labelContext.quadraticCurveTo(x, y, (x + nextX) / 2, (y + nextY) / 2);
+	}
+	const last = screen.at(-1);
+	labelContext.lineTo(last[0], last[1]);
+}
+
+function drawRivers() {
+	if (detail() < RIVERS_FROM_DETAIL) return;
+	const ratio = window.devicePixelRatio;
+	labelContext.strokeStyle = cssColour(RIVER_RGB);
+	labelContext.lineCap = "round";
+	labelContext.setLineDash([]);
+	for (const river of worldMap.network.rivers) {
+		forEachVisibleLap(river.box, (toScreen) => {
+			// One stroke per stretch, as wide as the river is there.
+			for (let index = 0; index + 1 < river.points.length; index++) {
+				const [from, to] = [river.points[index], river.points[index + 1]];
+				const [fromX, fromY] = toScreen(from);
+				const [toX, toY] = toScreen(to);
+				labelContext.lineWidth = Math.max(
+					1.2 * ratio,
+					(from[2] + to[2]) * pixelsPerChunk(),
+				);
+				labelContext.beginPath();
+				labelContext.moveTo(fromX, fromY);
+				labelContext.lineTo(toX, toY);
+				labelContext.stroke();
+			}
+		});
+	}
+}
+
+// Lesser roads first, so highways lie on top.
+function drawRoads() {
+	const ratio = window.devicePixelRatio;
+	labelContext.lineCap = "round";
+	labelContext.lineJoin = "round";
+	for (let kind = ROAD_STYLES.length - 1; kind >= 0; kind--) {
+		const style = ROAD_STYLES[kind];
+		if (detail() < style.from) continue;
+		labelContext.strokeStyle = cssColour(style.rgb, 0.9);
+		labelContext.lineWidth = style.width * ratio;
+		labelContext.setLineDash(
+			(style.dash ?? []).map((length) => length * ratio),
+		);
+		for (const road of worldMap.network.roads) {
+			if (road.kind !== kind) continue;
+			forEachVisibleLap(road.box, (toScreen) => {
+				tracePath(road.points, toScreen);
+				labelContext.stroke();
+			});
+		}
+	}
+	labelContext.setLineDash([]);
+}
+
+// Straight lines from each settlement to its market. Schematic: a line may
+// cross water that the road does not.
+function drawTrade() {
+	labelContext.lineWidth = window.devicePixelRatio;
+	labelContext.setLineDash([]);
+	for (const flow of worldMap.network.trade) {
+		labelContext.strokeStyle = cssColour(
+			rampColour(flow.value).slice(0, 3),
+			0.85,
+		);
+		forEachVisibleLap(flow.box, (toScreen) => {
+			tracePath(flow.points, toScreen);
+			labelContext.stroke();
+		});
+	}
+}
 
 // Canvas x positions at which chunk column `chunkX` is visible: the map
 // repeats east to west, so it can appear more than once.
@@ -678,7 +860,7 @@ function screenColumns(chunkX) {
 	const columns = [];
 	for (const lap of [-1, 0, 1]) {
 		const x = (chunkX + lap * wide - view.x) * scale + canvas.width / 2;
-		if (x > -wide * scale && x < canvas.width + wide * scale) columns.push(x);
+		if (x > -20 && x < canvas.width + 20) columns.push(x);
 	}
 	return columns;
 }
@@ -686,9 +868,75 @@ function screenColumns(chunkX) {
 const screenRow = (chunkY) =>
 	(chunkY - view.y) * pixelsPerChunk() + canvas.height / 2;
 
+// Text with a dark halo, so it reads over any map colour.
+function drawLabel(text, x, y, size, alpha = 1) {
+	labelContext.globalAlpha = alpha;
+	labelContext.font = `600 ${size}px "Public Sans", system-ui, sans-serif`;
+	labelContext.lineJoin = "round";
+	labelContext.lineWidth = size / 4;
+	labelContext.strokeStyle = LABEL_HALO;
+	labelContext.strokeText(text, x, y);
+	labelContext.fillStyle = "#fff";
+	labelContext.fillText(text, x, y);
+	labelContext.globalAlpha = 1;
+}
+
+// How far through the swap from state names to capital names the view is.
+function namesSwap() {
+	const [from, to] = NAMES_SWAP_DETAIL;
+	return Math.max(0, Math.min(1, (detail() - from) / (to - from)));
+}
+
+// Settlements as markers, smaller sizes appearing as the view closes in.
+// Capitals of the authored states are named once the view is close.
+function drawSettlements() {
+	const ratio = window.devicePixelRatio;
+	const { settlements } = worldMap.meta;
+	const capitalNameAlpha = namesSwap();
+	labelContext.textAlign = "left";
+	labelContext.textBaseline = "middle";
+	labelContext.lineWidth = ratio;
+	// Largest last, so they lie on top.
+	for (let size = SETTLEMENT_STYLES.length - 1; size >= 0; size--) {
+		const style = SETTLEMENT_STYLES[size];
+		if (detail() < style.from) continue;
+		const radius = style.radius * ratio;
+		for (const [chunkX, chunkY, settlementSize, provinceId] of settlements) {
+			if (settlementSize !== size) continue;
+			const y = screenRow(chunkY + 0.5);
+			if (y < -20 || y > canvas.height + 20) continue;
+			for (const x of screenColumns(chunkX + 0.5)) {
+				labelContext.beginPath();
+				if (style.square)
+					labelContext.rect(x - radius, y - radius, radius * 2, radius * 2);
+				else labelContext.arc(x, y, radius, 0, Math.PI * 2);
+				labelContext.fillStyle = cssColour(style.rgb);
+				labelContext.fill();
+				labelContext.lineWidth = ratio;
+				labelContext.strokeStyle = cssColour([16, 14, 38]);
+				labelContext.stroke();
+				const capitalName =
+					size === 0 &&
+					factionById(provinceById(provinceId).faction)?.capital_name;
+				if (capitalName && capitalNameAlpha > 0) {
+					drawLabel(
+						capitalName,
+						x + radius + 4 * ratio,
+						y,
+						12 * ratio,
+						capitalNameAlpha,
+					);
+				}
+			}
+		}
+	}
+}
+
 // Names of the authored states over their territory, larger for larger
 // states. A name that would overlap a larger state's name is left out.
 function drawStateNames() {
+	const alpha = 1 - namesSwap();
+	if (alpha <= 0) return;
 	const ratio = window.devicePixelRatio;
 	const placed = [];
 	const states = worldMap.meta.factions
@@ -697,7 +945,6 @@ function drawStateNames() {
 		.sort((a, b) => b.faction.area_chunks - a.faction.area_chunks);
 	labelContext.textAlign = "center";
 	labelContext.textBaseline = "middle";
-	labelContext.lineJoin = "round";
 	for (const { faction, at } of states) {
 		const span = Math.sqrt(faction.area_chunks) * pixelsPerChunk();
 		const size = Math.max(11 * ratio, Math.min(30 * ratio, span * 0.2));
@@ -720,11 +967,7 @@ function drawStateNames() {
 			);
 			if (overlaps) continue;
 			placed.push(box);
-			labelContext.lineWidth = size / 4;
-			labelContext.strokeStyle = "rgba(16, 14, 38, 0.8)";
-			labelContext.strokeText(faction.name, x, y);
-			labelContext.fillStyle = "#fff";
-			labelContext.fillText(faction.name, x, y);
+			drawLabel(faction.name, x, y, size, alpha);
 		}
 	}
 }
@@ -744,6 +987,18 @@ function drawSpawnPin() {
 	}
 }
 
+// What can be switched on over the map, bottom layer first.
+const MAP_FEATURES = [
+	{ name: "Rivers", draw: drawRivers, on: true },
+	{ name: "Roads", draw: drawRoads, on: true },
+	{ name: "Trade", draw: drawTrade, on: false },
+	{ name: "Settlements", draw: drawSettlements, on: true },
+	{ name: "State names", draw: drawStateNames, on: true },
+];
+const shown = new Set(
+	MAP_FEATURES.filter((feature) => feature.on).map((feature) => feature.name),
+);
+
 let drawQueued = false;
 // Redraw on the next frame; many calls in one frame draw once.
 function draw() {
@@ -751,16 +1006,17 @@ function draw() {
 	drawQueued = true;
 	requestAnimationFrame(() => {
 		drawQueued = false;
-		const overlays = (worldMap.meta.overlays ?? [])
-			.filter((overlay) => shown.has(overlay.name))
-			.map((overlay) => overlay.file);
 		renderer.draw({
 			baseImage: rawLayer ?? TERRAIN_IMAGE,
-			overlayImages: overlays,
 			showProvinces: !rawLayer,
 		});
 		labelContext.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
-		if (!rawLayer && shown.has(STATE_NAMES_TOGGLE)) drawStateNames();
+		// A raw layer is shown bare.
+		if (!rawLayer) {
+			for (const feature of MAP_FEATURES) {
+				if (shown.has(feature.name)) feature.draw();
+			}
+		}
 		drawSpawnPin();
 	});
 }
@@ -840,11 +1096,8 @@ function renderRawLayerButtons() {
 
 function renderShowToggles() {
 	const container = document.getElementById("overlays");
-	const names = [
-		STATE_NAMES_TOGGLE,
-		...(worldMap.meta.overlays ?? []).map((overlay) => overlay.name),
-	];
-	for (const name of names) {
+	// Listed top layer first.
+	for (const { name } of MAP_FEATURES.toReversed()) {
 		const label = document.createElement("label");
 		const checkbox = document.createElement("input");
 		checkbox.type = "checkbox";
@@ -987,11 +1240,14 @@ play.addEventListener("close", () => playFrame.removeAttribute("src"));
 async function loadWorldMap() {
 	const status = document.getElementById("mapStatus");
 	try {
-		const [meta, chunks] = await Promise.all([
+		const [meta, chunks, network] = await Promise.all([
 			fetch("map.json").then((response) => response.json()),
 			fetch("chunks.bin").then((response) => response.arrayBuffer()),
+			fetch("network.json").then((response) => response.json()),
 		]);
 		worldMap = { meta, chunks: new Uint8Array(chunks) };
+		worldMap.network = prepareNetwork(network);
+		worldMap.roadKinds = network.road_kinds;
 	} catch {
 		status.textContent =
 			"Map data not found. Export it with: margins_grip export site-map site/dist/map";

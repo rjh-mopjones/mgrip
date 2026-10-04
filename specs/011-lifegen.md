@@ -338,8 +338,8 @@ larger settlement on their road network).
 writes, alongside the terrain layers:
 
 - three raw layers, one per analysis grid, under a "LifeGen" group
-- three transparent overlays: Settlements (dots by size), Roads (lines by
-  kind), Trade (lines by value)
+- `network.json`: every road's path and kind, every trade flow, and the
+  river courses (spec 012), all in chunk coordinates
 - in `chunks.bin`, the province id of every chunk
 - in `map.json`, the province table (biome, area, habitability, light,
   resources, owner), the faction table (name, capital, capital position), the
@@ -348,7 +348,14 @@ writes, alongside the terrain layers:
 The map page draws provinces and factions itself from that data: a texture of
 province ids plus a table of one colour per province. Map modes (political,
 terrain, habitability, light, resources), hover and selection only rewrite
-the table. Province and state borders are drawn in the shader.
+the table. Province and state borders are drawn in the shader, which also
+turns the stair-steps of the one-cell-per-chunk province grid into diagonals.
+
+Rivers, roads, trade flows and settlements are drawn as lines and markers
+from `network.json`, so they stay sharp at any zoom. What shows depends on
+zoom: capitals and highways always; cities, towns, villages, outposts, roads
+and trails as the view closes in. State names give way to capital names.
+Generated settlements and minor states have no names yet.
 
 `--civ-seed <n>` (default 1) regenerates everything from stage 2 on without
 touching terrain.

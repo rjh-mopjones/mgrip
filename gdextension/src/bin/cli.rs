@@ -1272,6 +1272,9 @@ const SITE_MAP_MAX_IMAGE_WIDTH: usize = 2048;
 /// The terrain image is the one people zoom into, so it is kept larger.
 const SITE_MAP_TERRAIN_IMAGE: &str = "macromap.png";
 const SITE_MAP_TERRAIN_MAX_WIDTH: usize = 4096;
+/// River courses are exported with every this-many-th point: enough for a
+/// smooth line on the map page at a fraction of the size.
+const SITE_MAP_RIVER_POINT_STRIDE: usize = 3;
 /// Overlay pixels per chunk.
 const SITE_MAP_OVERLAY_SCALE: usize = 2;
 /// Layer hierarchy shown on the site map, following BiomeMap's base/derived
@@ -1340,7 +1343,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     let manifest = store
         .load_layer_manifest(&tag)
         .unwrap_or_else(|e| fail(format!("layers artifact '{tag}' not found: {e}")));
-    let (map, _river_network) = store
+    let (map, river_network) = store
         .load_layers_data(&tag)
         .unwrap_or_else(|e| fail(format!("could not load layers data for '{tag}': {e}")));
     fs::create_dir_all(output_dir)
@@ -1395,8 +1398,8 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     }
 
     // LifeGen stages 2 to 6 (spec 011). Provinces and factions go out as data
-    // (the map page colours them itself); settlements, roads and trade as
-    // transparent overlays.
+    // (the map page colours them itself), and so do settlements, roads and
+    // trade (it draws them as lines and markers).
     let province_map = mg_life::generate_provinces(&map, &analysis, grid, civ_seed);
     let faction_map =
         mg_life::generate_factions(&province_map, &authored_states(), grid, civ_seed);
@@ -1410,27 +1413,59 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     );
     let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
 
-    let overlay_scale = SITE_MAP_OVERLAY_SCALE;
-    let overlays = [
-        (
-            "Settlements",
-            "overlay_settlements.png",
-            settlement_overlay(&province_map, &settlements, overlay_scale),
-        ),
-        ("Roads", "overlay_roads.png", road_overlay(&province_map, &roads, overlay_scale)),
-        (
-            "Trade",
-            "overlay_trade.png",
-            trade_overlay(&province_map, &settlements, &trade_flows, overlay_scale),
-        ),
-    ];
-    let mut overlay_entries = Vec::new();
-    for (name, file_name, overlay) in overlays {
-        overlay
-            .save(&output_dir.join(file_name))
-            .unwrap_or_else(|e| fail(format!("saving {file_name}: {e}")));
-        overlay_entries.push(serde_json::json!({ "name": name, "file": file_name }));
-    }
+    // Lines the map page draws itself, so they stay sharp at any zoom. All
+    // coordinates are in chunks.
+    let two_decimals = |value: f32| (value as f64 * 100.0).round() / 100.0;
+    let network = serde_json::json!({
+        "road_kinds": mg_life::RoadKind::ALL
+            .iter()
+            .map(|kind| format!("{kind:?}"))
+            .collect::<Vec<_>>(),
+        // [index into road_kinds, x0, y0, x1, y1, ...]: the cells a road crosses
+        "roads": roads
+            .iter()
+            .map(|road| {
+                let kind_index = mg_life::RoadKind::ALL
+                    .iter()
+                    .position(|kind| *kind == road.kind)
+                    .unwrap_or(0);
+                std::iter::once(kind_index)
+                    .chain(road.path.iter().flat_map(|&(x, y)| [x, y]))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>(),
+        // [index of the source settlement, index of its market, value]
+        "trade": trade_flows
+            .iter()
+            .map(|flow| {
+                serde_json::json!([
+                    flow.from_settlement - 1,
+                    flow.to_settlement - 1,
+                    two_decimals(flow.value)
+                ])
+            })
+            .collect::<Vec<_>>(),
+        // [x0, y0, half-width 0, x1, y1, half-width 1, ...] per river course
+        "rivers": river_network
+            .courses
+            .iter()
+            .map(|course| {
+                let last = course.points.len().saturating_sub(1);
+                (0..course.points.len())
+                    .filter(|index| index % SITE_MAP_RIVER_POINT_STRIDE == 0 || *index == last)
+                    .flat_map(|index| {
+                        let (x, y) = course.points[index];
+                        [x, y, course.half_widths[index]].map(two_decimals)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>(),
+    });
+    fs::write(
+        output_dir.join("network.json"),
+        serde_json::to_string(&network).expect("network serialises"),
+    )
+    .unwrap_or_else(|e| fail(format!("writing network.json: {e}")));
 
     // Per-chunk data: the macro map has one cell per chunk.
     let mut chunks = Vec::with_capacity(map.width * map.height * SITE_MAP_CHUNK_FIELDS.len());
@@ -1458,19 +1493,6 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         "chunks_high": map.height,
         "chunk_fields": SITE_MAP_CHUNK_FIELDS,
         "layer_groups": site_map_layer_groups(&layer_files),
-        // Transparent images to draw over a base layer.
-        "overlays": overlay_entries,
-        "settlement_dots": mg_life::SizeClass::ALL
-            .iter()
-            .map(|&size| {
-                let (radius, rgb) = settlement_dot(size);
-                serde_json::json!({ "size": format!("{size:?}"), "radius": radius, "rgb": rgb })
-            })
-            .collect::<Vec<_>>(),
-        "road_colours": mg_life::RoadKind::ALL
-            .iter()
-            .map(|&kind| serde_json::json!({ "kind": format!("{kind:?}"), "rgb": road_colour(kind) }))
-            .collect::<Vec<_>>(),
         "zones": PlanetZone::ALL.iter().map(|zone| format!("{zone:?}")).collect::<Vec<_>>(),
         "biomes": biome_names,
         "civ_seed": civ_seed,
@@ -1573,168 +1595,6 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
     let blend = position - lower as f32;
     let channel = |i: usize| (RAMP[lower][i] + (RAMP[lower + 1][i] - RAMP[lower][i]) * blend) as u8;
     [channel(0), channel(1), channel(2), 255]
-}
-
-/// A transparent image over the whole map, `scale` pixels per cell. The map
-/// joins east to west, so drawing wraps around in x.
-struct Overlay {
-    width: usize,
-    height: usize,
-    scale: usize,
-    pixels: Vec<u8>,
-}
-
-impl Overlay {
-    fn new(province_map: &mg_life::ProvinceMap, scale: usize) -> Self {
-        let (width, height) = (province_map.width * scale, province_map.height * scale);
-        Self {
-            width,
-            height,
-            scale,
-            pixels: vec![0; width * height * 4],
-        }
-    }
-
-    fn set(&mut self, x: i32, y: i32, rgba: [u8; 4]) {
-        if y < 0 || y >= self.height as i32 {
-            return;
-        }
-        let x = x.rem_euclid(self.width as i32) as usize;
-        let offset = (y as usize * self.width + x) * 4;
-        self.pixels[offset..offset + 4].copy_from_slice(&rgba);
-    }
-
-    fn centre(&self, cell: (usize, usize)) -> (i32, i32) {
-        (
-            (cell.0 * self.scale + self.scale / 2) as i32,
-            (cell.1 * self.scale + self.scale / 2) as i32,
-        )
-    }
-
-    /// Filled dot centred on a cell. `radius` is in pixels.
-    fn dot(&mut self, cell: (usize, usize), radius: i32, rgb: [u8; 3]) {
-        let (centre_x, centre_y) = self.centre(cell);
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                if dx * dx + dy * dy <= radius * radius + 1 {
-                    self.set(centre_x + dx, centre_y + dy, [rgb[0], rgb[1], rgb[2], 255]);
-                }
-            }
-        }
-    }
-
-    /// One-pixel line between the centres of two cells (Bresenham), taking
-    /// the short way round the map.
-    fn line(&mut self, from: (usize, usize), to: (usize, usize), rgb: [u8; 3]) {
-        let ((mut x, mut y), (mut end_x, end_y)) = (self.centre(from), self.centre(to));
-        let width = self.width as i32;
-        if end_x - x > width / 2 {
-            end_x -= width;
-        } else if x - end_x > width / 2 {
-            end_x += width;
-        }
-        let (dx, dy) = ((end_x - x).abs(), -(end_y - y).abs());
-        let (step_x, step_y) = (if x < end_x { 1 } else { -1 }, if y < end_y { 1 } else { -1 });
-        let mut error = dx + dy;
-        loop {
-            self.set(x, y, [rgb[0], rgb[1], rgb[2], 255]);
-            if x == end_x && y == end_y {
-                break;
-            }
-            let doubled = 2 * error;
-            if doubled >= dy {
-                error += dy;
-                x += step_x;
-            }
-            if doubled <= dx {
-                error += dx;
-                y += step_y;
-            }
-        }
-    }
-
-    fn save(self, path: &Path) -> Result<(), String> {
-        RgbaImage::from_raw(self.width as u32, self.height as u32, self.pixels)
-            .ok_or_else(|| "overlay buffer does not match its dimensions".to_string())?
-            .save(path)
-            .map_err(|e| e.to_string())
-    }
-}
-
-/// Dot radius in pixels and colour for each settlement size.
-fn settlement_dot(size_class: mg_life::SizeClass) -> (i32, [u8; 3]) {
-    match size_class {
-        mg_life::SizeClass::Metropolis => (3, [255, 255, 255]),
-        mg_life::SizeClass::City => (2, [255, 214, 120]),
-        mg_life::SizeClass::Town => (1, [240, 170, 110]),
-        mg_life::SizeClass::Village => (0, [225, 215, 235]),
-        mg_life::SizeClass::Outpost => (0, [150, 140, 175]),
-        mg_life::SizeClass::Ruins => (0, [170, 70, 80]),
-    }
-}
-
-/// Settlements as dots. Larger settlements are drawn last.
-fn settlement_overlay(
-    province_map: &mg_life::ProvinceMap,
-    settlements: &[mg_life::Settlement],
-    scale: usize,
-) -> Overlay {
-    let mut overlay = Overlay::new(province_map, scale);
-    let mut by_size: Vec<&mg_life::Settlement> = settlements.iter().collect();
-    by_size.sort_by_key(|settlement| std::cmp::Reverse(settlement.size_class));
-    for settlement in by_size {
-        let (radius, colour) = settlement_dot(settlement.size_class);
-        overlay.dot(settlement.position, radius, colour);
-    }
-    overlay
-}
-
-fn road_colour(kind: mg_life::RoadKind) -> [u8; 3] {
-    match kind {
-        mg_life::RoadKind::Highway => [255, 255, 255],
-        mg_life::RoadKind::Road => [240, 170, 110],
-        mg_life::RoadKind::Trail => [120, 110, 150],
-    }
-}
-
-/// Roads as lines. Highways are drawn last.
-fn road_overlay(
-    province_map: &mg_life::ProvinceMap,
-    roads: &[mg_life::Road],
-    scale: usize,
-) -> Overlay {
-    let mut overlay = Overlay::new(province_map, scale);
-    let mut by_kind: Vec<&mg_life::Road> = roads.iter().collect();
-    by_kind.sort_by_key(|road| std::cmp::Reverse(road.kind));
-    for road in by_kind {
-        for pair in road.path.windows(2) {
-            overlay.line(pair[0], pair[1], road_colour(road.kind));
-        }
-    }
-    overlay
-}
-
-/// Trade flows as straight lines from each settlement to its market, coloured
-/// by value. Schematic: a line may cross water that the road does not.
-fn trade_overlay(
-    province_map: &mg_life::ProvinceMap,
-    settlements: &[mg_life::Settlement],
-    flows: &[mg_life::TradeFlow],
-    scale: usize,
-) -> Overlay {
-    let mut overlay = Overlay::new(province_map, scale);
-    let position = |id: u32| settlements[(id - 1) as usize].position;
-    let mut by_value: Vec<&mg_life::TradeFlow> = flows.iter().collect();
-    by_value.sort_by(|a, b| a.value.total_cmp(&b.value));
-    for flow in by_value {
-        let [r, g, b, _] = score_to_rgba(flow.value);
-        overlay.line(
-            position(flow.from_settlement),
-            position(flow.to_settlement),
-            [r, g, b],
-        );
-    }
-    overlay
 }
 
 /// Sort layer image files into `SITE_MAP_LAYER_GROUPS`, dropping empty groups.
