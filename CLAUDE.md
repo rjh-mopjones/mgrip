@@ -11,8 +11,9 @@ Not yet a full gameplay runtime. Do not invent APIs for inventory, crafting,
 combat, quests, or survival systems — they don't exist yet.
 
 LifeGen (provinces, factions, settlements, roads, trade) is being ported from
-the Bevy prototype in stages under `specs/011`. Only stage 1 exists: analysis
-grids in `gdextension/crates/mg_life`. Nothing in the Godot runtime reads
+the Bevy prototype in stages under `specs/011`. Stages 1 and 2 exist (analysis
+grids, provinces) in `gdextension/crates/mg_life`; factions, settlements,
+roads and trade do not. Nothing in the Godot runtime reads
 LifeGen data yet.
 
 ## Quick reference
