@@ -1,5 +1,5 @@
 gdextension/target/
 .godot/
 __pycache__/
-site/play/
-site/map/
+site/dist/
+site/node_modules/

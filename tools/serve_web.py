@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the web export locally.
+"""Serve the built site (site/dist) locally.
 
 The threaded Godot web build needs SharedArrayBuffer, which browsers only
 enable when the page is cross-origin isolated (COOP + COEP headers).
@@ -12,7 +12,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 DEFAULT_PORT = 8060
-DEFAULT_DIRECTORY = Path(__file__).resolve().parent.parent / "site"
+DEFAULT_DIRECTORY = Path(__file__).resolve().parent.parent / "site" / "dist"
 
 
 class CrossOriginIsolatedHandler(SimpleHTTPRequestHandler):
