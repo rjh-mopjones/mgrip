@@ -22,6 +22,8 @@ function chunkAt(x, y) {
 		light: chunks[offset] / 255,
 		zone: meta.zones[chunks[offset + 1]],
 		biome: meta.biomes[chunks[offset + 2]],
+		// 16-bit id, low byte first; 0 = no province (ocean).
+		provinceId: chunks[offset + 3] | (chunks[offset + 4] << 8),
 	};
 }
 
@@ -71,6 +73,20 @@ function renderLayerButtons() {
 	showLayer(`${DEFAULT_LAYER_STEM}.png`);
 }
 
+// "412: 108 chunks, steppe, habitability 0.61, coastal"
+function provinceText(provinceId) {
+	const province = worldMap.meta.provinces?.[provinceId - 1];
+	if (!province) return "none";
+	const facts = [
+		`${province.area_chunks} chunks`,
+		readable(province.biome).toLowerCase(),
+		`habitability ${province.habitability.toFixed(2)}`,
+	];
+	if (province.coastal) facts.push("coastal");
+	if (province.major_river) facts.push("major river");
+	return `${provinceId}: ${facts.join(", ")}`;
+}
+
 const chunkText = () => `${spawn.x}, ${spawn.y}`;
 
 function renderSpawn() {
@@ -84,6 +100,9 @@ function renderSpawn() {
 	document.getElementById("spawnChunk").textContent = chunkText();
 	document.getElementById("spawnLight").textContent = chunk.light.toFixed(2);
 	document.getElementById("spawnBiome").textContent = readable(chunk.biome);
+	document.getElementById("spawnProvince").textContent = provinceText(
+		chunk.provinceId,
+	);
 	document.getElementById("spawnSeed").textContent = meta.seed;
 }
 

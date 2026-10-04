@@ -104,6 +104,9 @@ enum ExportKind {
         /// Layers artifact tag (default: newest with a macromap.png)
         #[arg(long)]
         layers_tag: Option<String>,
+        /// LifeGen seed, independent of the terrain seed
+        #[arg(long, default_value_t = 1)]
+        civ_seed: u32,
     },
 }
 
@@ -230,7 +233,8 @@ fn main() {
             ExportKind::SiteMap {
                 output_dir,
                 layers_tag,
-            } => run_export_site_map(Path::new(&output_dir), layers_tag.as_deref()),
+                civ_seed,
+            } => run_export_site_map(Path::new(&output_dir), layers_tag.as_deref(), civ_seed),
         },
         Commands::Generate { kind } => match kind {
             GenerateKind::Layers { seed, tag } => run_generate_layers(seed, &tag),
@@ -992,6 +996,30 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         println!("{:<18}{}", format!("lifegen {name}"), row.join(""));
     }
 
+    let province_map =
+        mg_life::generate_provinces(&map, &analysis, map.width as f64 / map.world_width, 1);
+    let mut areas: Vec<u32> = province_map.provinces.iter().map(|p| p.area_cells).collect();
+    areas.sort_unstable();
+    let area_at = |p: usize| areas.get((areas.len().saturating_sub(1)) * p / 100).copied().unwrap_or(0);
+    println!(
+        "provinces (civ seed 1): {} total, {} empty, area in chunks p5 {} / median {} / p95 {} / max {}, {} coastal, {} with a major river",
+        areas.len(),
+        areas.iter().filter(|&&area| area == 0).count(),
+        area_at(5),
+        area_at(50),
+        area_at(95),
+        area_at(100),
+        province_map.provinces.iter().filter(|p| p.is_coastal).count(),
+        province_map.provinces.iter().filter(|p| p.is_river_junction).count(),
+    );
+    let unassigned_land = province_map
+        .province_ids
+        .iter()
+        .zip(&is_land)
+        .filter(|(&id, &land)| land && id == 0)
+        .count();
+    println!("land cells without a province: {unassigned_land}");
+
     let mut biome_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for (index, &biome) in map.biomes.iter().enumerate() {
         let entry = biome_counts.entry(format!("{biome:?}")).or_default();
@@ -1050,13 +1078,21 @@ const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 4] = [
             "lifegen_habitability",
             "lifegen_navigation_cost",
             "lifegen_resource_desirability",
+            "lifegen_provinces",
         ],
     ),
 ];
 /// chunks.bin layout: one record per chunk, row-major, fields in this order.
-const SITE_MAP_CHUNK_FIELDS: [&str; 3] = ["light_level", "zone", "biome"];
+/// The province id is 16 bits, low byte first.
+const SITE_MAP_CHUNK_FIELDS: [&str; 5] = [
+    "light_level",
+    "zone",
+    "biome",
+    "province_low",
+    "province_high",
+];
 
-fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
+fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u32) {
     let fail = |message: String| -> ! {
         eprintln!("error: {message}");
         std::process::exit(1);
@@ -1120,6 +1156,20 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
         layer_files.push(file_name.to_string());
     }
 
+    // LifeGen stage 2: provinces.
+    let province_map =
+        mg_life::generate_provinces(&map, &analysis, cells_per_world_unit, civ_seed);
+    let provinces_file = "lifegen_provinces.png";
+    RgbaImage::from_raw(
+        province_map.width as u32,
+        province_map.height as u32,
+        province_map_rgba(&province_map),
+    )
+    .expect("province grid matches its dimensions")
+    .save(output_dir.join(provinces_file))
+    .unwrap_or_else(|e| fail(format!("saving {provinces_file}: {e}")));
+    layer_files.push(provinces_file.to_string());
+
     // Per-chunk data: the macro map has one cell per chunk.
     let mut chunks = Vec::with_capacity(map.width * map.height * SITE_MAP_CHUNK_FIELDS.len());
     let mut biome_names: BTreeMap<u8, String> = BTreeMap::new();
@@ -1132,7 +1182,8 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
             biome_names
                 .entry(biome as u8)
                 .or_insert_with(|| format!("{biome:?}"));
-            chunks.extend_from_slice(&[light, zone as u8, biome as u8]);
+            let [province_low, province_high] = province_map.province_ids[idx].to_le_bytes();
+            chunks.extend_from_slice(&[light, zone as u8, biome as u8, province_low, province_high]);
         }
     }
     fs::write(output_dir.join("chunks.bin"), &chunks)
@@ -1149,17 +1200,34 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
         "image_height": image_h,
         "zones": PlanetZone::ALL.iter().map(|zone| format!("{zone:?}")).collect::<Vec<_>>(),
         "biomes": biome_names,
+        "civ_seed": civ_seed,
+        // Indexed by province id - 1.
+        "provinces": province_map
+            .provinces
+            .iter()
+            .map(|province| {
+                serde_json::json!({
+                    "biome": format!("{:?}", province.biome),
+                    "habitability": (province.habitability as f64 * 100.0).round() / 100.0,
+                    "area_chunks": province.area_cells,
+                    "coastal": province.is_coastal,
+                    "major_river": province.is_river_junction,
+                    "neighbours": province_map.adjacency[province.id as usize].len(),
+                })
+            })
+            .collect::<Vec<_>>(),
     });
     let metadata_text = serde_json::to_string_pretty(&metadata).expect("metadata serialises");
     fs::write(output_dir.join("map.json"), metadata_text)
         .unwrap_or_else(|e| fail(format!("writing map.json: {e}")));
 
     println!(
-        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks (layers '{tag}', seed {})",
+        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks, {} provinces (layers '{tag}', seed {}, civ seed {civ_seed})",
         output_dir.display(),
         layer_files.len(),
         map.width,
         map.height,
+        province_map.provinces.len(),
         manifest.seed
     );
 }
@@ -1178,6 +1246,50 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
     let blend = position - lower as f32;
     let channel = |i: usize| (RAMP[lower][i] + (RAMP[lower + 1][i] - RAMP[lower][i]) * blend) as u8;
     [channel(0), channel(1), channel(2), 255]
+}
+
+/// Flat colour per province with darkened borders; ocean is dark.
+/// Hues run blue through magenta and red to yellow, skipping green.
+fn province_map_rgba(province_map: &mg_life::ProvinceMap) -> Vec<u8> {
+    const OCEAN: [u8; 3] = [16, 14, 38];
+    const BORDER_SHADE: f32 = 0.45;
+    let (width, height) = (province_map.width, province_map.height);
+    let ids = &province_map.province_ids;
+
+    let colour = |id: u16| -> [f32; 3] {
+        // Scramble the id so neighbouring provinces get unrelated colours.
+        let hash = (id as u32).wrapping_mul(2_654_435_761);
+        let hue = 200.0 + (hash >> 8 & 0xff) as f32 / 255.0 * 220.0;
+        let saturation = 0.40 + (hash >> 16 & 0xff) as f32 / 255.0 * 0.30;
+        let value = 0.60 + (hash >> 24) as f32 / 255.0 * 0.30;
+        let channel = |offset: f32| {
+            let k = (offset + hue / 60.0) % 6.0;
+            value - value * saturation * k.min(4.0 - k).clamp(0.0, 1.0)
+        };
+        [channel(5.0) * 255.0, channel(3.0) * 255.0, channel(1.0) * 255.0]
+    };
+
+    let mut pixels = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let id = ids[y * width + x];
+            if id == 0 {
+                pixels.extend_from_slice(&[OCEAN[0], OCEAN[1], OCEAN[2], 255]);
+                continue;
+            }
+            let differs = |nx: usize, ny: usize| {
+                nx < width && ny < height && ids[ny * width + nx] != id
+            };
+            let shade = if differs(x + 1, y) || differs(x, y + 1) {
+                BORDER_SHADE
+            } else {
+                1.0
+            };
+            let [r, g, b] = colour(id);
+            pixels.extend_from_slice(&[(r * shade) as u8, (g * shade) as u8, (b * shade) as u8, 255]);
+        }
+    }
+    pixels
 }
 
 /// Sort layer image files into `SITE_MAP_LAYER_GROUPS`, dropping empty groups.
