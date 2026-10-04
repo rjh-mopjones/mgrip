@@ -49,6 +49,32 @@ finer grid later without retuning.
 Consequence at macro resolution: features narrower than one chunk are lost.
 The river-proximity bonus (1.5 world units) reaches only cells next to a river.
 
+## Topology
+
+Margin's surface is a cylinder. The macro map's east and west edges are
+neighbours; its north and south edges are not. Terrain is generated that way
+(`mg_noise::wrap`), so LifeGen must treat it that way.
+
+`mg_life::Grid` holds the resolution (`cells_per_world_unit`) and whether the
+grid is a ring (`wrap_width`). Every stage takes a `Grid`, and every distance
+between cells and every step to a neighbouring column goes through it:
+
+- `Grid::dx` and `Grid::distance` measure the short way round.
+- `Grid::step_x` steps to a neighbouring column, wrapping on a ring and
+  returning nothing off the edge of a flat grid.
+
+`Grid::flat` gives a grid with no joined edges (tests, or a map that is only
+part of the world). `Grid::ring` gives the macro map's shape.
+
+What wraps: river distance, province seeding and tessellation, coast
+detection, capital spacing, faction growth cost, settlement spacing, road
+links, highway waypoints, route search, and trade distance. A province,
+faction or road can span the seam.
+
+Roads are routed in unwrapped coordinates (a column may lie beyond the east
+or west edge) so a route across the seam is continuous, then folded back
+onto the grid. A stored road path may therefore jump between the two edges.
+
 ## Seeds
 
 LifeGen uses its own `civ_seed`, separate from the terrain seed, so politics
@@ -114,14 +140,9 @@ Differences from Randlebrot:
   Revisit if LifeGen moves to a finer grid.
 - **Islets are attached** to the nearest province instead of left without one.
 
-Result on seed 42, civ seed 1: 1194 provinces.
-
-| Mean habitability | Provinces | Median area (chunks) |
-|---|---|---|
-| under 0.25 | 98 | 844 |
-| 0.25 to 0.40 | 366 | 693 |
-| 0.40 to 0.60 | 176 | 384 |
-| 0.60 and over | 554 | 108 |
+Result on seed 42, civ seed 1: 1181 provinces, 33 of them spanning the seam.
+Small where habitable (median about 110 chunks over 0.60 habitability),
+large where barren (median about 840 under 0.25).
 
 ### Stage 3 - Factions (implemented)
 
@@ -192,13 +213,15 @@ Differences from Randlebrot:
   Valdris". Generated minor states here are numbered.
 
 Result on seed 42, civ seed 1: 64 factions (19 authored, 45 generated), 1 to
-25 provinces each (median 10). 750 provinces claimed (43% of land), 444
-unclaimed (57%), none uninhabited. All 19 authored states were placed.
+25 provinces each (median 10). 754 provinces claimed (44% of land), 427
+unclaimed (56%), none uninhabited. All 19 authored states were placed. Six
+factions span the seam, among them Furrow, Hollowvein Republic, Nightwall
+Covenant and Shuttered Hearth.
 
 | Authored state | Provinces | Capital light | Capital habitability |
 |---|---|---|---|
 | Corazon | 22 | 0.33 | 0.88 |
-| Furrow | 7 | 0.34 | 0.85 |
+| Furrow | 5 | 0.34 | 0.85 |
 | Tidewall | 3 | 0.31 | 0.81 |
 | Vestara | 1 | 0.35 | 0.85 |
 | Ashenmere | 6 | 0.30 | 0.79 |
@@ -211,13 +234,13 @@ unclaimed (57%), none uninhabited. All 19 authored states were placed.
 | Radiant Ordinance | 7 | 0.46 | 0.74 |
 | Hollowvein Republic | 7 | 0.31 | 0.78 |
 | Nightwall Covenant | 16 | 0.28 | 0.86 |
-| Shuttered Hearth | 5 | 0.34 | 0.78 |
+| Shuttered Hearth | 5 | 0.32 | 0.76 |
 | Quiet Holdings | 5 | 0.32 | 0.81 |
 | Umbral Sovereignty | 20 | 0.11 | 0.46 |
 | Frostdelve Communion | 7 | 0.07 | 0.41 |
 | The Pale | 9 | 0.20 | 0.61 |
 
-Several medium states ended below their size range (Furrow 7, Ashenmere 6,
+Several medium states ended below their size range (Furrow 5, Ashenmere 6,
 Kermans 5): neighbours hemmed them in before their budget was spent.
 
 ### Stage 4 - Settlements (implemented)
@@ -247,8 +270,8 @@ settlement list in `map.json`, and a nearest-settlement readout.
 Difference from Randlebrot: its separate `SettlementTier` mapped one-to-one
 onto `SizeClass`, so only the size class is kept.
 
-Result on seed 42, civ seed 1: 3686 settlements. Metropolis 64, City 1043,
-Town 1159, Village 1045, Outpost 375, Ruins 0.
+Result on seed 42, civ seed 1: 3654 settlements. Metropolis 64, City 1029,
+Town 1125, Village 1061, Outpost 375, Ruins 0.
 
 ### Stage 5 - Roads (implemented)
 
@@ -281,8 +304,8 @@ of Imperial, Provincial and Trail; each road keeps the two settlements it
 joins and one cost for the whole route, instead of being flattened into
 anonymous segments.
 
-Result on seed 42, civ seed 1: 6949 roads. Highway 378 (7,084 chunks),
-Road 2790 (20,757 chunks), Trail 3781 (42,798 chunks). 50 settlements are on
+Result on seed 42, civ seed 1: 6865 roads. Highway 385 (7,496 chunks),
+Road 2772 (20,418 chunks), Trail 3708 (41,375 chunks). 49 settlements are on
 no road (islands).
 
 ### Stage 6 - Trade (implemented)
@@ -298,7 +321,7 @@ Difference from Randlebrot: its trade stage was a stub that treated any two
 settlements near any road as connected. Here two settlements are connected
 only if the road network joins them (union-find over roads).
 
-Result on seed 42, civ seed 1: 3448 flows. 238 settlements send none (the 64
+Result on seed 42, civ seed 1: 3415 flows. 239 settlements send none (the 64
 capitals, which have nothing larger to send to, and settlements with no
 larger settlement on their road network).
 
@@ -326,7 +349,9 @@ becomes slow or when the runtime needs to load LifeGen data.
   province, one metropolis per faction; stage 5: routes pass through gaps
   and never cross water, every settlement connected on open ground, road
   kinds, highway waypoints, simplification; stage 6: trade goes to the
-  nearest larger settlement on the same road network, capitals send none).
+  nearest larger settlement on the same road network, capitals send none;
+  topology: distances and steps on a flat grid and on a ring, roads and
+  highway waypoints across the seam).
 - `margins_grip inspect layer-stats <layers_tag>` prints layer percentiles,
   LifeGen grid percentiles and province counts and areas.
 - Each stage's layers are inspected on the site map page against the terrain
@@ -370,7 +395,7 @@ desirability 0.25 / 0.34 / 0.55.
 5. Unclaimed land is one undifferentiated state. The lore has nomads and
    orders operating there; nothing represents them yet.
 6. Settlement counts are high for the lore's population of about a million:
-   1043 cities and 64 metropolises. Every settlement in a province over 0.7
+   1029 cities and 64 metropolises. Every settlement in a province over 0.7
    habitability is a city, and 554 provinces qualify. Sizes probably need to
    be rarer, or scaled to faction size.
 7. No ruins are generated: no province is below 0.05 habitability. The lore's
@@ -385,9 +410,14 @@ desirability 0.25 / 0.34 / 0.55.
     draining over 2000 cells). No province with one fell inside Corazon's or
     Furrow's band with enough habitability, so neither capital is on a major
     river although both prefer one.
-11. The map does not wrap east to west. If the world is a full ring, the
-    left and right edges are neighbours, but provinces, capital spacing and
-    roads treat them as far apart. Several capitals sit near those edges.
-12. Lore relationships are not used: Vestara is not placed at a crossroads,
+11. Terrain has a visible seam in light level and humidity: the east and
+    west edge columns differ far more than neighbouring columns do (heightmap,
+    continentalness and tectonic are seamless). Biomes derived from light
+    level therefore break at the seam, and LifeGen inherits it. A terrain bug,
+    not a LifeGen one.
+12. `BiomeMap`'s `slope_at` clamps at the east and west edges instead of
+    wrapping, because a `BiomeMap` can also be a single tile that is not a
+    ring. Slope in the two edge columns of the macro map is slightly off.
+13. Lore relationships are not used: Vestara is not placed at a crossroads,
     rivals are not placed next to each other, and Quiet Holdings is one
     contiguous state rather than a scattered network.

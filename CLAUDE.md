@@ -16,6 +16,9 @@ Bevy prototype under `specs/011`. All six stages exist in
 
 - The lore's named states are authored in `gdextension/data/lifegen_states.ron`
   and placed first; generated minor states fill the rest
+- Every stage takes an `mg_life::Grid` (resolution + whether the grid is a
+  ring). Measure distances and step between columns through it, never with
+  raw `x` arithmetic, so the east-west seam is handled in one place
 - Orders and nomads are not represented
 - Calibration is open; read the spec's open questions before relying on the
   numbers
@@ -98,6 +101,8 @@ Build on these seams. Do not create parallel ownership paths.
 ## World invariants
 
 - Margin is tidally locked — permanent day side and night side
+- The world is a cylinder: it wraps east to west, not north to south. The
+  macro map's left and right edges are neighbours
 - The habitable band is the terminus ring between them
 - South/day = hot and harsh, North/night = frozen and dark
 - Temperature derives from light level and altitude, not Earth-like latitude
