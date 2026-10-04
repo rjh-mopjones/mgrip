@@ -1,6 +1,6 @@
 # Spec 011 - LifeGen: Civilisation Layers
 
-**Status:** All six stages implemented at macro resolution. Calibration open (see Open questions).
+**Status:** All seven stages implemented at macro resolution. Calibration open (see Open questions).
 **Priority:** Medium
 **Depends On:** Spec 010 (macro map), `mg_core::TerrainQuery`
 
@@ -332,9 +332,40 @@ capitals, which have nothing larger to send to, and settlements with no
 larger settlement on their road network).
 
 
+### Stage 7 - Names (implemented)
+
+New here; Randlebrot generated no names.
+
+Every settlement, province and state has a name. The lore's states and their
+capitals keep the names given in `lifegen_states.ron`. The rest are built
+from the word lists in `gdextension/data/lifegen_names.ron`:
+
+1. **Settlements.** A first half chosen by the province's light level (night
+   under 0.25, day over 0.55, terminus between) joined to a second half
+   chosen by its ground (coastal, major river, highland, lowland): Rustweir,
+   Frostcrag, Emberport. This is the shape of the lore's own names (Tidewall,
+   Frostdelve). Pairs that join badly (a doubled letter, the same word twice)
+   are skipped. No two settlements share a name; if every fitting pair is
+   taken, any ground word is allowed, then any light word.
+2. **Outposts** other than a province's main settlement are named for the
+   main settlement: Rustweir Relay.
+3. **Provinces** are named for their main settlement.
+4. **Generated states** are named for their capital in one of several forms:
+   Rustweir March, Free City of Saltquay. The forms the lore's states use
+   (Dominion, Regime, Compact, ...) are not used.
+
+API: `mg_life::generate_names(province_map, faction_map, settlements, parts,
+seed)` returns names indexed by settlement, province and faction id.
+
+Result on seed 42, civ seed 1: 3653 settlement names, all distinct.
+
+The word lists are a first draft, not checked against the lore. The lore's
+capitals (Violetta, Cwmbran, Chembe) are not English compounds, so generated
+towns read differently from authored ones.
+
 ## Map export
 
-`margins_grip export site-map <dir>` runs all six stages on the macro map and
+`margins_grip export site-map <dir>` runs all seven stages on the macro map and
 writes, alongside the terrain layers:
 
 - three raw layers, one per analysis grid, under a "LifeGen" group
@@ -354,15 +385,14 @@ turns the stair-steps of the one-cell-per-chunk province grid into diagonals.
 Rivers, roads, trade flows and settlements are drawn as lines and markers
 from `network.json`, so they stay sharp at any zoom. What shows depends on
 zoom: capitals and highways always; cities, towns, villages, outposts, roads
-and trails as the view closes in. State names give way to capital names.
-Generated settlements and minor states have no names yet.
+and trails as the view closes in. State names give way to settlement names.
 
 `--civ-seed <n>` (default 1) regenerates everything from stage 2 on without
 touching terrain.
 
 ## Storage
 
-All six stages together take about a second on the macro map and are computed at
+All seven stages together take about a second on the macro map and are computed at
 export time; nothing is stored. A stored LifeGen artifact
 (`generate lifegen <layers_tag> <civ_seed>`) is introduced when a stage
 becomes slow or when the runtime needs to load LifeGen data.

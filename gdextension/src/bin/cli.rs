@@ -1018,6 +1018,11 @@ fn authored_states() -> Vec<mg_life::AuthoredState> {
         .expect("data/lifegen_states.ron is valid")
 }
 
+fn name_parts() -> mg_life::NameParts {
+    ron::de::from_str(include_str!("../../data/lifegen_names.ron"))
+        .expect("data/lifegen_names.ron is valid")
+}
+
 // ─── inspect layer-stats ─────────────────────────────────────────────────────
 
 const STATS_PERCENTILES: [usize; 7] = [0, 5, 25, 50, 75, 95, 100];
@@ -1413,6 +1418,14 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     );
     let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
 
+    let names = mg_life::generate_names(
+        &province_map,
+        &faction_map,
+        &settlements,
+        &name_parts(),
+        civ_seed,
+    );
+
     // Lines the map page draws itself, so they stay sharp at any zoom. All
     // coordinates are in chunks.
     let two_decimals = |value: f32| (value as f64 * 100.0).round() / 100.0;
@@ -1504,6 +1517,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
             .iter()
             .map(|province| {
                 serde_json::json!({
+                    "name": names.provinces[(province.id - 1) as usize],
                     "biome": format!("{:?}", province.biome),
                     "habitability": (province.habitability as f64 * 100.0).round() / 100.0,
                     "light": (province.light_level as f64 * 100.0).round() / 100.0,
@@ -1526,7 +1540,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
             .iter()
             .map(|size| format!("{size:?}"))
             .collect::<Vec<_>>(),
-        // [chunk x, chunk y, index into settlement_sizes, province id]
+        // [chunk x, chunk y, index into settlement_sizes, province id, name]
         "settlements": settlements
             .iter()
             .map(|settlement| {
@@ -1538,7 +1552,8 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
                     settlement.position.0,
                     settlement.position.1,
                     size_index,
-                    settlement.province_id
+                    settlement.province_id,
+                    names.settlements[(settlement.id - 1) as usize]
                 ])
             })
             .collect::<Vec<_>>(),
@@ -1548,8 +1563,9 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
             .iter()
             .map(|faction| {
                 serde_json::json!({
-                    // null for a generated minor state
-                    "name": faction.name,
+                    "name": names.factions[(faction.id - 1) as usize],
+                    // false for a generated minor state
+                    "authored": faction.name.is_some(),
                     "capital_name": faction.capital_name,
                     "capital_province": faction.capital_province,
                     // Chunk the capital province grew from.

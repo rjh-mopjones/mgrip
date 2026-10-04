@@ -158,8 +158,7 @@ function provinceAtPoint(x, y) {
 
 const provinceById = (provinceId) => worldMap.meta.provinces[provinceId - 1];
 const factionById = (factionId) => worldMap.meta.factions[factionId - 1];
-const factionName = (factionId) =>
-	factionById(factionId).name ?? `Minor state ${factionId}`;
+const factionName = (factionId) => factionById(factionId).name;
 
 // Wrap a chunk column onto the map.
 function wrapColumn(x) {
@@ -233,7 +232,7 @@ function nearestSettlementText() {
 	}
 	const chunks = Math.round(nearestDistance);
 	const where = chunks === 0 ? "here" : `${chunks} chunks away`;
-	return `${sizes[nearest[2]]}, ${where}`;
+	return `${nearest[4]} (${sizes[nearest[2]].toLowerCase()}), ${where}`;
 }
 
 // ─── Readouts ────────────────────────────────────────────────────────────────
@@ -273,6 +272,7 @@ function renderProvincePanel() {
 		province.major_river && "major river",
 	].filter(Boolean);
 	const facts = [
+		["Province", String(selectedProvince)],
 		["Held by", ownerText(province)],
 		["Biome", readable(province.biome)],
 		["Area", `${province.area_chunks} chunks`],
@@ -282,8 +282,7 @@ function renderProvincePanel() {
 		["Features", features.length ? features.join(", ") : "none"],
 		["Settlements", settlementSummary(selectedProvince)],
 	];
-	document.getElementById("panelTitle").textContent =
-		`Province ${selectedProvince}`;
+	document.getElementById("panelTitle").textContent = province.name;
 	const list = document.getElementById("panelFacts");
 	list.replaceChildren();
 	for (const [name, value] of facts) {
@@ -305,7 +304,7 @@ function renderHoverReadout() {
 	const owner = province.faction
 		? factionName(province.faction)
 		: province.state;
-	readout.textContent = `Province ${hoveredProvince}, ${owner}`;
+	readout.textContent = `${province.name}, ${owner}`;
 }
 
 const swatch = (rgb, text) =>
@@ -683,15 +682,18 @@ function createRenderer() {
 const detail = () => pixelsPerChunk() / window.devicePixelRatio;
 
 // Indexed like `settlement_sizes` in map.json. `from` is the detail at which
-// a size starts to show; `radius` is in CSS pixels.
+// a size starts to show and `nameFrom` the detail at which it is named;
+// `radius` is in CSS pixels.
 const SETTLEMENT_STYLES = [
-	{ from: 0, radius: 3.5, rgb: [255, 255, 255], square: true },
-	{ from: 2.5, radius: 3, rgb: [255, 214, 120], square: true },
-	{ from: 5, radius: 2.5, rgb: [240, 170, 110] },
-	{ from: 9, radius: 2, rgb: [225, 215, 235] },
-	{ from: 14, radius: 1.5, rgb: [150, 140, 175] },
-	{ from: 14, radius: 1.5, rgb: [170, 70, 80] },
+	{ from: 0, nameFrom: 6, radius: 3.5, rgb: [255, 255, 255], square: true },
+	{ from: 2.5, nameFrom: 8, radius: 3, rgb: [255, 214, 120], square: true },
+	{ from: 5, nameFrom: 11, radius: 2.5, rgb: [240, 170, 110] },
+	{ from: 9, nameFrom: 15, radius: 2, rgb: [225, 215, 235] },
+	{ from: 14, nameFrom: 20, radius: 1.5, rgb: [150, 140, 175] },
+	{ from: 14, nameFrom: 20, radius: 1.5, rgb: [170, 70, 80] },
 ];
+/// Settlement names are this many CSS pixels high, largest size first.
+const SETTLEMENT_NAME_SIZES = [13, 12, 11, 10, 10, 10];
 // Indexed like `road_kinds` in network.json. `width` is in CSS pixels.
 const ROAD_STYLES = [
 	{ from: 0, width: 1.5, rgb: [255, 255, 255] },
@@ -701,8 +703,9 @@ const ROAD_STYLES = [
 const RIVER_RGB = [80, 130, 180];
 /// Below this detail the rivers in the terrain image are sharp enough.
 const RIVERS_FROM_DETAIL = 3;
-/// State names fade out, and capital names in, across this range of detail.
-const NAMES_SWAP_DETAIL = [7, 12];
+/// State names fade out across this range of detail, as settlement names
+/// take over.
+const STATE_NAMES_FADE_DETAIL = [9, 14];
 const LABEL_HALO = "rgba(16, 14, 38, 0.8)";
 
 const cssColour = (rgb, alpha = 1) => `rgba(${rgb.join(",")}, ${alpha})`;
@@ -743,7 +746,11 @@ function prepareNetwork(network) {
 		rivers: network.rivers.map((river) => unwrappedLine(river, 3, 0)),
 		trade: network.trade.map(([from, to, value]) => ({
 			value,
-			...unwrappedLine([...settlements[from], ...settlements[to]], 4, 0.5),
+			...unwrappedLine(
+				[...settlements[from].slice(0, 2), ...settlements[to].slice(0, 2)],
+				2,
+				0.5,
+			),
 		})),
 	};
 }
@@ -881,68 +888,75 @@ function drawLabel(text, x, y, size, alpha = 1) {
 	labelContext.globalAlpha = 1;
 }
 
-// How far through the swap from state names to capital names the view is.
-function namesSwap() {
-	const [from, to] = NAMES_SWAP_DETAIL;
-	return Math.max(0, Math.min(1, (detail() - from) / (to - from)));
-}
+// Whether two boxes [left, top, right, bottom] overlap.
+const boxesOverlap = (a, b) =>
+	a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
 
-// Settlements as markers, smaller sizes appearing as the view closes in.
-// Capitals of the authored states are named once the view is close.
+// Settlements as markers, smaller sizes appearing as the view closes in, and
+// then their names. A name that would overlap a larger settlement's name is
+// left out.
 function drawSettlements() {
 	const ratio = window.devicePixelRatio;
 	const { settlements } = worldMap.meta;
-	const capitalNameAlpha = namesSwap();
-	labelContext.textAlign = "left";
-	labelContext.textBaseline = "middle";
-	labelContext.lineWidth = ratio;
+	const names = [];
 	// Largest last, so they lie on top.
 	for (let size = SETTLEMENT_STYLES.length - 1; size >= 0; size--) {
 		const style = SETTLEMENT_STYLES[size];
 		if (detail() < style.from) continue;
 		const radius = style.radius * ratio;
-		for (const [chunkX, chunkY, settlementSize, provinceId] of settlements) {
+		labelContext.fillStyle = cssColour(style.rgb);
+		labelContext.strokeStyle = cssColour([16, 14, 38]);
+		labelContext.lineWidth = ratio;
+		for (const [chunkX, chunkY, settlementSize, , name] of settlements) {
 			if (settlementSize !== size) continue;
 			const y = screenRow(chunkY + 0.5);
 			if (y < -20 || y > canvas.height + 20) continue;
 			for (const x of screenColumns(chunkX + 0.5)) {
 				labelContext.beginPath();
-				if (style.square)
+				if (style.square) {
 					labelContext.rect(x - radius, y - radius, radius * 2, radius * 2);
-				else labelContext.arc(x, y, radius, 0, Math.PI * 2);
-				labelContext.fillStyle = cssColour(style.rgb);
+				} else {
+					labelContext.arc(x, y, radius, 0, Math.PI * 2);
+				}
 				labelContext.fill();
-				labelContext.lineWidth = ratio;
-				labelContext.strokeStyle = cssColour([16, 14, 38]);
 				labelContext.stroke();
-				const capitalName =
-					size === 0 &&
-					factionById(provinceById(provinceId).faction)?.capital_name;
-				if (capitalName && capitalNameAlpha > 0) {
-					drawLabel(
-						capitalName,
-						x + radius + 4 * ratio,
-						y,
-						12 * ratio,
-						capitalNameAlpha,
-					);
+				if (detail() >= style.nameFrom) {
+					names.push({ name, size, x: x + radius + 4 * ratio, y });
 				}
 			}
 		}
 	}
+
+	labelContext.textAlign = "left";
+	labelContext.textBaseline = "middle";
+	const placed = [];
+	for (const { name, size, x, y } of names.reverse()) {
+		const height = SETTLEMENT_NAME_SIZES[size] * ratio;
+		labelContext.font = `600 ${height}px "Public Sans", system-ui, sans-serif`;
+		const width = labelContext.measureText(name).width;
+		const box = [x, y - height * 0.6, x + width, y + height * 0.6];
+		if (placed.some((other) => boxesOverlap(box, other))) continue;
+		placed.push(box);
+		drawLabel(name, x, y, height);
+	}
 }
 
-// Names of the authored states over their territory, larger for larger
-// states. A name that would overlap a larger state's name is left out.
+// State names over their territory, larger for larger states. A name that
+// would overlap one already placed is left out.
 function drawStateNames() {
-	const alpha = 1 - namesSwap();
+	const [fadeFrom, fadeTo] = STATE_NAMES_FADE_DETAIL;
+	const alpha = 1 - (detail() - fadeFrom) / (fadeTo - fadeFrom);
 	if (alpha <= 0) return;
 	const ratio = window.devicePixelRatio;
 	const placed = [];
+	// The lore's states first, then by size.
 	const states = worldMap.meta.factions
 		.map((faction, index) => ({ faction, at: worldMap.labelPositions[index] }))
-		.filter(({ faction }) => faction.name)
-		.sort((a, b) => b.faction.area_chunks - a.faction.area_chunks);
+		.sort(
+			(a, b) =>
+				b.faction.authored - a.faction.authored ||
+				b.faction.area_chunks - a.faction.area_chunks,
+		);
 	labelContext.textAlign = "center";
 	labelContext.textBaseline = "middle";
 	for (const { faction, at } of states) {
@@ -958,16 +972,9 @@ function drawStateNames() {
 				x + halfWidth,
 				y + size * 0.6,
 			];
-			const overlaps = placed.some(
-				(other) =>
-					box[0] < other[2] &&
-					box[2] > other[0] &&
-					box[1] < other[3] &&
-					box[3] > other[1],
-			);
-			if (overlaps) continue;
+			if (placed.some((other) => boxesOverlap(box, other))) continue;
 			placed.push(box);
-			drawLabel(faction.name, x, y, size, alpha);
+			drawLabel(faction.name, x, y, size, Math.min(1, alpha));
 		}
 	}
 }

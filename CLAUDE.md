@@ -11,11 +11,14 @@ Not yet a full gameplay runtime. Do not invent APIs for inventory, crafting,
 combat, quests, or survival systems — they don't exist yet.
 
 LifeGen (provinces, factions, settlements, roads, trade) is ported from the
-Bevy prototype under `specs/011`. All six stages exist in
-`gdextension/crates/mg_life` at macro resolution (one cell per chunk).
+Bevy prototype under `specs/011`, plus a seventh stage that names everything.
+All stages exist in `gdextension/crates/mg_life` at macro resolution (one
+cell per chunk).
 
 - The lore's named states are authored in `gdextension/data/lifegen_states.ron`
   and placed first; generated minor states fill the rest
+- Generated names are built from the word lists in
+  `gdextension/data/lifegen_names.ron`. Change names there, not in code
 - A "major river" is read from the macro river layer, whose value is the
   river's relative size (`TerrainQuery::river_at`)
 - Every stage takes an `mg_life::Grid` (resolution + whether the grid is a
