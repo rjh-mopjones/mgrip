@@ -124,6 +124,13 @@ function renderFactionLabels() {
 	}
 }
 
+// Chunks between two columns, the short way round if the map joins east to west.
+function columnDistance(a, b) {
+	const direct = Math.abs(a - b);
+	const { wraps_x: wraps, chunks_wide: width } = worldMap.meta;
+	return wraps ? Math.min(direct, width - direct) : direct;
+}
+
 // "City, 3 chunks away": the settlement closest to the spawn chunk.
 function nearestSettlementText() {
 	const { settlements, settlement_sizes: sizes } = worldMap.meta;
@@ -132,7 +139,7 @@ function nearestSettlementText() {
 	let nearestDistance = Number.POSITIVE_INFINITY;
 	for (const settlement of settlements) {
 		const distance = Math.hypot(
-			settlement[0] - spawn.x,
+			columnDistance(settlement[0], spawn.x),
 			settlement[1] - spawn.y,
 		);
 		if (distance < nearestDistance) {

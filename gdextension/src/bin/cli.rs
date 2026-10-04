@@ -916,6 +916,12 @@ fn run_inspect_chunk_presentation(
 /// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
 // ─── LifeGen inputs ──────────────────────────────────────────────────────────
 
+/// The macro map covers the whole world, one cell per chunk, and the world is
+/// a cylinder: its east and west edges are neighbours.
+fn macro_grid(map: &BiomeMap) -> mg_life::Grid {
+    mg_life::Grid::ring(map.width as f64 / map.world_width, map.width)
+}
+
 /// The named states from the lore, compiled in from `data/lifegen_states.ron`.
 fn authored_states() -> Vec<mg_life::AuthoredState> {
     ron::de::from_str(include_str!("../../data/lifegen_states.ron"))
@@ -983,7 +989,8 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         println!("{name:<18}{}", row.join(""));
     }
 
-    let analysis = mg_life::compute_analysis_grids(&map, map.width as f64 / map.world_width);
+    let grid = macro_grid(&map);
+    let analysis = mg_life::compute_analysis_grids(&map, grid);
     let lifegen_grids = [
         ("habitability", &analysis.habitability),
         ("navigation_cost", &analysis.navigation_cost),
@@ -1005,7 +1012,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
     }
 
     let province_map =
-        mg_life::generate_provinces(&map, &analysis, map.width as f64 / map.world_width, 1);
+        mg_life::generate_provinces(&map, &analysis, grid, 1);
     let mut areas: Vec<u32> = province_map.provinces.iter().map(|p| p.area_cells).collect();
     areas.sort_unstable();
     let area_at = |p: usize| areas.get((areas.len().saturating_sub(1)) * p / 100).copied().unwrap_or(0);
@@ -1031,7 +1038,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
     let faction_map = mg_life::generate_factions(
         &province_map,
         &authored_states(),
-        map.width as f64 / map.world_width,
+        grid,
         1,
     );
     let count_state = |wanted: fn(&mg_life::PoliticalState) -> bool| {
@@ -1086,7 +1093,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         &province_map,
         &faction_map,
         &analysis,
-        map.width as f64 / map.world_width,
+        grid,
     );
     let by_size: Vec<String> = mg_life::SizeClass::ALL
         .iter()
@@ -1102,7 +1109,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         &analysis.navigation_cost,
         map.width,
         map.height,
-        map.width as f64 / map.world_width,
+        grid,
     );
     let by_kind: Vec<String> = mg_life::RoadKind::ALL
         .iter()
@@ -1111,10 +1118,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
             let length: f64 = of_kind
                 .iter()
                 .flat_map(|road| road.path.windows(2))
-                .map(|pair| {
-                    let (dx, dy) = (pair[0].0 as f64 - pair[1].0 as f64, pair[0].1 as f64 - pair[1].1 as f64);
-                    (dx * dx + dy * dy).sqrt()
-                })
+                .map(|pair| grid.distance(pair[0], pair[1]))
                 .sum();
             format!("{kind:?} {} ({length:.0} chunks)", of_kind.len())
         })
@@ -1129,7 +1133,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         by_kind.join(", "),
         settlements.len() - on_a_road.len()
     );
-    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map);
+    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
     println!(
         "trade: {} flows; {} settlements send none",
         trade_flows.len(),
@@ -1259,8 +1263,8 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     let (image_w, image_h) = layer_sizes.first().copied().unwrap_or((0, 0));
 
     // LifeGen stage 1 (spec 011): analysis grids, computed from the macro map.
-    let cells_per_world_unit = map.width as f64 / map.world_width;
-    let analysis = mg_life::compute_analysis_grids(&map, cells_per_world_unit);
+    let grid = macro_grid(&map);
+    let analysis = mg_life::compute_analysis_grids(&map, grid);
     let lifegen_layers = [
         ("lifegen_habitability.png", &analysis.habitability),
         ("lifegen_navigation_cost.png", &analysis.navigation_cost),
@@ -1278,7 +1282,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
 
     // LifeGen stage 2: provinces.
     let province_map =
-        mg_life::generate_provinces(&map, &analysis, cells_per_world_unit, civ_seed);
+        mg_life::generate_provinces(&map, &analysis, grid, civ_seed);
     let provinces_file = "lifegen_provinces.png";
     RgbaImage::from_raw(
         province_map.width as u32,
@@ -1294,7 +1298,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     let faction_map = mg_life::generate_factions(
         &province_map,
         &authored_states(),
-        cells_per_world_unit,
+        grid,
         civ_seed,
     );
     let factions_file = "lifegen_factions.png";
@@ -1310,7 +1314,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
 
     // LifeGen stage 4: settlements.
     let settlements =
-        mg_life::place_settlements(&province_map, &faction_map, &analysis, cells_per_world_unit);
+        mg_life::place_settlements(&province_map, &faction_map, &analysis, grid);
     let settlements_file = "lifegen_settlements.png";
     let settlement_scale = (image_w / province_map.width).max(1);
     RgbaImage::from_raw(
@@ -1329,9 +1333,9 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         &analysis.navigation_cost,
         province_map.width,
         province_map.height,
-        cells_per_world_unit,
+        grid,
     );
-    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map);
+    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
     let overlays = [
         (
             "lifegen_roads.png",
@@ -1385,6 +1389,8 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         "zones": PlanetZone::ALL.iter().map(|zone| format!("{zone:?}")).collect::<Vec<_>>(),
         "biomes": biome_names,
         "civ_seed": civ_seed,
+        // East and west edges are neighbours.
+        "wraps_x": grid.wrap_width.is_some(),
         // Indexed by province id - 1.
         "provinces": province_map
             .provinces
@@ -1651,15 +1657,23 @@ fn draw_dot(pixels: &mut [u8], width: usize, cell: (usize, usize), scale: usize,
     }
 }
 
-/// One-pixel line between the centres of two cells (Bresenham).
+/// One-pixel line between the centres of two cells (Bresenham). The line takes
+/// the short way round the map, running off one edge and back in at the other
+/// if that is nearer.
 fn draw_line(pixels: &mut [u8], width: usize, from: (usize, usize), to: (usize, usize), scale: usize, colour: [u8; 3]) {
     let centre = |cell: (usize, usize)| ((cell.0 * scale + scale / 2) as i32, (cell.1 * scale + scale / 2) as i32);
-    let ((mut x, mut y), (end_x, end_y)) = (centre(from), centre(to));
+    let ((mut x, mut y), (mut end_x, end_y)) = (centre(from), centre(to));
+    let image_width = width as i32;
+    if end_x - x > image_width / 2 {
+        end_x -= image_width;
+    } else if x - end_x > image_width / 2 {
+        end_x += image_width;
+    }
     let (dx, dy) = ((end_x - x).abs(), -(end_y - y).abs());
     let (step_x, step_y) = (if x < end_x { 1 } else { -1 }, if y < end_y { 1 } else { -1 });
     let mut error = dx + dy;
     loop {
-        let target = (y as usize * width + x as usize) * 4;
+        let target = (y as usize * width + x.rem_euclid(image_width) as usize) * 4;
         pixels[target..target + 3].copy_from_slice(&colour);
         if x == end_x && y == end_y {
             break;
