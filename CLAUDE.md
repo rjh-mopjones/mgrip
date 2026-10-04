@@ -165,8 +165,11 @@ Constraints this puts on runtime work:
   COOP/COEP headers (rules out GitHub Pages)
 - Keep `mg_core` and `mg_noise` free of Godot dependencies so they can compile
   to wasm for the map
-- Terrain generation is CPU only, so the native game, the web build and the
-  layers artifacts produce the same terrain for the same seed
+- Terrain generation is CPU only and both builds anchor chunks to the same
+  macro pack, so the native game, the web build and the layers artifacts
+  describe the same world for a given seed
+- `mg_noise::generate_macro_map(seed)` is the one definition of the macro map.
+  Layers artifacts, macro packs and the runtime all call it
 
 Web build (spike passed 2026-10-04: extension loads, chunks stream, terrain
 renders in Chrome):
@@ -190,7 +193,22 @@ python3 tools/serve_web.py   # serves site/dist at http://localhost:8060/
 - Shaders: in the Compatibility renderer `TIME` only exists inside the shader
   entry function — pass it into helpers as a parameter
 
-Layers artifact (the macro world map, stored under `~/.margins_grip/layers/`):
+Macro pack (the macro map the game anchors chunks to; gitignored, both native
+and web builds load it from `res://data/macro/`):
+
+```sh
+./gdextension/target/release/margins_grip export macro-pack 42 data/macro/seed_42.mgmacro
+```
+
+- Regenerate it after any change to terrain generation, and before a web
+  export. The game checks a pack against the current generator and ignores a
+  stale one
+- Without a valid pack the game generates the macro map itself on first use:
+  correct, but about 7 seconds natively and longer in a browser
+- The game never reads `~/.margins_grip/`. Only the CLI does
+
+Layers artifact (full macro layers and images for the CLI and the site map,
+stored under `~/.margins_grip/layers/`):
 
 ```sh
 ./gdextension/target/release/margins_grip generate layers 42 <tag>
