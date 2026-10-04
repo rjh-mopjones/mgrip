@@ -228,6 +228,25 @@ Under this spec:
 So the project should copy the Randlebrot pipeline shape, but not its current
 CPU-forcing workaround.
 
+**Superseded on 2026-10-04: the GPU path has been removed.** Goal 3 and
+acceptance criterion 6 no longer apply. Reasons:
+
+- The GPU shaders only had planar 2D noise, while the CPU strategies sample
+  on a cylinder. The two paths produced different worlds: for seed 42, chunk
+  (1020, 240) was liquid sea on the GPU and snow-covered land on the CPU. The
+  requirement above that GPU and CPU outputs stay close was not met.
+- `generate layers` had already been forcing the CPU path since 10 April
+  because the GPU path did not preserve horizontal wrapping, so every layers
+  artifact was CPU output while the native game ran on the GPU.
+- The web build cannot use the GPU path at all.
+- The GPU path was not faster in the native game: world ready in 1.7 s on
+  GPU against 1.2 s on CPU; near-chunk generation 332 ms against 420 ms, with
+  identical total chunk time; far chunks slower on GPU.
+
+Terrain generation is now CPU only, so the native game, the web build and
+the layers artifacts agree for a given seed. Bringing a GPU path back would
+need cylindrical 3D noise in the shaders and a check that both paths agree.
+
 ### Section 5 — Match the Randlebrot look in the right way
 
 The desired similarity to Randlebrot is about visual qualities, not blindly

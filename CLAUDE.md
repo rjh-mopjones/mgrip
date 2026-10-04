@@ -155,14 +155,12 @@ Constraints this puts on runtime work:
 - Web export only supports the Compatibility renderer (WebGL2); the project is
   currently Forward+. Flag any new Forward+-only feature — it needs a
   Compatibility fallback
-- The `wgpu` compute path in `mg_noise/src/gpu` cannot run in the web build —
-  keep a CPU path working
 - `rayon` threads on web need SharedArrayBuffer, so the host must send
   COOP/COEP headers (rules out GitHub Pages)
 - Keep `mg_core` and `mg_noise` free of Godot dependencies so they can compile
   to wasm for the map
-- GPU noise is compiled out on web (`cfg(target_os = "emscripten")`), so web
-  terrain always comes from the CPU path while native may use the GPU path
+- Terrain generation is CPU only, so the native game, the web build and the
+  layers artifacts produce the same terrain for the same seed
 
 Web build (spike passed 2026-10-04: extension loads, chunks stream, terrain
 renders in Chrome):
@@ -189,11 +187,10 @@ python3 tools/serve_web.py   # serves site/dist at http://localhost:8060/
 Layers artifact (the macro world map, stored under `~/.margins_grip/layers/`):
 
 ```sh
-MG_NOISE_FORCE_CPU=1 ./gdextension/target/release/margins_grip generate layers 42 <tag>
+./gdextension/target/release/margins_grip generate layers 42 <tag>
 ```
 
-Always force the CPU path when generating an artifact. See "GPU and CPU
-terrain differ" below.
+Takes about two minutes.
 
 World map for the site (generated, gitignored, needs a layers artifact):
 
@@ -217,13 +214,6 @@ Lore content:
 
 ## Known issues
 
-- **GPU and CPU terrain differ.** `mg_noise` uses a GPU compute path when a GPU
-  is available and a CPU path otherwise. The GPU shaders only have planar 2D
-  noise; the CPU strategies sample continentalness, humidity, rock hardness
-  and peaks on a cylinder. The same seed and chunk can come out as sea on one
-  path and land on the other. The web build and the layers artifacts use the
-  CPU path; the native game uses the GPU when it has one. Light level is the
-  one layer kept identical on both. `MG_NOISE_FORCE_CPU=1` forces the CPU path
 - `runtime_presentation::tests::classifies_reference_chunks_for_dayside_terminus_and_nightside`
   fails (expects `DeepNightIce`, gets `FrozenCoast`), on both paths
 - The agent runtime smoke test fails with `action_timed_out` on `move_to_block`
