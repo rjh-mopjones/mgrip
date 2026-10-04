@@ -910,7 +910,7 @@ const SITE_MAP_MAX_IMAGE_WIDTH: usize = 2048;
 /// Layer hierarchy shown on the site map, following BiomeMap's base/derived
 /// split. Layers are matched by image file stem, case-insensitively; derived
 /// layers are listed in dependency order. Unlisted layers go under "Other".
-const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 3] = [
+const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 4] = [
     ("Composite", &["macromap"]),
     (
         "Base",
@@ -937,6 +937,14 @@ const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 3] = [
             "resource_richness",
             "soil_type",
             "vegetation_density",
+        ],
+    ),
+    (
+        "LifeGen",
+        &[
+            "lifegen_habitability",
+            "lifegen_navigation_cost",
+            "lifegen_resource_desirability",
         ],
     ),
 ];
@@ -989,6 +997,24 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
         .collect();
     let (image_w, image_h) = layer_sizes.first().copied().unwrap_or((0, 0));
 
+    // LifeGen stage 1 (spec 011): analysis grids, computed from the macro map.
+    let cells_per_world_unit = map.width as f64 / map.world_width;
+    let analysis = mg_life::compute_analysis_grids(&map, cells_per_world_unit);
+    let lifegen_layers = [
+        ("lifegen_habitability.png", &analysis.habitability),
+        ("lifegen_navigation_cost.png", &analysis.navigation_cost),
+        ("lifegen_resource_desirability.png", &analysis.resource_desirability),
+    ];
+    let mut layer_files = manifest.layer_images.clone();
+    for (file_name, scores) in lifegen_layers {
+        let pixels: Vec<u8> = scores.iter().flat_map(|&score| score_to_rgba(score)).collect();
+        RgbaImage::from_raw(analysis.width as u32, analysis.height as u32, pixels)
+            .expect("score grid matches its dimensions")
+            .save(output_dir.join(file_name))
+            .unwrap_or_else(|e| fail(format!("saving {file_name}: {e}")));
+        layer_files.push(file_name.to_string());
+    }
+
     // Per-chunk data: the macro map has one cell per chunk.
     let mut chunks = Vec::with_capacity(map.width * map.height * SITE_MAP_CHUNK_FIELDS.len());
     let mut biome_names: BTreeMap<u8, String> = BTreeMap::new();
@@ -1013,7 +1039,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
         "chunks_wide": map.width,
         "chunks_high": map.height,
         "chunk_fields": SITE_MAP_CHUNK_FIELDS,
-        "layer_groups": site_map_layer_groups(&manifest.layer_images),
+        "layer_groups": site_map_layer_groups(&layer_files),
         "image_width": image_w,
         "image_height": image_h,
         "zones": PlanetZone::ALL.iter().map(|zone| format!("{zone:?}")).collect::<Vec<_>>(),
@@ -1026,11 +1052,27 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
     println!(
         "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks (layers '{tag}', seed {})",
         output_dir.display(),
-        manifest.layer_images.len(),
+        layer_files.len(),
         map.width,
         map.height,
         manifest.seed
     );
+}
+
+/// Colour for a 0.0–1.0 score: dark indigo through plum and rose to pale amber.
+fn score_to_rgba(score: f32) -> [u8; 4] {
+    const RAMP: [[f32; 3]; 5] = [
+        [16.0, 14.0, 38.0],
+        [84.0, 38.0, 104.0],
+        [186.0, 70.0, 104.0],
+        [244.0, 150.0, 74.0],
+        [252.0, 240.0, 190.0],
+    ];
+    let position = score.clamp(0.0, 1.0) * (RAMP.len() - 1) as f32;
+    let lower = (position.floor() as usize).min(RAMP.len() - 2);
+    let blend = position - lower as f32;
+    let channel = |i: usize| (RAMP[lower][i] + (RAMP[lower + 1][i] - RAMP[lower][i]) * blend) as u8;
+    [channel(0), channel(1), channel(2), 255]
 }
 
 /// Sort layer image files into `SITE_MAP_LAYER_GROUPS`, dropping empty groups.

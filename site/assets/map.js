@@ -25,11 +25,15 @@ function chunkAt(x, y) {
 	};
 }
 
-// 'light_level.png' -> 'Light level'; the macromap is the default terrain view.
+// 'light_level.png' -> 'Light level', 'lifegen_habitability.png' -> 'Habitability';
+// the macromap is the default terrain view.
 function layerLabel(fileName) {
 	const stem = fileName.replace(/\.png$/, "");
 	if (stem === DEFAULT_LAYER_STEM) return "Terrain";
-	const words = stem.replace(/_/g, " ").toLowerCase();
+	const words = stem
+		.replace(/^lifegen_/, "")
+		.replace(/_/g, " ")
+		.toLowerCase();
 	return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
