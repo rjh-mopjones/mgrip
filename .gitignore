@@ -1,3 +1,4 @@
 gdextension/target/
 .godot/
 __pycache__/
+site/play/
