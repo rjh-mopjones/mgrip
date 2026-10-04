@@ -914,6 +914,14 @@ fn run_inspect_chunk_presentation(
 
 /// Discover the newest named layer image across all layers artifacts, mirroring the
 /// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
+// ─── LifeGen inputs ──────────────────────────────────────────────────────────
+
+/// The named states from the lore, compiled in from `data/lifegen_states.ron`.
+fn authored_states() -> Vec<mg_life::AuthoredState> {
+    ron::de::from_str(include_str!("../../data/lifegen_states.ron"))
+        .expect("data/lifegen_states.ron is valid")
+}
+
 // ─── inspect layer-stats ─────────────────────────────────────────────────────
 
 const STATS_PERCENTILES: [usize; 7] = [0, 5, 25, 50, 75, 95, 100];
@@ -1020,8 +1028,12 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         .count();
     println!("land cells without a province: {unassigned_land}");
 
-    let faction_map =
-        mg_life::generate_factions(&province_map, map.width as f64 / map.world_width, 1);
+    let faction_map = mg_life::generate_factions(
+        &province_map,
+        &authored_states(),
+        map.width as f64 / map.world_width,
+        1,
+    );
     let count_state = |wanted: fn(&mg_life::PoliticalState) -> bool| {
         let provinces: Vec<&mg_life::Province> = province_map
             .provinces
@@ -1048,6 +1060,27 @@ fn run_inspect_layer_stats(layers_tag: &str) {
     println!(
         "provinces claimed {claimed} ({claimed_area:.0}% of land), unclaimed {unclaimed} ({unclaimed_area:.0}%), uninhabited {uninhabited} ({uninhabited_area:.0}%)"
     );
+    println!(
+        "{:<22}{:>9}{:>7}{:>8}{:>7}{:>7}  {}",
+        "authored state", "provinces", "light", "habit.", "coast", "river", "capital chunk"
+    );
+    for faction in faction_map.factions.iter().filter(|faction| faction.name.is_some()) {
+        let capital = &province_map.provinces[(faction.capital_province - 1) as usize];
+        println!(
+            "{:<22}{:>9}{:>7.2}{:>8.2}{:>7}{:>7}  {}, {}",
+            faction.name.as_deref().unwrap_or(""),
+            faction.province_count,
+            capital.light_level,
+            capital.habitability,
+            if capital.is_coastal { "yes" } else { "-" },
+            if capital.is_river_junction { "yes" } else { "-" },
+            capital.site.0,
+            capital.site.1,
+        );
+    }
+    if !faction_map.unplaced_states.is_empty() {
+        println!("unplaced states: {}", faction_map.unplaced_states.join(", "));
+    }
 
     let settlements = mg_life::place_settlements(
         &province_map,
@@ -1258,7 +1291,12 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     layer_files.push(provinces_file.to_string());
 
     // LifeGen stage 3: factions.
-    let faction_map = mg_life::generate_factions(&province_map, cells_per_world_unit, civ_seed);
+    let faction_map = mg_life::generate_factions(
+        &province_map,
+        &authored_states(),
+        cells_per_world_unit,
+        civ_seed,
+    );
     let factions_file = "lifegen_factions.png";
     RgbaImage::from_raw(
         province_map.width as u32,
@@ -1395,7 +1433,14 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
             .iter()
             .map(|faction| {
                 serde_json::json!({
+                    // null for a generated minor state
+                    "name": faction.name,
+                    "capital_name": faction.capital_name,
                     "capital_province": faction.capital_province,
+                    // Chunk the capital province grew from.
+                    "capital_chunk": province_map.provinces
+                        [(faction.capital_province - 1) as usize]
+                        .site,
                     "provinces": faction.province_count,
                     "area_chunks": faction.area_cells,
                 })

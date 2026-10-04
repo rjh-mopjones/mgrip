@@ -230,6 +230,7 @@ button.plain {
 }
 .map-frame {
 	position: relative;
+	overflow: hidden;
 	border: 1px solid var(--text);
 	cursor: crosshair;
 }
@@ -237,6 +238,17 @@ button.plain {
 	display: block;
 	width: 100%;
 	height: auto;
+}
+.faction-labels span {
+	position: absolute;
+	transform: translate(-50%, -150%);
+	padding: 0 4px;
+	background: rgba(16, 14, 38, 0.72);
+	color: #fff;
+	font-size: 0.75rem;
+	font-weight: 600;
+	white-space: nowrap;
+	pointer-events: none;
 }
 .pin {
 	position: absolute;

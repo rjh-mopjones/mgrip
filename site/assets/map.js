@@ -41,6 +41,8 @@ function layerLabel(fileName) {
 
 function showLayer(fileName) {
 	document.getElementById("mapImage").src = fileName;
+	document.getElementById("factionLabels").hidden =
+		!LABELLED_LAYERS.includes(fileName);
 	for (const button of document.querySelectorAll("#layers button")) {
 		button.setAttribute(
 			"aria-checked",
@@ -87,13 +89,39 @@ function provinceText(provinceId) {
 	return `${provinceId}: ${facts.join(", ")}`;
 }
 
-// "12: 18 provinces", or "unclaimed" / "uninhabited" for land no faction holds.
+// "Corazon (capital Violetta), 21 provinces", "Minor state 34, 9 provinces",
+// or "unclaimed" / "uninhabited" for land no faction holds.
 function factionText(provinceId) {
 	const province = worldMap.meta.provinces?.[provinceId - 1];
 	if (!province) return "none";
 	const faction = worldMap.meta.factions?.[province.faction - 1];
 	if (!faction) return province.state;
-	return `${province.faction}: ${faction.provinces} provinces`;
+	const name = faction.name ?? `Minor state ${province.faction}`;
+	const capital = faction.capital_name
+		? ` (capital ${faction.capital_name})`
+		: "";
+	return `${name}${capital}, ${faction.provinces} provinces`;
+}
+
+// Layers drawn over the faction map get the names of the authored states.
+const LABELLED_LAYERS = [
+	"lifegen_factions.png",
+	"lifegen_settlements.png",
+	"lifegen_roads.png",
+	"lifegen_trade.png",
+];
+
+function renderFactionLabels() {
+	const { meta } = worldMap;
+	const container = document.getElementById("factionLabels");
+	for (const faction of meta.factions ?? []) {
+		if (!faction.name) continue;
+		const label = document.createElement("span");
+		label.textContent = faction.name;
+		label.style.left = `${((faction.capital_chunk[0] + 0.5) / meta.chunks_wide) * 100}%`;
+		label.style.top = `${((faction.capital_chunk[1] + 0.5) / meta.chunks_high) * 100}%`;
+		container.append(label);
+	}
 }
 
 // "City, 3 chunks away": the settlement closest to the spawn chunk.
@@ -156,6 +184,7 @@ async function loadWorldMap() {
 			fetch("chunks.bin").then((response) => response.arrayBuffer()),
 		]);
 		worldMap = { meta, chunks: new Uint8Array(chunks) };
+		renderFactionLabels();
 		renderLayerButtons();
 		renderSpawn();
 	} catch {
