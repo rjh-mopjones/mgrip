@@ -108,6 +108,15 @@ enum ExportKind {
         #[arg(long, default_value_t = 1)]
         civ_seed: u32,
     },
+    /// Generate the macro map for a seed and write it as a macro pack: the
+    /// compact file the game loads so it does not have to generate the macro
+    /// map at startup. Takes several seconds.
+    MacroPack {
+        /// World seed (must match `GameState.world_seed`)
+        seed: u32,
+        /// Output file (e.g. data/macro/seed_42.mgmacro)
+        output: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -246,6 +255,7 @@ fn main() {
                 layers_tag,
                 civ_seed,
             } => run_export_site_map(Path::new(&output_dir), layers_tag.as_deref(), civ_seed),
+            ExportKind::MacroPack { seed, output } => run_export_macro_pack(seed, Path::new(&output)),
         },
         Commands::Generate { kind } => match kind {
             GenerateKind::Layers { seed, tag } => run_generate_layers(seed, &tag),
@@ -304,15 +314,10 @@ fn main() {
 
 // ─── generate layers ─────────────────────────────────────────────────────────
 
-// World layout constants (matching biome_map.rs and spec)
-const WORLD_WIDTH: f64 = 1024.0;
-const WORLD_HEIGHT: f64 = 512.0;
-// Macro BiomeMap at 1:1 world resolution. D8 flow solve at 1 px/wu produces
-// the densest dendritic network; doubling to 2 px/wu halved segment lengths
-// and made rivers fragment. Smoothness comes from Chaikin passes + meander,
-// not raw grid resolution.
-const MACRO_MAP_W: usize = 1024;
-const MACRO_MAP_H: usize = 512;
+const WORLD_WIDTH: f64 = mg_noise::WORLD_WIDTH;
+const WORLD_HEIGHT: f64 = mg_noise::WORLD_HEIGHT;
+const MACRO_MAP_W: usize = mg_noise::MACRO_MAP_WIDTH;
+const MACRO_MAP_H: usize = mg_noise::MACRO_MAP_HEIGHT;
 // Tile grid: 16×8 macro tiles of 64×64 world units each.
 // Render at 768px, box-downscale to 384px before stitching. Final macromap
 // is 6144×3072 (50% larger than the previous 4096×2048).
@@ -360,7 +365,6 @@ fn generate_macro_tile(
 
     tile.anchor_to_macro(
         macro_map,
-        river_network,
         seed,
         wx,
         wy,
@@ -439,19 +443,7 @@ fn run_generate_layers(seed: u32, tag: &str) {
     // ── Step 1: Macro map for erosion + global river network ──────────────────
     // The first generate() call also initialises the GPU context if available.
     let pb = spinner("Macro pass (erosion + rivers)…");
-    let macro_map = BiomeMap::generate(
-        seed,
-        0.0,
-        0.0,
-        WORLD_WIDTH,
-        WORLD_HEIGHT,
-        MACRO_MAP_W,
-        MACRO_MAP_H,
-        0,
-        true,
-        true,
-        1.0,
-    );
+    let macro_map = mg_noise::generate_macro_map(seed);
     pb.finish_and_clear();
     println!("  macro pass: {:.1}s", t0.elapsed().as_secs_f64());
 
@@ -921,24 +913,45 @@ fn run_inspect_chunk_presentation(
 
 /// Discover the newest named layer image across all layers artifacts, mirroring the
 /// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
+// ─── export macro-pack ───────────────────────────────────────────────────────
+
+fn run_export_macro_pack(seed: u32, output: &Path) {
+    let fail = |message: String| -> ! {
+        eprintln!("error: {message}");
+        std::process::exit(1);
+    };
+    let started = Instant::now();
+    let pack = mg_artifacts::MacroPack::from_macro_map(seed, &mg_noise::generate_macro_map(seed));
+    let bytes = pack.to_bytes().unwrap_or_else(|e| fail(e));
+    if let Some(directory) = output.parent() {
+        fs::create_dir_all(directory)
+            .unwrap_or_else(|e| fail(format!("creating {}: {e}", directory.display())));
+    }
+    fs::write(output, &bytes).unwrap_or_else(|e| fail(format!("writing {}: {e}", output.display())));
+    println!(
+        "macro pack for seed {seed} written to {}: {:.1} MB, {:.1}s",
+        output.display(),
+        bytes.len() as f64 / 1_048_576.0,
+        started.elapsed().as_secs_f64()
+    );
+}
+
 // ─── inspect chunk-seam ──────────────────────────────────────────────────────
 
 /// Blocks of height per unit of heightmap (`VoxelMeshBuilder.HEIGHT_SCALE`).
 const SEAM_HEIGHT_SCALE: f64 = 200.0;
 
-/// A chunk as the native runtime builds it: generated, then anchored to the
-/// newest layers artifact (ocean mask and river carving).
+/// A chunk as the runtime builds it: generated, then anchored to the macro
+/// map (ocean mask and river carving).
 fn generate_anchored_runtime_chunk(
     seed: u32,
     world_x: f64,
     world_y: f64,
     macro_map: &BiomeMap,
-    river_network: &RiverNetwork,
 ) -> BiomeMap {
     let mut map = generate_runtime_micro_map(seed, world_x, world_y);
     map.anchor_to_macro(
         macro_map,
-        river_network,
         seed,
         world_x,
         world_y,
@@ -952,19 +965,11 @@ fn generate_anchored_runtime_chunk(
 }
 
 fn run_inspect_chunk_seam(seed: u32, chunk_x: u32, chunk_y: u32) {
-    let store = ArtifactStore::new().unwrap_or_else(|e| {
-        eprintln!("error: artifact store: {e}");
-        std::process::exit(1);
-    });
-    let Some((tag, ..)) = find_newest_layer_image(&store, "macromap.png") else {
-        eprintln!("error: no layers artifact found; the runtime anchors chunks to one");
-        std::process::exit(1);
-    };
-    let (macro_map, river_network) = store.load_layers_data(&tag).unwrap_or_else(|e| {
-        eprintln!("error: could not load layers data for '{tag}': {e}");
-        std::process::exit(1);
-    });
-    let chunk = |x: f64, y: f64| generate_anchored_runtime_chunk(seed, x, y, &macro_map, &river_network);
+    // The same macro data the game uses: generated, then passed through a pack.
+    let macro_map =
+        mg_artifacts::MacroPack::from_macro_map(seed, &mg_noise::generate_macro_map(seed))
+            .to_biome_map();
+    let chunk = |x: f64, y: f64| generate_anchored_runtime_chunk(seed, x, y, &macro_map);
 
     let (x, y) = (chunk_x as f64, chunk_y as f64);
     let here = chunk(x, y);
@@ -984,7 +989,7 @@ fn run_inspect_chunk_seam(seed: u32, chunk_x: u32, chunk_y: u32) {
             steps.len()
         );
     };
-    println!("chunk ({chunk_x}, {chunk_y}), seed {seed}, {w}x{h} samples, anchored to layers '{tag}'");
+    println!("chunk ({chunk_x}, {chunk_y}), seed {seed}, {w}x{h} samples, anchored to the macro map");
     report(
         "east border ",
         (0..h).map(|row| blocks(&east, 0, row) - blocks(&here, w - 1, row)).collect(),
@@ -2143,7 +2148,6 @@ fn run_compare_scale(
             let _ = &macro_ocean_mask; // retained above for the macro receipt; unused here.
             micro.anchor_to_macro(
                 &macro_map,
-                &river_network,
                 seed,
                 cx,
                 cy,

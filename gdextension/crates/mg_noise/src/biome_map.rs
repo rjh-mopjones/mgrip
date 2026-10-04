@@ -31,6 +31,61 @@ pub fn tile_has_fluid_surface(tile: TileType) -> bool {
     )
 }
 
+/// World size in world units (one world unit is one chunk).
+pub const WORLD_WIDTH: f64 = 1024.0;
+pub const WORLD_HEIGHT: f64 = 512.0;
+/// The macro map has one cell per chunk. The D8 river flow solve needs this
+/// resolution: at 2 cells per world unit segments halved and rivers fragmented.
+pub const MACRO_MAP_WIDTH: usize = 1024;
+pub const MACRO_MAP_HEIGHT: usize = 512;
+/// Size of the low-resolution terrain sample used to tell whether saved macro
+/// data still matches this generator.
+const MACRO_PROBE_WIDTH: usize = 64;
+const MACRO_PROBE_HEIGHT: usize = 32;
+
+/// The macro world map for `seed`: the whole world at one cell per chunk, with
+/// erosion and the global river network. This is the single definition of the
+/// map that layers artifacts, macro packs and the runtime all use. Takes
+/// several seconds.
+pub fn generate_macro_map(seed: u32) -> BiomeMap {
+    BiomeMap::generate(
+        seed,
+        0.0,
+        0.0,
+        WORLD_WIDTH,
+        WORLD_HEIGHT,
+        MACRO_MAP_WIDTH,
+        MACRO_MAP_HEIGHT,
+        0,
+        true,
+        true,
+        1.0,
+    )
+}
+
+/// A coarse heightmap of the whole world, cheap to generate. Saved macro data
+/// stores it; if this build produces a different probe for the same seed, the
+/// generator has changed and the saved data is stale.
+pub fn generate_macro_probe(seed: u32) -> Vec<f32> {
+    BiomeMap::generate(
+        seed,
+        0.0,
+        0.0,
+        WORLD_WIDTH,
+        WORLD_HEIGHT,
+        MACRO_PROBE_WIDTH,
+        MACRO_PROBE_HEIGHT,
+        0,
+        true,
+        false,
+        1.0,
+    )
+    .heightmap
+    .iter()
+    .map(|&height| height as f32)
+    .collect()
+}
+
 /// Ocean mask derived from the macro biome artifact — authoritative ocean/land
 /// from the macro pipeline.
 ///
@@ -172,7 +227,8 @@ pub struct BiomeMap {
 }
 
 impl BiomeMap {
-    fn empty(width: usize, height: usize, world_width: f64, world_height: f64) -> Self {
+    /// A map of the given size with every layer zeroed.
+    pub fn empty(width: usize, height: usize, world_width: f64, world_height: f64) -> Self {
         let n = width * height;
         Self {
             width,
@@ -585,7 +641,6 @@ impl BiomeMap {
     pub fn anchor_to_macro(
         &mut self,
         macro_map: &BiomeMap,
-        river_network: &RiverNetwork,
         seed: u32,
         origin_x: f64,
         origin_y: f64,
@@ -971,15 +1026,15 @@ fn apply_polar_ice_cap(
 #[cfg(test)]
 mod tests {
     use super::{sample_world_coord, sample_world_step, tile_has_fluid_surface, BiomeMap};
-    use crate::rivers::{RiverNetwork, LOD_THRESHOLD_MICRO};
+    use crate::rivers::LOD_THRESHOLD_MICRO;
     use mg_core::TileType;
 
     const SEED: u32 = 42;
 
     /// A small chunk anchored to `macro_map`, the way the runtime builds one.
-    fn anchored_chunk(macro_map: &BiomeMap, rivers: &RiverNetwork, x: f64, y: f64) -> BiomeMap {
+    fn anchored_chunk(macro_map: &BiomeMap, x: f64, y: f64) -> BiomeMap {
         let mut chunk = BiomeMap::generate(SEED, x, y, 1.0, 1.0, 32, 32, 2, false, false, 8.0);
-        chunk.anchor_to_macro(macro_map, rivers, SEED, x, y, 1.0, 1.0, LOD_THRESHOLD_MICRO, 0.2, true);
+        chunk.anchor_to_macro(macro_map, SEED, x, y, 1.0, 1.0, LOD_THRESHOLD_MICRO, 0.2, true);
         chunk
     }
 
@@ -987,10 +1042,9 @@ mod tests {
     fn anchored_chunks_have_identical_heights_along_their_shared_border() {
         // A coarse macro map without the river pass, which assumes the full-size grid.
         let macro_map = BiomeMap::generate(SEED, 0.0, 0.0, 1024.0, 512.0, 256, 128, 0, false, false, 1.0);
-        let rivers = RiverNetwork::empty(256, 128);
-        let here = anchored_chunk(&macro_map, &rivers, 440.0, 220.0);
-        let east = anchored_chunk(&macro_map, &rivers, 441.0, 220.0);
-        let south = anchored_chunk(&macro_map, &rivers, 440.0, 221.0);
+        let here = anchored_chunk(&macro_map, 440.0, 220.0);
+        let east = anchored_chunk(&macro_map, 441.0, 220.0);
+        let south = anchored_chunk(&macro_map, 440.0, 221.0);
         let (w, h) = (here.width, here.height);
 
         for row in 0..h {

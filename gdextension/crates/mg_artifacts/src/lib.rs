@@ -17,9 +17,11 @@
 //! ```
 
 mod error;
+mod macro_pack;
 mod manifest;
 mod store;
 
 pub use error::ArtifactError;
+pub use macro_pack::MacroPack;
 pub use manifest::{LayerManifest, LevelManifest};
 pub use store::{ArtifactKind, ArtifactStore};

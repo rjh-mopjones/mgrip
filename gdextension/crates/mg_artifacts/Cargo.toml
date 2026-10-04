@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+mg_core = { workspace = true }
 mg_noise = { workspace = true }
+flate2 = { workspace = true }
 serde = { workspace = true }
 bincode = { workspace = true }
 ron = { workspace = true }

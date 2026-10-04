@@ -591,7 +591,9 @@ name = "mg_artifacts"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "flate2",
  "image",
+ "mg_core",
  "mg_noise",
  "ron",
  "serde",

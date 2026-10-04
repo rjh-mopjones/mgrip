@@ -7,75 +7,60 @@
 mod mesh;
 
 use godot::prelude::*;
+use mg_artifacts::MacroPack;
 use mg_noise::{
-    AtmosphereClass, BiomeMap, LandformClass, PlanetZone, RiverNetwork,
+    generate_macro_map, AtmosphereClass, BiomeMap, LandformClass, PlanetZone,
     RuntimeChunkPresentation, RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids,
     SurfacePaletteClass, SurfaceWaterState, LOD_THRESHOLD_MICRO, SEA_LEVEL,
 };
 use rayon::spawn;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex, OnceLock,
+    Arc, Mutex,
 };
 use std::time::Instant;
 
-static MACRO_SEMANTICS: OnceLock<Option<MacroSemantics>> = OnceLock::new();
+/// The macro map runtime chunks anchor to, for one seed. Set from a macro
+/// pack by `prepare_macro`, or generated on first use if no valid pack was
+/// supplied. Nothing here reads the filesystem, so native and web builds get
+/// their macro data the same way.
+static MACRO_SEMANTICS: Mutex<Option<Arc<MacroSemantics>>> = Mutex::new(None);
 
 struct MacroSemantics {
-    macro_map: Arc<BiomeMap>,
-    river_network: Arc<RiverNetwork>,
+    macro_map: BiomeMap,
     seed: u32,
 }
 
-fn get_macro_semantics() -> Option<&'static MacroSemantics> {
-    MACRO_SEMANTICS
-        .get_or_init(|| {
-            let store = mg_artifacts::ArtifactStore::new().ok()?;
-            let (tag, manifest) = newest_macro_layer_tag(&store)?;
-            let (macro_map, river_network) = store.load_layers_data(&tag).ok()?;
-            Some(MacroSemantics {
-                macro_map: Arc::new(macro_map),
-                river_network: Arc::new(river_network),
-                seed: manifest.seed,
-            })
-        })
-        .as_ref()
+/// The macro semantics already in memory, if any.
+fn loaded_macro_semantics() -> Option<Arc<MacroSemantics>> {
+    MACRO_SEMANTICS.lock().unwrap().clone()
 }
 
-fn newest_macro_layer_tag(
-    store: &mg_artifacts::ArtifactStore,
-) -> Option<(String, mg_artifacts::LayerManifest)> {
-    let layers = store.list_layers().ok()?;
-    let mut best: Option<(String, mg_artifacts::LayerManifest, std::time::SystemTime)> = None;
-    for (tag, manifest) in layers {
-        let path = store.layer_image_path(&tag, "macromap.png");
-        if !path.exists() {
-            continue;
-        }
-        if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
-            if best.as_ref().map_or(true, |(_, _, t)| mtime > *t) {
-                best = Some((tag, manifest, mtime));
-            }
-        }
+/// The macro semantics for `seed`, generating them if they are not in memory.
+/// Generation takes several seconds and blocks every chunk build waiting on it.
+fn macro_semantics_for(seed: u32) -> Arc<MacroSemantics> {
+    let mut slot = MACRO_SEMANTICS.lock().unwrap();
+    if let Some(semantics) = slot.as_ref().filter(|semantics| semantics.seed == seed) {
+        return Arc::clone(semantics);
     }
-    best.map(|(tag, manifest, _)| (tag, manifest))
+    godot_print!(
+        "No macro pack loaded for seed {seed}: generating the macro map. This takes several \
+         seconds; `margins_grip export macro-pack` writes a pack that avoids it."
+    );
+    // Go through the pack so generated and loaded macro data are bit-identical.
+    let pack = MacroPack::from_macro_map(seed, &generate_macro_map(seed));
+    let semantics = Arc::new(MacroSemantics {
+        macro_map: pack.to_biome_map(),
+        seed,
+    });
+    *slot = Some(Arc::clone(&semantics));
+    semantics
 }
 
 fn apply_macro_semantics(map: &mut BiomeMap, seed: u32, world_x: f64, world_y: f64) {
-    let Some(semantics) = get_macro_semantics() else {
-        return;
-    };
-    if semantics.seed != seed {
-        godot_warn!(
-            "macro semantics seed {} does not match runtime world seed {} — runtime chunks \
-             will anchor to the saved macro anyway; regenerate layers to realign.",
-            semantics.seed,
-            seed
-        );
-    }
+    let semantics = macro_semantics_for(seed);
     map.anchor_to_macro(
         &semantics.macro_map,
-        &semantics.river_network,
         seed,
         world_x,
         world_y,
@@ -503,6 +488,41 @@ impl IRefCounted for MgTerrainGen {
 
 #[godot_api]
 impl MgTerrainGen {
+    /// Supply the macro map for `seed` from a macro pack (the bytes of a file
+    /// written by `margins_grip export macro-pack`). Returns true if the pack
+    /// was accepted. A pack for another seed, or one made by older generator
+    /// code, is ignored; the macro map is then generated on first use.
+    #[func]
+    pub fn prepare_macro(&self, seed: i64, pack_bytes: PackedByteArray) -> bool {
+        let seed = seed as u32;
+        if pack_bytes.is_empty() {
+            return false;
+        }
+        let pack = match MacroPack::from_bytes(pack_bytes.as_slice()) {
+            Ok(pack) => pack,
+            Err(error) => {
+                godot_warn!("Ignoring macro pack: {error}");
+                return false;
+            }
+        };
+        if pack.seed != seed {
+            godot_warn!("Ignoring macro pack: it is for seed {}, not {seed}", pack.seed);
+            return false;
+        }
+        if !pack.matches_generator() {
+            godot_warn!(
+                "Ignoring macro pack: terrain generation has changed since it was made. \
+                 Regenerate it with `margins_grip export macro-pack`."
+            );
+            return false;
+        }
+        *MACRO_SEMANTICS.lock().unwrap() = Some(Arc::new(MacroSemantics {
+            macro_map: pack.to_biome_map(),
+            seed,
+        }));
+        true
+    }
+
     /// Generate a 512×512 macro-level map (full pipeline: erosion + rivers).
     ///
     /// `seed`: world seed (u32)
@@ -651,10 +671,10 @@ impl MgTerrainGen {
         result.set("res_w", res_w as i64);
         result.set("res_h", res_h as i64);
 
-        let Some(semantics) = get_macro_semantics() else {
+        let Some(semantics) = loaded_macro_semantics() else {
             return result;
         };
-        let macro_map = semantics.macro_map.as_ref();
+        let macro_map = &semantics.macro_map;
         if macro_map.biomes.is_empty() {
             return result;
         }
@@ -720,10 +740,10 @@ impl MgTerrainGen {
         result.set("world_x", world_x);
         result.set("world_y", world_y);
 
-        let Some(semantics) = get_macro_semantics() else {
+        let Some(semantics) = loaded_macro_semantics() else {
             return result;
         };
-        let macro_map = semantics.macro_map.as_ref();
+        let macro_map = &semantics.macro_map;
         if macro_map.biomes.is_empty() {
             return result;
         }
