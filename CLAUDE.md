@@ -101,8 +101,14 @@ Build on these seams. Do not create parallel ownership paths.
 ## World invariants
 
 - Margin is tidally locked — permanent day side and night side
-- The world is a cylinder: it wraps east to west, not north to south. The
-  macro map's left and right edges are neighbours
+- The map wraps east to west, not north to south. Its left and right edges
+  are neighbours
+- Light is distance from the sub-stellar point (bottom centre of the map), so
+  the terminus is an arc across the map, not a straight band. This is
+  deliberate: it is a round world. Do not flatten it into a ring
+- Neighbouring chunks share their border samples: a chunk's last column and
+  its neighbour's first column are the same world positions and must have the
+  same heights. Check with `margins_grip inspect chunk-seam <seed> <x> <y>`
 - The habitable band is the terminus ring between them
 - South/day = hot and harsh, North/night = frozen and dark
 - Temperature derives from light level and altitude, not Earth-like latitude
@@ -214,9 +220,10 @@ Lore content:
 
 ## Known issues
 
-- `runtime_presentation::tests::classifies_reference_chunks_for_dayside_terminus_and_nightside`
-  fails (expects `DeepNightIce`, gets `FrozenCoast`), on both paths
-- The agent runtime smoke test fails with `action_timed_out` on `move_to_block`
+- The agent runtime smoke test failed with `action_timed_out` on
+  `move_to_block`: the agent stopped at a chunk boundary. Terrain steps along
+  chunk borders were the likely cause and are fixed, but the smoke test has
+  not been re-run since. Tracked in GitHub issue #3
 - `res://assets/icon.svg` is missing; an error is logged on every launch
 
 ## Git
