@@ -291,6 +291,12 @@ fn reduced_grid_coord(grid_index: usize, grid_size: usize, sample_size: usize) -
     ((grid_index * sample_size.saturating_sub(1)) / (grid_size - 1)).min(sample_size - 1)
 }
 
+/// Planet zone of a single map cell. Works on any `BiomeMap`, including the
+/// macro map where one cell is one chunk.
+pub fn planet_zone_at(map: &BiomeMap, x: usize, y: usize) -> PlanetZone {
+    PlanetZone::classify(&sample_from_coords(map, x, y))
+}
+
 fn sample_from_coords(map: &BiomeMap, x: usize, y: usize) -> RuntimePresentationSample {
     let idx = y.saturating_mul(map.width).saturating_add(x);
     let biome = map.biomes.get(idx).copied().unwrap_or_default();

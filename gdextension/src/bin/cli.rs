@@ -28,6 +28,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use image::RgbaImage;
 use indicatif::{ProgressBar, ProgressStyle};
 use mg_artifacts::{ArtifactStore, LayerManifest, LevelManifest};
+use mg_noise::runtime_presentation::{planet_zone_at, PlanetZone};
 use mg_noise::{
     rasterize_to_tile, render_terrain, BiomeMap, NoiseLayer, NormalizationHints, RiverNetwork,
     RuntimeChunkPresentation, RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids,
@@ -54,6 +55,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Export website assets from saved terrain artifacts
+    Export {
+        #[command(subcommand)]
+        kind: ExportKind,
+    },
     /// Generate terrain artifacts
     Generate {
         #[command(subcommand)]
@@ -80,6 +86,20 @@ enum Commands {
         /// Output directory for PNG and JSON files
         output_dir: String,
         /// Layers artifact tag to source the macro artifact from (default: newest)
+        #[arg(long)]
+        layers_tag: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExportKind {
+    /// Export the world map for the website: a downscaled macromap image plus
+    /// per-chunk light level, zone and biome for spawn-point readouts.
+    /// Outputs macromap.png, chunks.bin and map.json.
+    SiteMap {
+        /// Output directory (e.g. site/map)
+        output_dir: String,
+        /// Layers artifact tag (default: newest with a macromap.png)
         #[arg(long)]
         layers_tag: Option<String>,
     },
@@ -198,6 +218,12 @@ struct RuntimeChunkPresentationReport {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Export { kind } => match kind {
+            ExportKind::SiteMap {
+                output_dir,
+                layers_tag,
+            } => run_export_site_map(Path::new(&output_dir), layers_tag.as_deref()),
+        },
         Commands::Generate { kind } => match kind {
             GenerateKind::Layers { seed, tag } => run_generate_layers(seed, &tag),
             GenerateKind::Level {
@@ -875,6 +901,90 @@ fn run_inspect_chunk_presentation(
 
 /// Discover the newest named layer image across all layers artifacts, mirroring the
 /// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
+// ─── export site-map ─────────────────────────────────────────────────────────
+
+/// The site map image is halved until it is no wider than this.
+const SITE_MAP_MAX_IMAGE_WIDTH: usize = 2048;
+/// chunks.bin layout: one record per chunk, row-major, fields in this order.
+const SITE_MAP_CHUNK_FIELDS: [&str; 3] = ["light_level", "zone", "biome"];
+
+fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>) {
+    let fail = |message: String| -> ! {
+        eprintln!("error: {message}");
+        std::process::exit(1);
+    };
+    let store = ArtifactStore::new().unwrap_or_else(|e| fail(format!("artifact store: {e}")));
+    let tag = match layers_tag {
+        Some(tag) => tag.to_string(),
+        None => find_newest_layer_image(&store, "macromap.png")
+            .map(|(tag, ..)| tag)
+            .unwrap_or_else(|| fail("no layers artifact with macromap.png found".to_string())),
+    };
+    let manifest = store
+        .load_layer_manifest(&tag)
+        .unwrap_or_else(|e| fail(format!("layers artifact '{tag}' not found: {e}")));
+    let (map, _river_network) = store
+        .load_layers_data(&tag)
+        .unwrap_or_else(|e| fail(format!("could not load layers data for '{tag}': {e}")));
+    fs::create_dir_all(output_dir)
+        .unwrap_or_else(|e| fail(format!("creating {}: {e}", output_dir.display())));
+
+    // Image: the macromap, halved until it is a sensible download size.
+    let macromap = image::open(store.layer_image_path(&tag, "macromap.png"))
+        .unwrap_or_else(|e| fail(format!("could not load macromap.png for '{tag}': {e}")))
+        .to_rgba8();
+    let (mut image_w, mut image_h) = (macromap.width() as usize, macromap.height() as usize);
+    let mut pixels = macromap.into_raw();
+    while image_w > SITE_MAP_MAX_IMAGE_WIDTH && image_w % 2 == 0 && image_h % 2 == 0 {
+        pixels = downscale_rgba_2x_box(&pixels, image_w, image_h);
+        image_w /= 2;
+        image_h /= 2;
+    }
+    RgbaImage::from_raw(image_w as u32, image_h as u32, pixels)
+        .expect("downscaled buffer matches its dimensions")
+        .save(output_dir.join("macromap.png"))
+        .unwrap_or_else(|e| fail(format!("saving macromap.png: {e}")));
+
+    // Per-chunk data: the macro map has one cell per chunk.
+    let mut chunks = Vec::with_capacity(map.width * map.height * SITE_MAP_CHUNK_FIELDS.len());
+    let mut biome_names: BTreeMap<u8, String> = BTreeMap::new();
+    for y in 0..map.height {
+        for x in 0..map.width {
+            let idx = y * map.width + x;
+            let light = (map.light_level[idx].clamp(0.0, 1.0) * 255.0).round() as u8;
+            let zone = planet_zone_at(&map, x, y);
+            let biome = map.biomes[idx];
+            biome_names
+                .entry(biome as u8)
+                .or_insert_with(|| format!("{biome:?}"));
+            chunks.extend_from_slice(&[light, zone as u8, biome as u8]);
+        }
+    }
+    fs::write(output_dir.join("chunks.bin"), &chunks)
+        .unwrap_or_else(|e| fail(format!("writing chunks.bin: {e}")));
+
+    let metadata = serde_json::json!({
+        "layers_tag": tag,
+        "seed": manifest.seed,
+        "chunks_wide": map.width,
+        "chunks_high": map.height,
+        "chunk_fields": SITE_MAP_CHUNK_FIELDS,
+        "zones": PlanetZone::ALL.iter().map(|zone| format!("{zone:?}")).collect::<Vec<_>>(),
+        "biomes": biome_names,
+    });
+    let metadata_text = serde_json::to_string_pretty(&metadata).expect("metadata serialises");
+    fs::write(output_dir.join("map.json"), metadata_text)
+        .unwrap_or_else(|e| fail(format!("writing map.json: {e}")));
+
+    println!(
+        "site map exported to {}: macromap.png {image_w}x{image_h}, chunks.bin {}x{} chunks (layers '{tag}', seed {})",
+        output_dir.display(),
+        map.width,
+        map.height,
+        manifest.seed
+    );
+}
+
 fn find_newest_layer_image(
     store: &mg_artifacts::ArtifactStore,
     image_name: &str,
