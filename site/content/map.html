@@ -1,5 +1,5 @@
 <h1>Map</h1>
-<p>Click to set a spawn point. North is the night side, south is the day side.</p>
+<p>Click to set a spawn point. Drag to pan; the map wraps east to west. Pinch, or use the buttons, to zoom. North is the night side, south is the day side.</p>
 <div class="spawn" aria-live="polite">
   <dl>
     <div><dt>Zone</dt><dd id="spawnZone"></dd></div>
@@ -13,12 +13,19 @@
   </dl>
   <button id="playButton" type="button">Play here</button>
 </div>
-<div class="layers" id="layers" role="radiogroup" aria-label="Map layer"></div>
-<div class="map-frame" id="mapFrame" tabindex="0" role="application" aria-label="World map. Click, or use arrow keys, to move the spawn point by one chunk.">
-  <img id="mapImage" src="macromap.png" width="2048" height="1024" alt="World map of Margin">
-  <div class="faction-labels" id="factionLabels" hidden></div>
-  <div class="pin" id="pin"></div>
+<div class="layers" id="layers" role="radiogroup" aria-label="Base layer"></div>
+<div class="layer-group" id="overlays" role="group" aria-label="Overlays">
+  <span class="layer-group-name">Overlays</span>
 </div>
+<div class="map-frame" id="mapFrame" tabindex="0" role="application" aria-label="World map. Click to set the spawn point, drag to pan. Arrow keys move the spawn point by one chunk; plus and minus zoom.">
+  <canvas id="mapCanvas"></canvas>
+  <div class="map-zoom">
+    <button id="zoomIn" type="button" aria-label="Zoom in">+</button>
+    <button id="zoomOut" type="button" aria-label="Zoom out">&minus;</button>
+    <button id="zoomReset" type="button">Reset</button>
+  </div>
+</div>
+<div class="legend" id="legend"></div>
 <p class="muted" id="mapStatus"></p>
 
 <dialog id="play" aria-labelledby="playTitle">

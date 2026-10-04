@@ -201,7 +201,7 @@ button.plain {
 .layers {
 	display: grid;
 	gap: 4px;
-	margin: 12px 0 10px;
+	margin: 12px 0 4px;
 }
 .layer-group {
 	display: flex;
@@ -232,33 +232,65 @@ button.plain {
 	position: relative;
 	overflow: hidden;
 	border: 1px solid var(--text);
-	cursor: crosshair;
+	cursor: grab;
 }
-.map-frame img {
+.map-frame canvas {
 	display: block;
 	width: 100%;
-	height: auto;
+	aspect-ratio: 2 / 1;
+	touch-action: none;
 }
-.faction-labels span {
+.map-zoom {
 	position: absolute;
-	transform: translate(-50%, -150%);
-	padding: 0 4px;
-	background: rgba(16, 14, 38, 0.72);
-	color: #fff;
-	font-size: 0.75rem;
-	font-weight: 600;
-	white-space: nowrap;
-	pointer-events: none;
+	top: 8px;
+	right: 8px;
+	display: flex;
+	gap: 4px;
 }
-.pin {
-	position: absolute;
-	width: 16px;
-	height: 16px;
-	margin: -8px 0 0 -8px;
-	border: 2px solid #fff;
-	border-radius: 50%;
-	box-shadow: 0 0 0 2px #000;
-	pointer-events: none;
+.map-zoom button {
+	padding: 2px 10px;
+	border-color: var(--text);
+	background: var(--bg);
+	color: var(--text);
+}
+#overlays {
+	margin-bottom: 10px;
+	gap: 4px 16px;
+}
+#overlays label {
+	font-size: 0.8125rem;
+	cursor: pointer;
+}
+.legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 20px;
+	min-height: 1.5rem;
+	margin-top: 8px;
+	font-size: 0.8125rem;
+	color: var(--muted);
+}
+.legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+.swatch {
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	border: 1px solid var(--text);
+}
+.swatch.ramp {
+	width: 72px;
+	background: linear-gradient(
+		90deg,
+		#100e26,
+		#542668,
+		#ba4668,
+		#f4964a,
+		#fcf0be
+	);
 }
 .spawn {
 	display: flex;

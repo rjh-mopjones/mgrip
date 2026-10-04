@@ -1269,6 +1269,11 @@ fn run_inspect_layer_stats(layers_tag: &str) {
 
 /// Site map images are halved until they are no wider than this.
 const SITE_MAP_MAX_IMAGE_WIDTH: usize = 2048;
+/// The terrain image is the one people zoom into, so it is kept larger.
+const SITE_MAP_TERRAIN_IMAGE: &str = "macromap.png";
+const SITE_MAP_TERRAIN_MAX_WIDTH: usize = 4096;
+/// Overlay pixels per chunk.
+const SITE_MAP_OVERLAY_SCALE: usize = 2;
 /// Layer hierarchy shown on the site map, following BiomeMap's base/derived
 /// split. Layers are matched by image file stem, case-insensitively; derived
 /// layers are listed in dependency order. Unlisted layers go under "Other".
@@ -1307,11 +1312,6 @@ const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 4] = [
             "lifegen_habitability",
             "lifegen_navigation_cost",
             "lifegen_resource_desirability",
-            "lifegen_provinces",
-            "lifegen_factions",
-            "lifegen_settlements",
-            "lifegen_roads",
-            "lifegen_trade",
         ],
     ),
 ];
@@ -1357,7 +1357,12 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
                 .to_rgba8();
             let (mut image_w, mut image_h) = (layer.width() as usize, layer.height() as usize);
             let mut pixels = layer.into_raw();
-            while image_w > SITE_MAP_MAX_IMAGE_WIDTH && image_w % 2 == 0 && image_h % 2 == 0 {
+            let max_width = if file_name == SITE_MAP_TERRAIN_IMAGE {
+                SITE_MAP_TERRAIN_MAX_WIDTH
+            } else {
+                SITE_MAP_MAX_IMAGE_WIDTH
+            };
+            while image_w > max_width && image_w % 2 == 0 && image_h % 2 == 0 {
                 pixels = downscale_rgba_2x_box(&pixels, image_w, image_h);
                 image_w /= 2;
                 image_h /= 2;
@@ -1389,54 +1394,12 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         layer_files.push(file_name.to_string());
     }
 
-    // LifeGen stage 2: provinces.
-    let province_map =
-        mg_life::generate_provinces(&map, &analysis, grid, civ_seed);
-    let provinces_file = "lifegen_provinces.png";
-    RgbaImage::from_raw(
-        province_map.width as u32,
-        province_map.height as u32,
-        province_map_rgba(&province_map),
-    )
-    .expect("province grid matches its dimensions")
-    .save(output_dir.join(provinces_file))
-    .unwrap_or_else(|e| fail(format!("saving {provinces_file}: {e}")));
-    layer_files.push(provinces_file.to_string());
-
-    // LifeGen stage 3: factions.
-    let faction_map = mg_life::generate_factions(
-        &province_map,
-        &authored_states(),
-        grid,
-        civ_seed,
-    );
-    let factions_file = "lifegen_factions.png";
-    RgbaImage::from_raw(
-        province_map.width as u32,
-        province_map.height as u32,
-        faction_map_rgba(&province_map, &faction_map),
-    )
-    .expect("faction grid matches its dimensions")
-    .save(output_dir.join(factions_file))
-    .unwrap_or_else(|e| fail(format!("saving {factions_file}: {e}")));
-    layer_files.push(factions_file.to_string());
-
-    // LifeGen stage 4: settlements.
-    let settlements =
-        mg_life::place_settlements(&province_map, &faction_map, &analysis, grid);
-    let settlements_file = "lifegen_settlements.png";
-    let settlement_scale = (image_w / province_map.width).max(1);
-    RgbaImage::from_raw(
-        (province_map.width * settlement_scale) as u32,
-        (province_map.height * settlement_scale) as u32,
-        settlement_map_rgba(&province_map, &faction_map, &settlements, settlement_scale),
-    )
-    .expect("settlement image matches its dimensions")
-    .save(output_dir.join(settlements_file))
-    .unwrap_or_else(|e| fail(format!("saving {settlements_file}: {e}")));
-    layer_files.push(settlements_file.to_string());
-
-    // LifeGen stages 5 and 6: roads and trade.
+    // LifeGen stages 2 to 6 (spec 011). Each is exported as a transparent
+    // overlay so the map page can lay it over any base layer.
+    let province_map = mg_life::generate_provinces(&map, &analysis, grid, civ_seed);
+    let faction_map =
+        mg_life::generate_factions(&province_map, &authored_states(), grid, civ_seed);
+    let settlements = mg_life::place_settlements(&province_map, &faction_map, &analysis, grid);
     let roads = mg_life::build_roads(
         &settlements,
         &analysis.navigation_cost,
@@ -1445,26 +1408,33 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         grid,
     );
     let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
+
+    let overlay_scale = SITE_MAP_OVERLAY_SCALE;
     let overlays = [
+        ("Provinces", "overlay_provinces.png", province_overlay(&province_map, overlay_scale)),
         (
-            "lifegen_roads.png",
-            road_map_rgba(&province_map, &faction_map, &settlements, &roads, settlement_scale),
+            "Factions",
+            "overlay_factions.png",
+            faction_overlay(&province_map, &faction_map, overlay_scale),
         ),
         (
-            "lifegen_trade.png",
-            trade_map_rgba(&province_map, &faction_map, &settlements, &trade_flows, settlement_scale),
+            "Settlements",
+            "overlay_settlements.png",
+            settlement_overlay(&province_map, &settlements, overlay_scale),
+        ),
+        ("Roads", "overlay_roads.png", road_overlay(&province_map, &roads, overlay_scale)),
+        (
+            "Trade",
+            "overlay_trade.png",
+            trade_overlay(&province_map, &settlements, &trade_flows, overlay_scale),
         ),
     ];
-    for (file_name, pixels) in overlays {
-        RgbaImage::from_raw(
-            (province_map.width * settlement_scale) as u32,
-            (province_map.height * settlement_scale) as u32,
-            pixels,
-        )
-        .expect("overlay image matches its dimensions")
-        .save(output_dir.join(file_name))
-        .unwrap_or_else(|e| fail(format!("saving {file_name}: {e}")));
-        layer_files.push(file_name.to_string());
+    let mut overlay_entries = Vec::new();
+    for (name, file_name, overlay) in overlays {
+        overlay
+            .save(&output_dir.join(file_name))
+            .unwrap_or_else(|e| fail(format!("saving {file_name}: {e}")));
+        overlay_entries.push(serde_json::json!({ "name": name, "file": file_name }));
     }
 
     // Per-chunk data: the macro map has one cell per chunk.
@@ -1493,8 +1463,19 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         "chunks_high": map.height,
         "chunk_fields": SITE_MAP_CHUNK_FIELDS,
         "layer_groups": site_map_layer_groups(&layer_files),
-        "image_width": image_w,
-        "image_height": image_h,
+        // Transparent images to draw over a base layer.
+        "overlays": overlay_entries,
+        "settlement_dots": mg_life::SizeClass::ALL
+            .iter()
+            .map(|&size| {
+                let (radius, rgb) = settlement_dot(size);
+                serde_json::json!({ "size": format!("{size:?}"), "radius": radius, "rgb": rgb })
+            })
+            .collect::<Vec<_>>(),
+        "road_colours": mg_life::RoadKind::ALL
+            .iter()
+            .map(|&kind| serde_json::json!({ "kind": format!("{kind:?}"), "rgb": road_colour(kind) }))
+            .collect::<Vec<_>>(),
         "zones": PlanetZone::ALL.iter().map(|zone| format!("{zone:?}")).collect::<Vec<_>>(),
         "biomes": biome_names,
         "civ_seed": civ_seed,
@@ -1567,7 +1548,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         .unwrap_or_else(|e| fail(format!("writing map.json: {e}")));
 
     println!(
-        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks, {} provinces, {} factions, {} settlements, {} roads, {} trade flows (layers '{tag}', seed {}, civ seed {civ_seed})",
+        "site map exported to {}: {} layer images (terrain {image_w}x{image_h}), chunks.bin {}x{} chunks, {} provinces, {} factions, {} settlements, {} roads, {} trade flows (layers '{tag}', seed {}, civ seed {civ_seed})",
         output_dir.display(),
         layer_files.len(),
         map.width,
@@ -1597,15 +1578,9 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
     [channel(0), channel(1), channel(2), 255]
 }
 
-const LIFEGEN_OCEAN_RGB: [u8; 3] = [16, 14, 38];
-const LIFEGEN_UNINHABITED_RGB: [f32; 3] = [40.0, 36.0, 58.0];
-const LIFEGEN_UNCLAIMED_RGB: [f32; 3] = [92.0, 84.0, 110.0];
-const LIFEGEN_BORDER_SHADE: f32 = 0.45;
-const LIFEGEN_INNER_BORDER_SHADE: f32 = 0.85;
-
 /// A distinct colour per id. Hues run blue through magenta and red to yellow,
 /// skipping green.
-fn id_colour(id: u16) -> [f32; 3] {
+fn id_colour(id: u16) -> [u8; 3] {
     // Scramble the id so neighbouring regions get unrelated colours.
     let hash = (id as u32).wrapping_mul(2_654_435_761);
     let hue = 200.0 + (hash >> 8 & 0xff) as f32 / 255.0 * 220.0;
@@ -1613,265 +1588,245 @@ fn id_colour(id: u16) -> [f32; 3] {
     let value = 0.60 + (hash >> 24) as f32 / 255.0 * 0.30;
     let channel = |offset: f32| {
         let k = (offset + hue / 60.0) % 6.0;
-        value - value * saturation * k.min(4.0 - k).clamp(0.0, 1.0)
+        ((value - value * saturation * k.min(4.0 - k).clamp(0.0, 1.0)) * 255.0) as u8
     };
-    [channel(5.0) * 255.0, channel(3.0) * 255.0, channel(1.0) * 255.0]
+    [channel(5.0), channel(3.0), channel(1.0)]
 }
 
-/// Render a map of regions: `colour_of(cell)` fills each land cell and
-/// `shade_of(cell, neighbour)` darkens it where it borders the cell to its
-/// right or below. Ocean (province id 0) is dark.
-fn region_map_rgba(
+const BORDER_RGBA: [u8; 4] = [16, 14, 38, 220];
+const FACTION_FILL_ALPHA: u8 = 140;
+const CAPITAL_RGB: [u8; 3] = [255, 255, 255];
+
+/// A transparent image over the whole map, `scale` pixels per cell. The map
+/// joins east to west, so drawing wraps around in x.
+struct Overlay {
+    width: usize,
+    height: usize,
+    scale: usize,
+    pixels: Vec<u8>,
+}
+
+impl Overlay {
+    fn new(province_map: &mg_life::ProvinceMap, scale: usize) -> Self {
+        let (width, height) = (province_map.width * scale, province_map.height * scale);
+        Self {
+            width,
+            height,
+            scale,
+            pixels: vec![0; width * height * 4],
+        }
+    }
+
+    fn set(&mut self, x: i32, y: i32, rgba: [u8; 4]) {
+        if y < 0 || y >= self.height as i32 {
+            return;
+        }
+        let x = x.rem_euclid(self.width as i32) as usize;
+        let offset = (y as usize * self.width + x) * 4;
+        self.pixels[offset..offset + 4].copy_from_slice(&rgba);
+    }
+
+    fn centre(&self, cell: (usize, usize)) -> (i32, i32) {
+        (
+            (cell.0 * self.scale + self.scale / 2) as i32,
+            (cell.1 * self.scale + self.scale / 2) as i32,
+        )
+    }
+
+    fn fill_cell(&mut self, cell: (usize, usize), rgba: [u8; 4]) {
+        for dy in 0..self.scale {
+            for dx in 0..self.scale {
+                self.set(
+                    (cell.0 * self.scale + dx) as i32,
+                    (cell.1 * self.scale + dy) as i32,
+                    rgba,
+                );
+            }
+        }
+    }
+
+    /// Filled dot centred on a cell. `radius` is in pixels.
+    fn dot(&mut self, cell: (usize, usize), radius: i32, rgb: [u8; 3]) {
+        let (centre_x, centre_y) = self.centre(cell);
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy <= radius * radius + 1 {
+                    self.set(centre_x + dx, centre_y + dy, [rgb[0], rgb[1], rgb[2], 255]);
+                }
+            }
+        }
+    }
+
+    /// One-pixel line between the centres of two cells (Bresenham), taking
+    /// the short way round the map.
+    fn line(&mut self, from: (usize, usize), to: (usize, usize), rgb: [u8; 3]) {
+        let ((mut x, mut y), (mut end_x, end_y)) = (self.centre(from), self.centre(to));
+        let width = self.width as i32;
+        if end_x - x > width / 2 {
+            end_x -= width;
+        } else if x - end_x > width / 2 {
+            end_x += width;
+        }
+        let (dx, dy) = ((end_x - x).abs(), -(end_y - y).abs());
+        let (step_x, step_y) = (if x < end_x { 1 } else { -1 }, if y < end_y { 1 } else { -1 });
+        let mut error = dx + dy;
+        loop {
+            self.set(x, y, [rgb[0], rgb[1], rgb[2], 255]);
+            if x == end_x && y == end_y {
+                break;
+            }
+            let doubled = 2 * error;
+            if doubled >= dy {
+                error += dy;
+                x += step_x;
+            }
+            if doubled <= dx {
+                error += dx;
+                y += step_y;
+            }
+        }
+    }
+
+    fn save(self, path: &Path) -> Result<(), String> {
+        RgbaImage::from_raw(self.width as u32, self.height as u32, self.pixels)
+            .ok_or_else(|| "overlay buffer does not match its dimensions".to_string())?
+            .save(path)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Cells whose east or south neighbour belongs to a different region, where
+/// `region_of(cell index)` names the region. The map wraps east to west.
+fn border_cells(
     province_map: &mg_life::ProvinceMap,
-    colour_of: impl Fn(usize) -> [f32; 3],
-    shade_of: impl Fn(usize, usize) -> f32,
-) -> Vec<u8> {
+    region_of: impl Fn(usize) -> u16,
+) -> Vec<(usize, usize)> {
     let (width, height) = (province_map.width, province_map.height);
-    let mut pixels = Vec::with_capacity(width * height * 4);
+    let mut cells = Vec::new();
     for y in 0..height {
         for x in 0..width {
-            let cell = y * width + x;
-            if province_map.province_ids[cell] == 0 {
-                pixels.extend_from_slice(&[
-                    LIFEGEN_OCEAN_RGB[0],
-                    LIFEGEN_OCEAN_RGB[1],
-                    LIFEGEN_OCEAN_RGB[2],
-                    255,
-                ]);
-                continue;
+            let here = region_of(y * width + x);
+            let east = region_of(y * width + (x + 1) % width);
+            let south = if y + 1 < height { region_of((y + 1) * width + x) } else { here };
+            if here != east || here != south {
+                cells.push((x, y));
             }
-            let mut shade = 1.0f32;
-            if x + 1 < width {
-                shade = shade.min(shade_of(cell, cell + 1));
-            }
-            if y + 1 < height {
-                shade = shade.min(shade_of(cell, cell + width));
-            }
-            let [r, g, b] = colour_of(cell);
-            pixels.extend_from_slice(&[(r * shade) as u8, (g * shade) as u8, (b * shade) as u8, 255]);
         }
     }
-    pixels
+    cells
 }
 
-/// Flat colour per province with darkened borders.
-fn province_map_rgba(province_map: &mg_life::ProvinceMap) -> Vec<u8> {
-    let ids = &province_map.province_ids;
-    region_map_rgba(
-        province_map,
-        |cell| id_colour(ids[cell]),
-        |cell, neighbour| {
-            if ids[cell] == ids[neighbour] {
-                1.0
-            } else {
-                LIFEGEN_BORDER_SHADE
-            }
-        },
-    )
+/// Province borders.
+fn province_overlay(province_map: &mg_life::ProvinceMap, scale: usize) -> Overlay {
+    let mut overlay = Overlay::new(province_map, scale);
+    for cell in border_cells(province_map, |cell| province_map.province_ids[cell]) {
+        overlay.fill_cell(cell, BORDER_RGBA);
+    }
+    overlay
 }
 
-/// Flat colour per faction, grey for unclaimed and dark for uninhabited land.
-/// Faction borders are dark, province borders inside a faction faint, and
-/// each capital's seed cell is marked white.
-fn faction_map_rgba(
+/// Faction territory as a translucent fill with dark borders and each
+/// capital marked. Land no faction holds is left clear.
+fn faction_overlay(
     province_map: &mg_life::ProvinceMap,
     faction_map: &mg_life::FactionMap,
-) -> Vec<u8> {
-    let ids = &province_map.province_ids;
-    let faction_at = |cell: usize| faction_map.faction_of_province(ids[cell]);
-    let mut pixels = region_map_rgba(
-        province_map,
-        |cell| match faction_map.political_states[(ids[cell] - 1) as usize] {
-            mg_life::PoliticalState::Claimed { faction_id } => id_colour(faction_id),
-            mg_life::PoliticalState::Unclaimed => LIFEGEN_UNCLAIMED_RGB,
-            mg_life::PoliticalState::Uninhabited => LIFEGEN_UNINHABITED_RGB,
-        },
-        |cell, neighbour| {
-            if ids[neighbour] == 0 || ids[cell] == ids[neighbour] {
-                1.0
-            } else if faction_at(cell) == faction_at(neighbour) {
-                LIFEGEN_INNER_BORDER_SHADE
-            } else {
-                LIFEGEN_BORDER_SHADE
-            }
-        },
-    );
-    for faction in &faction_map.factions {
-        let (site_x, site_y) = province_map.provinces[(faction.capital_province - 1) as usize].site;
-        for y in site_y.saturating_sub(1)..=(site_y + 1).min(province_map.height - 1) {
-            for x in site_x.saturating_sub(1)..=(site_x + 1).min(province_map.width - 1) {
-                let offset = (y * province_map.width + x) * 4;
-                pixels[offset..offset + 3].copy_from_slice(&[255, 255, 255]);
+    scale: usize,
+) -> Overlay {
+    let faction_at = |cell: usize| faction_map.faction_of_province(province_map.province_ids[cell]);
+    let mut overlay = Overlay::new(province_map, scale);
+    for y in 0..province_map.height {
+        for x in 0..province_map.width {
+            let faction_id = faction_at(y * province_map.width + x);
+            if faction_id != 0 {
+                let [r, g, b] = id_colour(faction_id);
+                overlay.fill_cell((x, y), [r, g, b, FACTION_FILL_ALPHA]);
             }
         }
     }
-    pixels
+    for cell in border_cells(province_map, faction_at) {
+        overlay.fill_cell(cell, BORDER_RGBA);
+    }
+    for faction in &faction_map.factions {
+        let site = province_map.provinces[(faction.capital_province - 1) as usize].site;
+        overlay.dot(site, 3, CAPITAL_RGB);
+    }
+    overlay
 }
 
-/// Dot radius in output pixels and colour for each settlement size.
+/// Dot radius in pixels and colour for each settlement size.
 fn settlement_dot(size_class: mg_life::SizeClass) -> (i32, [u8; 3]) {
     match size_class {
         mg_life::SizeClass::Metropolis => (3, [255, 255, 255]),
         mg_life::SizeClass::City => (2, [255, 214, 120]),
         mg_life::SizeClass::Town => (1, [240, 170, 110]),
-        mg_life::SizeClass::Village => (0, [205, 195, 220]),
-        mg_life::SizeClass::Outpost => (0, [140, 130, 165]),
+        mg_life::SizeClass::Village => (0, [225, 215, 235]),
+        mg_life::SizeClass::Outpost => (0, [150, 140, 175]),
         mg_life::SizeClass::Ruins => (0, [170, 70, 80]),
     }
 }
 
-/// The faction map, darkened and enlarged to `scale` output pixels per cell,
-/// as a backdrop for point and line overlays.
-fn dimmed_faction_backdrop(
+/// Settlements as dots. Larger settlements are drawn last.
+fn settlement_overlay(
     province_map: &mg_life::ProvinceMap,
-    faction_map: &mg_life::FactionMap,
-    scale: usize,
-    dim: f32,
-) -> Vec<u8> {
-    let (cells_w, cells_h) = (province_map.width, province_map.height);
-    let (width, height) = (cells_w * scale, cells_h * scale);
-    let source_pixels = faction_map_rgba(province_map, faction_map);
-    let mut pixels = vec![255u8; width * height * 4];
-    for y in 0..height {
-        for x in 0..width {
-            let source = ((y / scale) * cells_w + x / scale) * 4;
-            let target = (y * width + x) * 4;
-            for channel in 0..3 {
-                pixels[target + channel] = (source_pixels[source + channel] as f32 * dim) as u8;
-            }
-        }
-    }
-    pixels
-}
-
-/// Filled dot centred on a cell. `radius` is in output pixels.
-fn draw_dot(pixels: &mut [u8], width: usize, cell: (usize, usize), scale: usize, radius: i32, colour: [u8; 3]) {
-    let height = pixels.len() / 4 / width;
-    let centre_x = (cell.0 * scale + scale / 2) as i32;
-    let centre_y = (cell.1 * scale + scale / 2) as i32;
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            let (x, y) = (centre_x + dx, centre_y + dy);
-            if dx * dx + dy * dy > radius * radius + 1
-                || x < 0
-                || y < 0
-                || x >= width as i32
-                || y >= height as i32
-            {
-                continue;
-            }
-            let target = (y as usize * width + x as usize) * 4;
-            pixels[target..target + 3].copy_from_slice(&colour);
-        }
-    }
-}
-
-/// One-pixel line between the centres of two cells (Bresenham). The line takes
-/// the short way round the map, running off one edge and back in at the other
-/// if that is nearer.
-fn draw_line(pixels: &mut [u8], width: usize, from: (usize, usize), to: (usize, usize), scale: usize, colour: [u8; 3]) {
-    let centre = |cell: (usize, usize)| ((cell.0 * scale + scale / 2) as i32, (cell.1 * scale + scale / 2) as i32);
-    let ((mut x, mut y), (mut end_x, end_y)) = (centre(from), centre(to));
-    let image_width = width as i32;
-    if end_x - x > image_width / 2 {
-        end_x -= image_width;
-    } else if x - end_x > image_width / 2 {
-        end_x += image_width;
-    }
-    let (dx, dy) = ((end_x - x).abs(), -(end_y - y).abs());
-    let (step_x, step_y) = (if x < end_x { 1 } else { -1 }, if y < end_y { 1 } else { -1 });
-    let mut error = dx + dy;
-    loop {
-        let target = (y as usize * width + x.rem_euclid(image_width) as usize) * 4;
-        pixels[target..target + 3].copy_from_slice(&colour);
-        if x == end_x && y == end_y {
-            break;
-        }
-        let doubled = 2 * error;
-        if doubled >= dy {
-            error += dy;
-            x += step_x;
-        }
-        if doubled <= dx {
-            error += dx;
-            y += step_y;
-        }
-    }
-}
-
-/// Settlements as dots over a dimmed faction map. Larger settlements are drawn last.
-fn settlement_map_rgba(
-    province_map: &mg_life::ProvinceMap,
-    faction_map: &mg_life::FactionMap,
     settlements: &[mg_life::Settlement],
     scale: usize,
-) -> Vec<u8> {
-    let width = province_map.width * scale;
-    let mut pixels = dimmed_faction_backdrop(province_map, faction_map, scale, 0.5);
+) -> Overlay {
+    let mut overlay = Overlay::new(province_map, scale);
     let mut by_size: Vec<&mg_life::Settlement> = settlements.iter().collect();
     by_size.sort_by_key(|settlement| std::cmp::Reverse(settlement.size_class));
     for settlement in by_size {
         let (radius, colour) = settlement_dot(settlement.size_class);
-        draw_dot(&mut pixels, width, settlement.position, scale, radius, colour);
+        overlay.dot(settlement.position, radius, colour);
     }
-    pixels
+    overlay
 }
 
-/// Roads over a dimmed faction map: trails faint, roads amber, highways
-/// white, with faction capitals marked. Highways are drawn last.
-fn road_map_rgba(
+fn road_colour(kind: mg_life::RoadKind) -> [u8; 3] {
+    match kind {
+        mg_life::RoadKind::Highway => [255, 255, 255],
+        mg_life::RoadKind::Road => [240, 170, 110],
+        mg_life::RoadKind::Trail => [120, 110, 150],
+    }
+}
+
+/// Roads as lines. Highways are drawn last.
+fn road_overlay(
     province_map: &mg_life::ProvinceMap,
-    faction_map: &mg_life::FactionMap,
-    settlements: &[mg_life::Settlement],
     roads: &[mg_life::Road],
     scale: usize,
-) -> Vec<u8> {
-    let width = province_map.width * scale;
-    let mut pixels = dimmed_faction_backdrop(province_map, faction_map, scale, 0.3);
+) -> Overlay {
+    let mut overlay = Overlay::new(province_map, scale);
     let mut by_kind: Vec<&mg_life::Road> = roads.iter().collect();
     by_kind.sort_by_key(|road| std::cmp::Reverse(road.kind));
     for road in by_kind {
-        let colour = match road.kind {
-            mg_life::RoadKind::Highway => [255, 255, 255],
-            mg_life::RoadKind::Road => [240, 170, 110],
-            mg_life::RoadKind::Trail => [120, 110, 150],
-        };
         for pair in road.path.windows(2) {
-            draw_line(&mut pixels, width, pair[0], pair[1], scale, colour);
+            overlay.line(pair[0], pair[1], road_colour(road.kind));
         }
     }
-    for settlement in settlements {
-        if settlement.size_class == mg_life::SizeClass::Metropolis {
-            draw_dot(&mut pixels, width, settlement.position, scale, 2, [255, 255, 255]);
-        }
-    }
-    pixels
+    overlay
 }
 
-/// Trade flows as straight lines from each settlement to its market,
-/// coloured by value, with faction capitals marked.
-fn trade_map_rgba(
+/// Trade flows as straight lines from each settlement to its market, coloured
+/// by value. Schematic: a line may cross water that the road does not.
+fn trade_overlay(
     province_map: &mg_life::ProvinceMap,
-    faction_map: &mg_life::FactionMap,
     settlements: &[mg_life::Settlement],
     flows: &[mg_life::TradeFlow],
     scale: usize,
-) -> Vec<u8> {
-    let width = province_map.width * scale;
-    let mut pixels = dimmed_faction_backdrop(province_map, faction_map, scale, 0.3);
+) -> Overlay {
+    let mut overlay = Overlay::new(province_map, scale);
     let position = |id: u32| settlements[(id - 1) as usize].position;
     let mut by_value: Vec<&mg_life::TradeFlow> = flows.iter().collect();
     by_value.sort_by(|a, b| a.value.total_cmp(&b.value));
     for flow in by_value {
         let [r, g, b, _] = score_to_rgba(flow.value);
-        draw_line(&mut pixels, width, position(flow.from_settlement), position(flow.to_settlement), scale, [r, g, b]);
+        overlay.line(
+            position(flow.from_settlement),
+            position(flow.to_settlement),
+            [r, g, b],
+        );
     }
-    for settlement in settlements {
-        if settlement.size_class == mg_life::SizeClass::Metropolis {
-            draw_dot(&mut pixels, width, settlement.position, scale, 2, [255, 255, 255]);
-        }
-    }
-    pixels
+    overlay
 }
 
 /// Sort layer image files into `SITE_MAP_LAYER_GROUPS`, dropping empty groups.
