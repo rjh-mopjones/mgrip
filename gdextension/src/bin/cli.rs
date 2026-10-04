@@ -408,9 +408,6 @@ fn blit_rgba_tile(
 }
 
 fn run_generate_layers(seed: u32, tag: &str) {
-    let previous_force_cpu = std::env::var_os("MG_NOISE_FORCE_CPU");
-    std::env::set_var("MG_NOISE_FORCE_CPU", "1");
-
     let store = ArtifactStore::new().unwrap_or_else(|e| {
         eprintln!("error: failed to open artifact store: {e}");
         std::process::exit(1);
@@ -591,12 +588,6 @@ fn run_generate_layers(seed: u32, tag: &str) {
     println!("Saved to {}/layers/{tag}/", store.base_path().display());
     println!("  {FULL_W}×{FULL_H} PNGs, {} layers written", images.len());
     println!("  total: {:.1}s", t0.elapsed().as_secs_f64());
-
-    if let Some(value) = previous_force_cpu {
-        std::env::set_var("MG_NOISE_FORCE_CPU", value);
-    } else {
-        std::env::remove_var("MG_NOISE_FORCE_CPU");
-    }
 }
 
 // ─── generate level ───────────────────────────────────────────────────────────

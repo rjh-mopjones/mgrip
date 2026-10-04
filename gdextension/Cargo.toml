@@ -20,9 +20,6 @@ clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"
 chrono = "0.4"
 godot = "0.2"
-wgpu = "27"
-bytemuck = { version = "1.14", features = ["derive"] }
-pollster = "0.4"
 rand = "0.8"
 rand_xorshift = "0.3"
 

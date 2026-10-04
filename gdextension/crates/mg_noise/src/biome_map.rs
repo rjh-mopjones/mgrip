@@ -1,8 +1,6 @@
 //! BiomeMap: complete terrain snapshot for a given LOD tile.
 //! Holds all base and derived noise layers plus the computed biome grid.
 
-#[cfg(not(target_os = "emscripten"))]
-use crate::gpu::GpuNoiseContext;
 use mg_core::{NoiseStrategy, TileType};
 use noise::OpenSimplex;
 use rayon::prelude::*;
@@ -304,80 +302,37 @@ impl BiomeMap {
             })
             .collect();
 
-        // Two-way dispatch:
-        //   GPU (available) — all layers from GPU at true world coords. Biome classification
-        //     (ocean/land boundary, zone, palette) is therefore stable macro truth for
-        //     any freq_scale. Micro-scale terrain variety comes from derive_micro_heightmap
-        //     at detail_level >= 2, not from scaled noise layers.
-        //   CPU fallback (no GPU) — all layers from CPU at true world coords (wx, wy).
-        //     freq_scale is intentionally ignored here; the scaled coords were causing
-        //     coast_perturb to flip shallow-ocean cells to land.
-        let scale = sample_world_step(world_size_x, tile_w);
-        #[cfg(target_os = "emscripten")]
-        let gpu_layers: Option<crate::gpu::GpuNoiseResultF64> = None;
-        #[cfg(not(target_os = "emscripten"))]
-        let gpu_layers = GpuNoiseContext::global().map(|gpu| {
-            gpu.generate_layers(
-                seed,
-                tile_w,
-                tile_h,
-                origin_x,
-                origin_y,
-                scale,
-                world_height,
-                detail_level,
-            )
-            .into_f64()
-        });
-
-        match gpu_layers {
-            Some(gpu) => {
-                // GPU path — all layers at world scale regardless of freq_scale.
-                for (i, &(tect, plate_id)) in tect_data.iter().enumerate() {
-                    map.continentalness[i] = gpu.continentalness[i];
-                    map.tectonic[i] = tect;
-                    map.light_level[i] = gpu.light_level[i];
-                    map.rock_hardness[i] = gpu.rock_hardness[i];
-                    map.humidity[i] = gpu.humidity[i];
-                    map.peaks_valleys[i] = derived::derive_peaks_valleys(
-                        gpu.peaks_valleys[i],
-                        tect,
-                        gpu.rock_hardness[i],
-                    );
-                    map.tectonic_plate_ids[i] = plate_id;
-                }
-            }
-            None => {
-                // CPU fallback — all layers at true world coords (wx, wy).
-                let base_data: Vec<(f64, f64, f64, f64, f64)> = pixels
-                    .par_iter()
-                    .map(|&(_, wx, wy)| {
-                        let cont = cont_strat.generate(wx, wy, detail_level);
-                        let light = light_strat.generate(wx, wy, detail_level);
-                        let rock = rock_strat.generate(wx, wy, detail_level);
-                        let humid = humid_strat.generate_terminator_model(
-                            wx,
-                            wy,
-                            detail_level,
-                            cont,
-                            light,
-                        );
-                        let pv_base = pv_strat.generate(wx, wy, detail_level);
-                        (cont, light, rock, humid, pv_base)
-                    })
-                    .collect();
-                for (i, (&(cont, light, rock, humid, pv_base), &(tect, plate_id))) in
-                    base_data.iter().zip(tect_data.iter()).enumerate()
-                {
-                    map.continentalness[i] = cont;
-                    map.tectonic[i] = tect;
-                    map.light_level[i] = light;
-                    map.rock_hardness[i] = rock;
-                    map.humidity[i] = humid;
-                    map.peaks_valleys[i] = derived::derive_peaks_valleys(pv_base, tect, rock);
-                    map.tectonic_plate_ids[i] = plate_id;
-                }
-            }
+        // All base layers are sampled at true world coords (wx, wy). freq_scale is
+        // intentionally ignored here; scaled coords were causing coast_perturb to
+        // flip shallow-ocean cells to land. Micro-scale terrain variety comes from
+        // derive_micro_heightmap at detail_level >= 2, not from scaled noise layers.
+        let base_data: Vec<(f64, f64, f64, f64, f64)> = pixels
+            .par_iter()
+            .map(|&(_, wx, wy)| {
+                let cont = cont_strat.generate(wx, wy, detail_level);
+                let light = light_strat.generate(wx, wy, detail_level);
+                let rock = rock_strat.generate(wx, wy, detail_level);
+                let humid = humid_strat.generate_terminator_model(
+                    wx,
+                    wy,
+                    detail_level,
+                    cont,
+                    light,
+                );
+                let pv_base = pv_strat.generate(wx, wy, detail_level);
+                (cont, light, rock, humid, pv_base)
+            })
+            .collect();
+        for (i, (&(cont, light, rock, humid, pv_base), &(tect, plate_id))) in
+            base_data.iter().zip(tect_data.iter()).enumerate()
+        {
+            map.continentalness[i] = cont;
+            map.tectonic[i] = tect;
+            map.light_level[i] = light;
+            map.rock_hardness[i] = rock;
+            map.humidity[i] = humid;
+            map.peaks_valleys[i] = derived::derive_peaks_valleys(pv_base, tect, rock);
+            map.tectonic_plate_ids[i] = plate_id;
         }
 
         // ── Phase 2: Derived layers (depend on base layers) ───────────────────

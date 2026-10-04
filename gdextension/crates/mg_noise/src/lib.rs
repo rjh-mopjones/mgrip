@@ -2,7 +2,6 @@ pub mod biome_map;
 pub mod biome_splines;
 pub mod derived;
 pub mod erosion_sim;
-pub mod gpu;
 pub mod rivers;
 pub mod runtime_presentation;
 pub mod strategy;

@@ -5,8 +5,7 @@ use noise::{NoiseFn, OpenSimplex};
 /// it does not join up where the world wraps east to west. Over this many
 /// world units before the east edge it is crossfaded into the noise from just
 /// beyond the west edge, which makes it continuous across the seam and leaves
-/// the rest of the world untouched. The GPU shader does the same
-/// (`LIGHT_LEVEL_FUNCS` in `gpu/pipelines.rs`).
+/// the rest of the world untouched.
 pub const SEAM_BLEND_WU: f64 = 64.0;
 
 pub struct LightLevelStrategy {
