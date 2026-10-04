@@ -109,7 +109,8 @@ Build on these seams. Do not create parallel ownership paths.
 The project is growing a public website: lore, design approach, devlog, an
 interactive world map, and in-browser play launched from that map. It lives in
 `site/`. Only `site/mockup/` exists so far — a static clickable mockup, not the
-real site. Do not treat mockup data (map, zone thresholds, seed) as real.
+real site. Its map and game launch are real (exported map data, web build);
+lore, design and devlog content are hand-written stubs.
 
 Phases:
 
@@ -155,10 +156,22 @@ python3 tools/serve_web.py   # http://localhost:8060/play/
 - Emscripten 3.1.64 (Godot 4.3's own version) cannot link current-nightly
   output; 4.0.0 can and loads fine
 - `site/play/` is build output and gitignored
+- `site/play_shell.html` is the export's HTML shell: `?origin=x,y` in the URL
+  becomes the spawn `world_origin`; without it the game opens on its menu
 - Spawn point on web: pass `--agent-runtime-quick-launch` and
   `--agent-runtime-world-origin=x,y` through `GODOT_CONFIG.args` in the HTML
 - Shaders: in the Compatibility renderer `TIME` only exists inside the shader
   entry function — pass it into helpers as a parameter
+
+World map for the site (generated, gitignored, needs a layers artifact):
+
+```sh
+./gdextension/target/release/margins_grip export site-map site/map
+```
+
+Writes `macromap.png`, `chunks.bin` (per chunk: light level, zone, biome) and
+`map.json`. The map's seed must match `GameState.world_seed`, or the map and
+the spawned terrain will disagree.
 
 Lore content:
 
