@@ -1124,6 +1124,25 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         .filter(|(&id, &land)| land && id == 0)
         .count();
     println!("land cells without a province: {unassigned_land}");
+    let mut province_habitability: Vec<f32> =
+        province_map.provinces.iter().map(|p| p.habitability).collect();
+    province_habitability.sort_by(|a, b| a.total_cmp(b));
+    let habitability_at = |p: usize| {
+        province_habitability
+            .get((province_habitability.len().saturating_sub(1)) * p / 100)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    println!(
+        "province mean habitability: min {:.2} / p10 {:.2} / p25 {:.2} / median {:.2} / p75 {:.2} / p90 {:.2} / max {:.2}",
+        habitability_at(0),
+        habitability_at(10),
+        habitability_at(25),
+        habitability_at(50),
+        habitability_at(75),
+        habitability_at(90),
+        habitability_at(100),
+    );
 
     let faction_map = mg_life::generate_factions(
         &province_map,

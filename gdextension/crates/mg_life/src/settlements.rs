@@ -1,9 +1,10 @@
 //! LifeGen stage 4: settlements.
 //!
-//! Ported from Randlebrot's `rb_world::lifegen::settlements`. Every province
-//! gets a few settlements on its most habitable cells. Habitability decides
-//! how big they are, not whether they exist: even desolate provinces hold
-//! outposts or ruins. Nothing here is random.
+//! Based on Randlebrot's `rb_world::lifegen::settlements`. Every province
+//! gets a few settlements on its most habitable cells: one main settlement
+//! sized by the province's habitability, and smaller ones around it.
+//! Habitability decides how big they are, not whether they exist: even
+//! desolate provinces hold outposts. Nothing here is random.
 
 use crate::analysis::AnalysisGrids;
 use crate::factions::{FactionMap, PoliticalState};
@@ -15,6 +16,14 @@ use crate::provinces::{Province, ProvinceMap};
 const SETTLEMENT_MIN_SPACING_WU: f64 = 7.5;
 /// Provinces smaller than this (in square world units) hold one settlement.
 const TINY_PROVINCE_AREA_WU2: f64 = 3.125;
+// Province habitability needed for its main settlement to reach each size.
+// Calibrated on seed 42 (`inspect layer-stats`): province mean habitability
+// there has median 0.53, upper quartile 0.74 and 90th percentile 0.78.
+const CITY_MIN_HABITABILITY: f32 = 0.78;
+/// A province on a major river needs less to hold a city.
+const RIVER_CITY_MIN_HABITABILITY: f32 = 0.70;
+const TOWN_MIN_HABITABILITY: f32 = 0.55;
+const VILLAGE_MIN_HABITABILITY: f32 = 0.30;
 /// Cells at or below this habitability never hold a settlement.
 const MIN_SITE_HABITABILITY: f32 = 0.01;
 
@@ -89,7 +98,12 @@ pub fn place_settlements(
         );
 
         for (slot, position) in sites.into_iter().enumerate() {
-            let size_class = size_class_for(province, is_capital_province && slot == 0);
+            let main_size = main_settlement_size(province, is_capital_province);
+            let size_class = if slot == 0 {
+                main_size
+            } else {
+                secondary_settlement_size(main_size)
+            };
             let size_class = match state {
                 PoliticalState::Claimed { .. } => size_class,
                 PoliticalState::Unclaimed | PoliticalState::Uninhabited => {
@@ -149,22 +163,33 @@ fn best_sites(
     sites
 }
 
-/// Size from the province's habitability. A faction's capital is always a
-/// metropolis.
-fn size_class_for(province: &Province, is_capital: bool) -> SizeClass {
+/// Size of a province's main settlement, the one on its best site. A faction's
+/// capital is always a metropolis. Otherwise it follows the province's mean
+/// habitability, which on this world runs from about 0.15 to 0.8: the top
+/// tenth of provinces hold a city, the upper half a town.
+fn main_settlement_size(province: &Province, is_capital: bool) -> SizeClass {
     let habitability = province.habitability;
     if is_capital {
         SizeClass::Metropolis
-    } else if habitability > 0.7 || (habitability > 0.5 && province.is_river_junction) {
+    } else if habitability >= CITY_MIN_HABITABILITY
+        || (habitability >= RIVER_CITY_MIN_HABITABILITY && province.is_river_junction)
+    {
         SizeClass::City
-    } else if habitability > 0.3 {
+    } else if habitability >= TOWN_MIN_HABITABILITY {
         SizeClass::Town
-    } else if habitability > 0.15 {
+    } else if habitability >= VILLAGE_MIN_HABITABILITY {
         SizeClass::Village
-    } else if habitability > 0.05 {
-        SizeClass::Outpost
     } else {
-        SizeClass::Ruins
+        SizeClass::Outpost
+    }
+}
+
+/// Size of a province's other settlements: villages around a town or
+/// larger, outposts otherwise.
+fn secondary_settlement_size(main_size: SizeClass) -> SizeClass {
+    match main_size {
+        SizeClass::Metropolis | SizeClass::City | SizeClass::Town => SizeClass::Village,
+        SizeClass::Village | SizeClass::Outpost | SizeClass::Ruins => SizeClass::Outpost,
     }
 }
 
@@ -218,29 +243,27 @@ mod tests {
     }
 
     #[test]
-    fn size_follows_habitability_and_capitals_are_metropolises() {
-        assert_eq!(
-            size_class_for(&province(0.8, 500), true),
-            SizeClass::Metropolis
-        );
-        assert_eq!(size_class_for(&province(0.8, 500), false), SizeClass::City);
-        assert_eq!(size_class_for(&province(0.4, 500), false), SizeClass::Town);
-        assert_eq!(
-            size_class_for(&province(0.2, 500), false),
-            SizeClass::Village
-        );
-        assert_eq!(
-            size_class_for(&province(0.1, 500), false),
-            SizeClass::Outpost
-        );
-        assert_eq!(
-            size_class_for(&province(0.02, 500), false),
-            SizeClass::Ruins
-        );
+    fn a_province_main_settlement_follows_habitability_and_capitals_are_metropolises() {
+        let main = |habitability: f32, is_capital: bool| {
+            main_settlement_size(&province(habitability, 500), is_capital)
+        };
+        assert_eq!(main(0.5, true), SizeClass::Metropolis);
+        assert_eq!(main(0.8, false), SizeClass::City);
+        assert_eq!(main(0.72, false), SizeClass::Town);
+        assert_eq!(main(0.4, false), SizeClass::Village);
+        assert_eq!(main(0.2, false), SizeClass::Outpost);
 
-        let mut on_major_river = province(0.6, 500);
+        let mut on_major_river = province(0.72, 500);
         on_major_river.is_river_junction = true;
-        assert_eq!(size_class_for(&on_major_river, false), SizeClass::City);
+        assert_eq!(main_settlement_size(&on_major_river, false), SizeClass::City);
+    }
+
+    #[test]
+    fn other_settlements_are_smaller_than_the_main_one() {
+        assert_eq!(secondary_settlement_size(SizeClass::Metropolis), SizeClass::Village);
+        assert_eq!(secondary_settlement_size(SizeClass::Town), SizeClass::Village);
+        assert_eq!(secondary_settlement_size(SizeClass::Village), SizeClass::Outpost);
+        assert_eq!(secondary_settlement_size(SizeClass::Outpost), SizeClass::Outpost);
     }
 
     #[test]

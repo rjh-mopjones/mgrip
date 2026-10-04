@@ -18,8 +18,10 @@ use std::ops::RangeInclusive;
 
 /// A province must be at least this habitable to host a generated capital.
 const CAPITAL_MIN_HABITABILITY: f32 = 0.35;
-/// A province must be at least this habitable to be claimed at all.
-const CLAIMABLE_MIN_HABITABILITY: f32 = 0.1;
+/// A province must be at least this habitable to be claimed at all. On seed 42
+/// about a tenth of provinces fall below it: the sub-stellar desert and the
+/// deepest night.
+const CLAIMABLE_MIN_HABITABILITY: f32 = 0.25;
 /// Provinces above this habitability count towards the number of factions.
 const COUNTED_MIN_HABITABILITY: f32 = 0.15;
 const CAPITAL_RIVER_BONUS: f32 = 0.2;
@@ -32,6 +34,9 @@ const PROVINCES_PER_EXTRA_FACTION: usize = 80;
 /// ...up to this many extra.
 const MAX_EXTRA_FACTIONS: usize = 30;
 const MAX_FACTION_PROVINCES: usize = 25;
+/// An authored state larger than a city-state wants at least this many free,
+/// claimable provinces next to its capital.
+const CAPITAL_MIN_FREE_NEIGHBOURS: usize = 3;
 /// Growth cost of taking a province: its terrain cost times this...
 const TERRAIN_COST_WEIGHT: f64 = 5.0;
 /// ...plus the distance between province sites times this...
@@ -165,7 +170,7 @@ pub fn generate_factions(
     let mut unplaced_states = Vec::new();
     for state in authored_states {
         let taken: Vec<u16> = foundings.iter().map(|f| f.capital_province).collect();
-        match authored_capital(provinces, state, &taken, grid) {
+        match authored_capital(provinces, &province_map.adjacency, state, &taken, grid) {
             Some(capital_province) => {
                 let budget = rng.gen_range(state.size.province_budget());
                 foundings.push(Founding {
@@ -279,6 +284,7 @@ fn authored_score(province: &Province, state: &AuthoredState) -> f32 {
 /// lore is only left out if its band holds no free province at all.
 fn authored_capital(
     provinces: &[Province],
+    adjacency: &[Vec<u16>],
     state: &AuthoredState,
     taken: &[u16],
     grid: Grid,
@@ -294,16 +300,38 @@ fn authored_capital(
             .total_cmp(&authored_score(a, state))
             .then(a.id.cmp(&b.id))
     });
-    [CAPITAL_MIN_SPACING_WU, CAPITAL_MIN_SPACING_WU / 2.0, 0.0]
-        .into_iter()
-        .find_map(|spacing| {
-            candidates
-                .iter()
-                .find(|candidate| {
-                    keeps_spacing(provinces, candidate, taken, spacing, grid)
-                })
-                .map(|candidate| candidate.id)
-        })
+    // A state meant to hold several provinces should not start on an island
+    // or a headland with nowhere to grow.
+    let wanted_room = if state.size == StateSize::CityState {
+        0
+    } else {
+        CAPITAL_MIN_FREE_NEIGHBOURS
+    };
+    let has_room = |candidate: &Province, wanted: usize| {
+        let free_neighbours = adjacency[candidate.id as usize]
+            .iter()
+            .filter(|&&neighbour| {
+                !taken.contains(&neighbour)
+                    && provinces[(neighbour - 1) as usize].habitability
+                        >= CLAIMABLE_MIN_HABITABILITY
+            })
+            .count();
+        free_neighbours >= wanted
+    };
+    // Relax room to grow last: a cramped capital beats leaving the state out.
+    [wanted_room, 0].into_iter().find_map(|room| {
+        [CAPITAL_MIN_SPACING_WU, CAPITAL_MIN_SPACING_WU / 2.0, 0.0]
+            .into_iter()
+            .find_map(|spacing| {
+                candidates
+                    .iter()
+                    .find(|candidate| {
+                        has_room(candidate, room)
+                            && keeps_spacing(provinces, candidate, taken, spacing, grid)
+                    })
+                    .map(|candidate| candidate.id)
+            })
+    })
 }
 
 /// Capitals for generated minor states: best-scoring provinces first, each
@@ -389,9 +417,12 @@ fn generated_budget(capital: &Province, rng: &mut XorShiftRng) -> usize {
     rng.gen_range(low..=high)
 }
 
-/// Grow all factions at once from their capitals (Dijkstra over the province
-/// graph). The faction that reaches a province most cheaply takes it, until
-/// its budget is spent. Returns the owning faction per province id (0 = none).
+/// Grow factions from their capitals (Dijkstra over the province graph). The
+/// faction that reaches a province most cheaply takes it, until its budget is
+/// spent. Authored states grow first, all at once; generated states then grow
+/// into what is left. Otherwise the many generated states box the lore's
+/// states in before they reach their size. Returns the owning faction per
+/// province id (0 = none).
 fn grow_factions(
     provinces: &[Province],
     adjacency: &[Vec<u16>],
@@ -405,7 +436,6 @@ fn grow_factions(
 
     // (cost so far, province id, faction id); Reverse makes the heap a min-heap.
     type Frontier = BinaryHeap<(Reverse<u32>, u16, u16)>;
-    let mut frontier: Frontier = BinaryHeap::new();
     let push_neighbours =
         |frontier: &mut Frontier, owner: &[u16], from: u16, cost: u32, faction_id: u16| {
             for &neighbour in &adjacency[from as usize] {
@@ -419,8 +449,7 @@ fn grow_factions(
                     .authored
                     .map_or(0.0, |state| outside_band(target.light_level, state.light));
                 let step = target.terrain_cost as f64 * TERRAIN_COST_WEIGHT
-                    + site_distance_wu(province(from), target, grid)
-                        * DISTANCE_COST_PER_WU
+                    + site_distance_wu(province(from), target, grid) * DISTANCE_COST_PER_WU
                     + outside as f64 * LIGHT_BAND_COST;
                 frontier.push((
                     Reverse(cost + (step * 1000.0) as u32),
@@ -430,31 +459,35 @@ fn grow_factions(
             }
         };
 
+    // Every capital is held from the start, so no faction grows over another's.
     for (index, founding) in foundings.iter().enumerate() {
         owner[founding.capital_province as usize] = (index + 1) as u16;
         held[index + 1] = 1;
     }
-    for (index, founding) in foundings.iter().enumerate() {
-        if founding.budget > 1 {
-            push_neighbours(
-                &mut frontier,
-                &owner,
-                founding.capital_province,
-                0,
-                (index + 1) as u16,
-            );
-        }
-    }
 
-    while let Some((Reverse(cost), province_id, faction_id)) = frontier.pop() {
-        let budget = founding(faction_id).budget;
-        if owner[province_id as usize] != 0 || held[faction_id as usize] >= budget {
-            continue;
+    for growing_authored in [true, false] {
+        let mut frontier: Frontier = BinaryHeap::new();
+        for (index, founding) in foundings.iter().enumerate() {
+            if founding.authored.is_some() == growing_authored && founding.budget > 1 {
+                push_neighbours(
+                    &mut frontier,
+                    &owner,
+                    founding.capital_province,
+                    0,
+                    (index + 1) as u16,
+                );
+            }
         }
-        owner[province_id as usize] = faction_id;
-        held[faction_id as usize] += 1;
-        if held[faction_id as usize] < budget {
-            push_neighbours(&mut frontier, &owner, province_id, cost, faction_id);
+        while let Some((Reverse(cost), province_id, faction_id)) = frontier.pop() {
+            let budget = founding(faction_id).budget;
+            if owner[province_id as usize] != 0 || held[faction_id as usize] >= budget {
+                continue;
+            }
+            owner[province_id as usize] = faction_id;
+            held[faction_id as usize] += 1;
+            if held[faction_id as usize] < budget {
+                push_neighbours(&mut frontier, &owner, province_id, cost, faction_id);
+            }
         }
     }
 
@@ -690,7 +723,7 @@ mod tests {
         );
 
         assert_eq!(
-            authored_capital(&map.provinces, &harbour, &[], Grid::flat(1.0)),
+            authored_capital(&map.provinces, &map.adjacency, &harbour, &[], Grid::flat(1.0)),
             Some(3)
         );
     }
@@ -759,6 +792,36 @@ mod tests {
 
         assert_eq!(&owner[3..=5], &[1, 1, 1]);
         assert_eq!(&owner[6..=9], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_larger_state_avoids_a_capital_with_no_room_to_grow() {
+        // Province 1 is the most habitable but has one neighbour; province 3
+        // sits in the middle of the chain with free land around it.
+        let mut map = chain(&[0.9, 0.6, 0.7, 0.6, 0.6], 5);
+        map.adjacency[3] = vec![2, 4, 5];
+        let medium = state("Breakwater", (0.3, 0.5), StateSize::Medium, &[]);
+        let city_state = state("Tidewall", (0.3, 0.5), StateSize::CityState, &[]);
+        let capital = |state| authored_capital(&map.provinces, &map.adjacency, state, &[], Grid::flat(1.0));
+
+        assert_eq!(capital(&medium), Some(3));
+        assert_eq!(capital(&city_state), Some(1));
+    }
+
+    #[test]
+    fn an_authored_state_grows_before_the_generated_state_beside_it() {
+        // Two capitals at either end of free land. Left alone they would split
+        // it; the authored state takes its full budget first.
+        let map = chain(&[0.9; 8], 5);
+        let lore_state = state("Breakwater", (0.3, 0.5), StateSize::Small, &[]);
+        let foundings = [
+            Founding { capital_province: 1, authored: Some(&lore_state), budget: 6, limit: 6 },
+            Founding { capital_province: 8, authored: None, budget: 6, limit: 6 },
+        ];
+
+        let owner = grow_factions(&map.provinces, &map.adjacency, &foundings, Grid::flat(1.0));
+
+        assert_eq!(&owner[1..=8], &[1, 1, 1, 1, 1, 1, 2, 2]);
     }
 
     #[test]
