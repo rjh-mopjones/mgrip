@@ -594,17 +594,18 @@ mod tests {
 
     #[test]
     fn classifies_reference_chunks_for_dayside_terminus_and_nightside() {
-        // Reference values regenerated after spec 007 (world-anchored noise layers).
-        // light_level and temperature are world-position-derived, so they are stable
-        // across the architecture change. Zone/water/palette/landform reflect the
-        // corrected world-anchored terrain for seed 42.
+        // Reference values for seed 42. light_level and temperature derive from
+        // world position alone; zone, water, landform and palette depend on the
+        // terrain at each chunk. Regenerated when the GPU terrain path was
+        // removed (spec 010, section 4): the earlier values described the GPU
+        // path's world, which had different coastlines.
 
-        // Reference values regenerated after spec 007 full GPU fix (GPU always used).
+        // Top row of the map: deep night, a frozen coastal shelf.
         let nightside = build_reference_summary(256.0, 0.0);
-        assert_eq!(nightside.planet_zone, PlanetZone::DeepNightIce);
+        assert_eq!(nightside.planet_zone, PlanetZone::FrozenCoast);
         assert_eq!(nightside.atmosphere_class, AtmosphereClass::BlackIceDark);
         assert_eq!(nightside.water_state, SurfaceWaterState::None);
-        assert_eq!(nightside.landform_class, LandformClass::FlatPlain);
+        assert_eq!(nightside.landform_class, LandformClass::FrozenShelf);
         assert_eq!(
             nightside.surface_palette_class,
             SurfacePaletteClass::BlackIceRock
@@ -629,8 +630,8 @@ mod tests {
         let inferno = build_reference_summary(500.0, 450.0);
         assert_eq!(inferno.planet_zone, PlanetZone::SubstellarInferno);
         assert_eq!(inferno.atmosphere_class, AtmosphereClass::BlastedRadiance);
-        assert_eq!(inferno.water_state, SurfaceWaterState::EvaporiteBasin);
-        assert_eq!(inferno.landform_class, LandformClass::CoastShelf);
+        assert_eq!(inferno.water_state, SurfaceWaterState::None);
+        assert_eq!(inferno.landform_class, LandformClass::DuneWaste);
         assert_eq!(
             inferno.surface_palette_class,
             SurfacePaletteClass::ScorchedStone
