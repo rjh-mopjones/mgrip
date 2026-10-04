@@ -13,7 +13,9 @@ pub mod trade;
 mod test_support;
 
 pub use analysis::{compute_analysis_grids, AnalysisGrids};
-pub use factions::{generate_factions, Faction, FactionMap, PoliticalState};
+pub use factions::{
+    generate_factions, AuthoredState, Faction, FactionMap, PoliticalState, Preference, StateSize,
+};
 pub use provinces::{generate_provinces, Province, ProvinceMap};
 pub use roads::{build_roads, Road, RoadKind};
 pub use settlements::{place_settlements, Settlement, SizeClass};

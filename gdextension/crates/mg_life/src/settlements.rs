@@ -194,6 +194,8 @@ mod tests {
             is_river_junction: false,
             elevation_mean: 0.1,
             terrain_cost: 0.5,
+            light_level: 0.4,
+            resources: 0.3,
         }
     }
 
@@ -262,7 +264,7 @@ mod tests {
         let terrain = MockTerrain::flat(96, 64);
         let analysis = compute_analysis_grids(&terrain, 1.0);
         let provinces = generate_provinces(&terrain, &analysis, 1.0, 7);
-        let factions = generate_factions(&provinces, 1.0, 7);
+        let factions = generate_factions(&provinces, &[], 1.0, 7);
 
         let settlements = place_settlements(&provinces, &factions, &analysis, 1.0);
 

@@ -1,0 +1,67 @@
+// Authored states: the named territorial states from the lore
+// (vault note "Margin's Grip - Factions", section "States").
+//
+// LifeGen places each state's capital in the best-fitting free province inside
+// its light band, in the order listed here, then grows it along that band.
+// Generated minor states fill the remaining habitable land afterwards.
+//
+// light:   band of light level the state lives in.
+//            0.00-0.10  deep night (the Black)
+//            0.08-0.20  twilight edge
+//            0.15-0.30  nightside margin, cold terminus
+//            0.30-0.55  terminus
+//            0.55-0.72  dayside margin
+//            0.72-1.00  the Wash
+// size:    CityState (1-3 provinces), Small (5-9), Medium (11-17), Large (20-25)
+// prefers: Coastal, MajorRiver, Mountains, Resources, Fertile
+//
+// Orders (Gradient Runners, Zenites, ...) and nomads hold no territory and are
+// not listed here.
+[
+    // --- Terminus states ---
+    // Largest and most populated; most fertile temperate belt; capital at the
+    // junction of the railway and the largest terminus river system.
+    (name: "Corazon", capital: Some("Violetta"), light: (0.33, 0.50), size: Large, prefers: [MajorRiver, Fertile]),
+    // River valley farming federation on the most productive land.
+    (name: "Furrow", capital: Some("Cwmbran"), light: (0.33, 0.52), size: Medium, prefers: [MajorRiver, Fertile]),
+    // Coastal city-state on the terminus's largest natural harbour.
+    (name: "Tidewall", capital: Some("Chembe"), light: (0.30, 0.55), size: CityState, prefers: [Coastal]),
+    // Cosmopolitan city-state at a railway crossroads; neutral arbitration court.
+    (name: "Vestara", capital: Some("Vestara"), light: (0.33, 0.50), size: CityState, prefers: [Fertile]),
+    // Mid-sized; geothermal sites and graphite processing.
+    (name: "Ashenmere", capital: None, light: (0.30, 0.55), size: Medium, prefers: [Resources]),
+    // Military government on a long strip of the dayside margin.
+    (name: "Cinderline", capital: Some("Jaunstone"), light: (0.52, 0.68), size: Medium, prefers: []),
+    // Coast to nightside margin on the cold side; nuclear greenhouses.
+    (name: "Breakwater", capital: None, light: (0.18, 0.32), size: Medium, prefers: [Coastal]),
+
+    // --- Authoritarian states ---
+    // Dayside solar operations; capital on the dayside margin.
+    (name: "Ashward Dominion", capital: None, light: (0.58, 0.74), size: Medium, prefers: []),
+    // Ashward's rival on the dayside margin; forced labour; growing.
+    (name: "Emberspike Regime", capital: None, light: (0.58, 0.74), size: Medium, prefers: []),
+    // Mutual defence pact of mining camps deep in the Wash.
+    (name: "Searing Compact", capital: None, light: (0.72, 0.95), size: Medium, prefers: [Resources]),
+    // Largest arc furnace complexes on the terminus; steel.
+    (name: "Kermans", capital: None, light: (0.30, 0.55), size: Medium, prefers: [Resources]),
+    // Weapons research; smaller than the Ashwards; static defence.
+    (name: "Radiant Ordinance", capital: None, light: (0.45, 0.70), size: Small, prefers: []),
+
+    // --- Isolationist states ---
+    // Mountain mining confederation in the terminus ranges.
+    (name: "Hollowvein Republic", capital: None, light: (0.28, 0.55), size: Medium, prefers: [Mountains, Resources]),
+    // Meltwater infrastructure on the nightside margin.
+    (name: "Nightwall Covenant", capital: None, light: (0.14, 0.28), size: Medium, prefers: []),
+    // Underground communities; geothermal, mining.
+    (name: "Shuttered Hearth", capital: None, light: (0.25, 0.60), size: Small, prefers: [Resources, Mountains]),
+    // Independent terminus farming communities.
+    (name: "Quiet Holdings", capital: None, light: (0.30, 0.52), size: Small, prefers: [Fertile]),
+
+    // --- Nightside states ---
+    // Claims sovereignty over all of the Black.
+    (name: "Umbral Sovereignty", capital: None, light: (0.00, 0.12), size: Large, prefers: []),
+    // Deep nightside communities.
+    (name: "Frostdelve Communion", capital: None, light: (0.00, 0.08), size: Small, prefers: []),
+    // Subsistence communities on the twilight edge.
+    (name: "The Pale", capital: None, light: (0.08, 0.20), size: Small, prefers: []),
+]

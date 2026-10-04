@@ -55,6 +55,10 @@ pub struct Province {
     pub elevation_mean: f32,
     /// Mean difficulty of travel: 0.0 trivial, 1.0 impassable.
     pub terrain_cost: f32,
+    /// Mean light level: 0.0 deep night, 1.0 sub-stellar.
+    pub light_level: f32,
+    /// Mean resource desirability.
+    pub resources: f32,
 }
 
 /// Stage 2 output.
@@ -289,6 +293,8 @@ fn bake_province_attributes(
         habitability: f64,
         elevation: f64,
         terrain_cost: f64,
+        light_level: f64,
+        resources: f64,
         biome_counts: Vec<(TileType, u32)>,
         is_coastal: bool,
         is_river_junction: bool,
@@ -309,6 +315,8 @@ fn bake_province_attributes(
         province.habitability += analysis.habitability[cell] as f64;
         province.elevation += terrain.heightmap_at(x, y);
         province.terrain_cost += (1.0 - analysis.navigation_cost[cell]) as f64;
+        province.light_level += terrain.light_level_at(x, y);
+        province.resources += analysis.resource_desirability[cell] as f64;
 
         let biome = terrain.biome_at(x, y);
         match province
@@ -368,6 +376,8 @@ fn bake_province_attributes(
                 is_river_junction: province.is_river_junction,
                 elevation_mean: mean(province.elevation),
                 terrain_cost: mean(province.terrain_cost),
+                light_level: mean(province.light_level),
+                resources: mean(province.resources),
             }
         })
         .collect()

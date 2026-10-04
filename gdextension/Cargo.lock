@@ -978,6 +978,7 @@ dependencies = [
  "rand",
  "rand_xorshift",
  "rayon",
+ "serde",
 ]
 
 [[package]]

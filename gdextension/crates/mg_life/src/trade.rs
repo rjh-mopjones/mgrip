@@ -138,6 +138,8 @@ mod tests {
                 is_river_junction: false,
                 elevation_mean: 0.1,
                 terrain_cost: 0.5,
+                light_level: 0.4,
+                resources: 0.3,
             }],
             adjacency: vec![vec![], vec![]],
         }
