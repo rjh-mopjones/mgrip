@@ -2,4 +2,5 @@ gdextension/target/
 .godot/
 __pycache__/
 site/dist/
+data/macro/
 site/node_modules/

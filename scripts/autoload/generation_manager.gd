@@ -25,10 +25,23 @@ const LOD2_FREQ_SCALE := 8.0
 const LOD2_SUB_SIZE := 64
 const LOD2_USE_EDGE_SKIRTS := true
 
+## Macro pack for a world seed: the macro map the runtime anchors chunks to,
+## written by `margins_grip export macro-pack`. Without one the macro map is
+## generated on first use, which takes several seconds.
+const MACRO_PACK_PATH_FORMAT := "res://data/macro/seed_%d.mgmacro"
+
 var _gen: MgTerrainGen
 
 func _ready() -> void:
 	_gen = MgTerrainGen.new()
+	_load_macro_pack()
+
+func _load_macro_pack() -> void:
+	var pack_path := MACRO_PACK_PATH_FORMAT % GameState.world_seed
+	if not FileAccess.file_exists(pack_path):
+		return
+	if _gen.prepare_macro(GameState.world_seed, FileAccess.get_file_as_bytes(pack_path)):
+		print("Macro pack loaded: ", pack_path)
 
 
 ## Sample the macro `BiomeMap` at a single world-space point for agent
