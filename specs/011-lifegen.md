@@ -23,8 +23,9 @@ next stage builds on it.
 
 - No runtime use yet. The Godot game does not read LifeGen data in this spec.
 - No settlement scene generation (SceneGen) and no world simulation (DeterSim).
-- No hand-authored factions from the lore. LifeGen generates anonymous
-  factions; mapping them to named lore factions is a later spec.
+- Only the lore's territorial states are represented. Orders (guilds,
+  religious orders, networks) and nomads hold no territory; the lore models
+  them as presence overlays and pressure fields, which are not built.
 
 ## Ownership
 
@@ -124,9 +125,33 @@ Result on seed 42, civ seed 1: 1194 provinces.
 
 ### Stage 3 - Factions (implemented)
 
-Works on the province graph, not on cells.
+Works on the province graph, not on cells. A faction is a territorial state.
+There are two kinds: authored states, which are the named states from the
+lore, and generated minor states, which fill the rest of the habitable land
+up to the target count.
 
-1. **Capitals.** Provinces with mean habitability over 0.35 are ranked by
+**Authored states** are listed in `gdextension/data/lifegen_states.ron`
+(compiled into the CLI). Each has a name, an optional capital city name, a
+light-level band it lives in, a size and a list of preferences:
+
+| Field | Meaning |
+|---|---|
+| `light` | Band of light level (0.0 deep night to 1.0 sub-stellar). The capital is placed inside it and growth outside it is penalised |
+| `size` | CityState (1-3 provinces), Small (5-9), Medium (11-17), Large (20-25) |
+| `prefers` | Coastal, MajorRiver, Mountains, Resources, Fertile: what the capital province should have |
+
+Authored states are placed first, in file order, so earlier states get first
+choice. A state's capital is the best-scoring free province in its band:
+habitability, plus 0.3 for a wanted coast or major river, plus elevation,
+half the resource score or half the habitability again for Mountains,
+Resources or Fertile. Capital spacing is tried at 18.75 world units, then
+half, then none; a state is only left out if its band holds no free province,
+and is then reported as unplaced. Authored states get ids 1 to N in file
+order.
+
+The steps below then run for all factions together.
+
+1. **Generated capitals.** Provinces with mean habitability over 0.35 are ranked by
    habitability, plus 0.2 for a major river and 0.1 for a coast. The best are
    taken in order, each at least 18.75 world units from every capital already
    chosen. Target count is 50 plus one per 80 habitable provinces (at most 30
@@ -135,32 +160,65 @@ Works on the province graph, not on cells.
    a range set by the quality of its capital.
 3. **Growth.** All factions grow at once (Dijkstra over province adjacency).
    Taking a province costs its terrain cost times 5 plus 0.4 per world unit
-   between province sites. The cheapest claim wins. A faction stops at its
-   budget. Provinces with habitability under 0.1 cannot be claimed.
+   between province sites. For an authored state, a province whose light
+   level lies outside the state's band costs a further 100 per unit of light
+   outside it, so states spread along their band before leaving it. The
+   cheapest claim wins. A faction stops at its budget. Provinces with
+   habitability under 0.1 cannot be claimed.
 4. **Absorption.** Leftover claimable provinces next to a faction with room
-   (under 25 provinces) join the smallest such neighbour, repeated until
-   nothing changes. This closes holes between factions.
+   join the smallest such neighbour, repeated until nothing changes. This
+   closes holes between factions. Generated states have room up to 25
+   provinces; authored states only up to their own budget, so a city-state
+   stays a city-state.
 5. **States.** Every province ends as Claimed (by a faction), Unclaimed
    (habitable, no faction holds it) or Uninhabited (habitability under 0.1).
 
-API: `mg_life::generate_factions(province_map, cells_per_world_unit,
-civ_seed)` returns a `FactionMap`: a political state per province and a
-faction table (capital province, province count, area).
+API: `mg_life::generate_factions(province_map, authored_states,
+cells_per_world_unit, civ_seed)` returns a `FactionMap`: a political state
+per province, a faction table (name, capital name, capital province, province
+count, area) and the names of any unplaced states.
 
-Export: a "Factions" layer (capitals marked white, unclaimed land grey), and
-the faction and state of every province in `map.json`.
+Export: a "Factions" layer (capitals marked white, unclaimed land grey), the
+faction and state of every province in `map.json`, and name labels for the
+authored states on the map page.
 
 Differences from Randlebrot:
 
 - **Leftover provinces are Unclaimed.** Randlebrot's code made each one its
   own single-province faction and never assigned `Unclaimed`, although its
   design said they should be. This port follows the design.
+- **Authored states.** Randlebrot had none; every faction was generated.
 - **No generated names.** Randlebrot produced names like "Kingdom of
-  Valdris". Factions here are numbered until open question 3 is settled.
+  Valdris". Generated minor states here are numbered.
 
-Result on seed 42, civ seed 1: 64 factions, 1 to 25 provinces each (median
-9). 778 provinces claimed (48% of land), 416 unclaimed (52%), none
-uninhabited. Capitals sit along the terminus coasts.
+Result on seed 42, civ seed 1: 64 factions (19 authored, 45 generated), 1 to
+25 provinces each (median 10). 750 provinces claimed (43% of land), 444
+unclaimed (57%), none uninhabited. All 19 authored states were placed.
+
+| Authored state | Provinces | Capital light | Capital habitability |
+|---|---|---|---|
+| Corazon | 22 | 0.33 | 0.88 |
+| Furrow | 7 | 0.34 | 0.85 |
+| Tidewall | 3 | 0.31 | 0.81 |
+| Vestara | 1 | 0.35 | 0.85 |
+| Ashenmere | 6 | 0.30 | 0.79 |
+| Cinderline | 10 | 0.52 | 0.68 |
+| Breakwater | 16 | 0.29 | 0.88 |
+| Ashward Dominion | 17 | 0.58 | 0.65 |
+| Emberspike Regime | 12 | 0.59 | 0.64 |
+| Searing Compact | 15 | 0.82 | 0.27 |
+| Kermans | 5 | 0.32 | 0.78 |
+| Radiant Ordinance | 7 | 0.46 | 0.74 |
+| Hollowvein Republic | 7 | 0.31 | 0.78 |
+| Nightwall Covenant | 16 | 0.28 | 0.86 |
+| Shuttered Hearth | 5 | 0.34 | 0.78 |
+| Quiet Holdings | 5 | 0.32 | 0.81 |
+| Umbral Sovereignty | 20 | 0.11 | 0.46 |
+| Frostdelve Communion | 7 | 0.07 | 0.41 |
+| The Pale | 9 | 0.20 | 0.61 |
+
+Several medium states ended below their size range (Furrow 7, Ashenmere 6,
+Kermans 5): neighbours hemmed them in before their budget was spent.
 
 ### Stage 4 - Settlements (implemented)
 
@@ -261,7 +319,9 @@ becomes slow or when the runtime needs to load LifeGen data.
   river bonuses, traversability; stage 2: full land coverage, no province
   spans ocean, determinism per seed, symmetric adjacency, islets; stage 3:
   capital spacing, no capital in barren land, growth stops at barren land,
-  province limit per faction, determinism per seed; stage 4: counts and
+  province limit per faction, determinism per seed, authored states placed in
+  their band and by preference, city-states stay small, growth follows the
+  band, unplaceable states reported; stage 4: counts and
   sizes by habitability, site spacing, settlements stand in their own
   province, one metropolis per faction; stage 5: routes pass through gaps
   and never cross water, every settlement connected on open ground, road
@@ -301,7 +361,8 @@ desirability 0.25 / 0.34 / 0.55.
 2. Province scale. The smallest provinces are about 30 chunks, the median
    about 290. Whether that is the right size for a province is a design call;
    it is set by the two seed radii.
-3. How generated factions map onto the named factions in the lore.
+3. The light bands, sizes and preferences in `lifegen_states.ron` are a first
+   reading of the lore, not checked against it state by state.
 4. No province is Uninhabited. The 0.1 habitability threshold is below every
    province's mean on this world (the lowest are about 0.2), so factions can
    expand to the sub-stellar point and the deep night. A threshold near 0.25
@@ -320,3 +381,13 @@ desirability 0.25 / 0.34 / 0.55.
 9. Trade has no goods. A flow is one number. The economy in the lore
    (energy, food, steel, water, graphene) would need resource types per
    province and flows per resource.
+10. Major rivers are rare: about 18 provinces carry the flag (a river cell
+    draining over 2000 cells). No province with one fell inside Corazon's or
+    Furrow's band with enough habitability, so neither capital is on a major
+    river although both prefer one.
+11. The map does not wrap east to west. If the world is a full ring, the
+    left and right edges are neighbours, but provinces, capital spacing and
+    roads treat them as far apart. Several capitals sit near those edges.
+12. Lore relationships are not used: Vestara is not placed at a crossroads,
+    rivals are not placed next to each other, and Quiet Holdings is one
+    contiguous state rather than a scattered network.

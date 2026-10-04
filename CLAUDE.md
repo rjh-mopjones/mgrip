@@ -10,13 +10,16 @@ verification, and a developer-only agent playtest runtime.
 Not yet a full gameplay runtime. Do not invent APIs for inventory, crafting,
 combat, quests, or survival systems — they don't exist yet.
 
-LifeGen (provinces, factions, settlements, roads, trade) is being ported from
-the Bevy prototype under `specs/011`. All six stages exist in
-`gdextension/crates/mg_life` at macro resolution (one cell per chunk):
-analysis grids, provinces, factions, settlements, roads, trade. Calibration
-is open; see the spec's open questions before relying on the numbers. Generated factions are numbered, not the named
-factions from the lore. Nothing in the Godot runtime reads
-LifeGen data yet.
+LifeGen (provinces, factions, settlements, roads, trade) is ported from the
+Bevy prototype under `specs/011`. All six stages exist in
+`gdextension/crates/mg_life` at macro resolution (one cell per chunk).
+
+- The lore's named states are authored in `gdextension/data/lifegen_states.ron`
+  and placed first; generated minor states fill the rest
+- Orders and nomads are not represented
+- Calibration is open; read the spec's open questions before relying on the
+  numbers
+- Nothing in the Godot runtime reads LifeGen data yet
 
 ## Quick reference
 
