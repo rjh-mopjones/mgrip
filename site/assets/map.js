@@ -1,0 +1,103 @@
+// Map page: pick a spawn chunk on the world map and launch the web build there.
+//
+// Map data is exported by the Rust CLI (`margins_grip export site-map`) into
+// this page's directory: macromap.png, plus chunks.bin with one record per
+// chunk as described by map.json.
+
+const DEFAULT_SPAWN_CHUNK = { x: 440, y: 220 };
+const spawn = { ...DEFAULT_SPAWN_CHUNK };
+let worldMap = null;
+
+// 'InnerTerminus' -> 'Inner terminus'
+const readable = (name) =>
+	name
+		.replace(/([a-z])([A-Z])/g, "$1 $2")
+		.replace(/ ([A-Z])/g, (_match, letter) => ` ${letter.toLowerCase()}`);
+
+function chunkAt(x, y) {
+	const { meta, chunks } = worldMap;
+	const offset = (y * meta.chunks_wide + x) * meta.chunk_fields.length;
+	return {
+		light: chunks[offset] / 255,
+		zone: meta.zones[chunks[offset + 1]],
+		biome: meta.biomes[chunks[offset + 2]],
+	};
+}
+
+const chunkText = () => `${spawn.x}, ${spawn.y}`;
+
+function renderSpawn() {
+	if (!worldMap) return;
+	const { meta } = worldMap;
+	const chunk = chunkAt(spawn.x, spawn.y);
+	const pin = document.getElementById("pin");
+	pin.style.left = `${((spawn.x + 0.5) / meta.chunks_wide) * 100}%`;
+	pin.style.top = `${((spawn.y + 0.5) / meta.chunks_high) * 100}%`;
+	document.getElementById("spawnZone").textContent = readable(chunk.zone);
+	document.getElementById("spawnChunk").textContent = chunkText();
+	document.getElementById("spawnLight").textContent = chunk.light.toFixed(2);
+	document.getElementById("spawnBiome").textContent = readable(chunk.biome);
+	document.getElementById("spawnSeed").textContent = meta.seed;
+}
+
+function moveSpawn(x, y) {
+	if (!worldMap) return;
+	const { meta } = worldMap;
+	spawn.x = Math.max(0, Math.min(meta.chunks_wide - 1, Math.floor(x)));
+	spawn.y = Math.max(0, Math.min(meta.chunks_high - 1, Math.floor(y)));
+	renderSpawn();
+}
+
+async function loadWorldMap() {
+	try {
+		const [meta, chunks] = await Promise.all([
+			fetch("map.json").then((response) => response.json()),
+			fetch("chunks.bin").then((response) => response.arrayBuffer()),
+		]);
+		worldMap = { meta, chunks: new Uint8Array(chunks) };
+		renderSpawn();
+	} catch {
+		document.getElementById("mapStatus").textContent =
+			"Map data not found. Export it with: margins_grip export site-map site/dist/map";
+	}
+}
+
+const mapFrame = document.getElementById("mapFrame");
+mapFrame.addEventListener("click", (event) => {
+	if (!worldMap) return;
+	const box = mapFrame.getBoundingClientRect();
+	moveSpawn(
+		((event.clientX - box.left) / box.width) * worldMap.meta.chunks_wide,
+		((event.clientY - box.top) / box.height) * worldMap.meta.chunks_high,
+	);
+});
+mapFrame.addEventListener("keydown", (event) => {
+	const step = event.shiftKey ? 16 : 1;
+	const moves = {
+		ArrowLeft: [-step, 0],
+		ArrowRight: [step, 0],
+		ArrowUp: [0, -step],
+		ArrowDown: [0, step],
+	};
+	const move = moves[event.key];
+	if (!move) return;
+	event.preventDefault();
+	moveSpawn(spawn.x + move[0], spawn.y + move[1]);
+});
+
+// Launch the web build in the dialog, spawning at the centre of the chosen chunk.
+const play = document.getElementById("play");
+const playFrame = document.getElementById("playFrame");
+document.getElementById("playButton").addEventListener("click", () => {
+	const worldOrigin = `${spawn.x + 0.5},${spawn.y + 0.5}`;
+	document.getElementById("playTitle").textContent = `Chunk ${chunkText()}`;
+	playFrame.src = `/play/index.html?origin=${worldOrigin}`;
+	play.showModal();
+});
+document
+	.getElementById("playClose")
+	.addEventListener("click", () => play.close());
+// Unload the game when the dialog closes so it stops running.
+play.addEventListener("close", () => playFrame.removeAttribute("src"));
+
+loadWorldMap();

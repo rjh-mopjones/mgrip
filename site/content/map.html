@@ -1,0 +1,27 @@
+<h1>Map</h1>
+<p>Click to set a spawn point. North is the night side, south is the day side.</p>
+<div class="map-layout">
+  <div class="map-frame" id="mapFrame" tabindex="0" role="application" aria-label="World map. Click, or use arrow keys, to move the spawn point by one chunk.">
+    <img src="macromap.png" width="2048" height="1024" alt="World map of Margin">
+    <div class="pin" id="pin"></div>
+  </div>
+  <div aria-live="polite">
+    <table class="spawn">
+      <tr><th>Zone</th><td id="spawnZone"></td></tr>
+      <tr><th>Chunk</th><td id="spawnChunk"></td></tr>
+      <tr><th>Light level</th><td id="spawnLight"></td></tr>
+      <tr><th>Biome</th><td id="spawnBiome"></td></tr>
+      <tr><th>Seed</th><td id="spawnSeed"></td></tr>
+    </table>
+    <button id="playButton" type="button">Play here</button>
+    <p class="muted" id="mapStatus"></p>
+  </div>
+</div>
+
+<dialog id="play" aria-labelledby="playTitle">
+  <div class="play-head">
+    <span id="playTitle"></span>
+    <button class="plain" id="playClose" type="button">Close</button>
+  </div>
+  <div class="viewport"><iframe id="playFrame" title="Margin's Grip" allow="fullscreen"></iframe></div>
+</dialog>
