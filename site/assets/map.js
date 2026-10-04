@@ -87,6 +87,15 @@ function provinceText(provinceId) {
 	return `${provinceId}: ${facts.join(", ")}`;
 }
 
+// "12: 18 provinces", or "unclaimed" / "uninhabited" for land no faction holds.
+function factionText(provinceId) {
+	const province = worldMap.meta.provinces?.[provinceId - 1];
+	if (!province) return "none";
+	const faction = worldMap.meta.factions?.[province.faction - 1];
+	if (!faction) return province.state;
+	return `${province.faction}: ${faction.provinces} provinces`;
+}
+
 const chunkText = () => `${spawn.x}, ${spawn.y}`;
 
 function renderSpawn() {
@@ -101,6 +110,9 @@ function renderSpawn() {
 	document.getElementById("spawnLight").textContent = chunk.light.toFixed(2);
 	document.getElementById("spawnBiome").textContent = readable(chunk.biome);
 	document.getElementById("spawnProvince").textContent = provinceText(
+		chunk.provinceId,
+	);
+	document.getElementById("spawnFaction").textContent = factionText(
 		chunk.provinceId,
 	);
 	document.getElementById("spawnSeed").textContent = meta.seed;

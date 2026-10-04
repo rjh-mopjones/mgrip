@@ -1020,6 +1020,35 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         .count();
     println!("land cells without a province: {unassigned_land}");
 
+    let faction_map =
+        mg_life::generate_factions(&province_map, map.width as f64 / map.world_width, 1);
+    let count_state = |wanted: fn(&mg_life::PoliticalState) -> bool| {
+        let provinces: Vec<&mg_life::Province> = province_map
+            .provinces
+            .iter()
+            .zip(&faction_map.political_states)
+            .filter(|(_, state)| wanted(state))
+            .map(|(province, _)| province)
+            .collect();
+        let area: u32 = provinces.iter().map(|province| province.area_cells).sum();
+        (provinces.len(), area as f64 / land_cells as f64 * 100.0)
+    };
+    let (claimed, claimed_area) = count_state(|s| matches!(s, mg_life::PoliticalState::Claimed { .. }));
+    let (unclaimed, unclaimed_area) = count_state(|s| matches!(s, mg_life::PoliticalState::Unclaimed));
+    let (uninhabited, uninhabited_area) = count_state(|s| matches!(s, mg_life::PoliticalState::Uninhabited));
+    let mut sizes: Vec<u32> = faction_map.factions.iter().map(|f| f.province_count).collect();
+    sizes.sort_unstable();
+    println!(
+        "factions (civ seed 1): {} total, provinces each min {} / median {} / max {}",
+        sizes.len(),
+        sizes.first().copied().unwrap_or(0),
+        sizes.get(sizes.len() / 2).copied().unwrap_or(0),
+        sizes.last().copied().unwrap_or(0),
+    );
+    println!(
+        "provinces claimed {claimed} ({claimed_area:.0}% of land), unclaimed {unclaimed} ({unclaimed_area:.0}%), uninhabited {uninhabited} ({uninhabited_area:.0}%)"
+    );
+
     let mut biome_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for (index, &biome) in map.biomes.iter().enumerate() {
         let entry = biome_counts.entry(format!("{biome:?}")).or_default();
@@ -1079,6 +1108,7 @@ const SITE_MAP_LAYER_GROUPS: [(&str, &[&str]); 4] = [
             "lifegen_navigation_cost",
             "lifegen_resource_desirability",
             "lifegen_provinces",
+            "lifegen_factions",
         ],
     ),
 ];
@@ -1170,6 +1200,19 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     .unwrap_or_else(|e| fail(format!("saving {provinces_file}: {e}")));
     layer_files.push(provinces_file.to_string());
 
+    // LifeGen stage 3: factions.
+    let faction_map = mg_life::generate_factions(&province_map, cells_per_world_unit, civ_seed);
+    let factions_file = "lifegen_factions.png";
+    RgbaImage::from_raw(
+        province_map.width as u32,
+        province_map.height as u32,
+        faction_map_rgba(&province_map, &faction_map),
+    )
+    .expect("faction grid matches its dimensions")
+    .save(output_dir.join(factions_file))
+    .unwrap_or_else(|e| fail(format!("saving {factions_file}: {e}")));
+    layer_files.push(factions_file.to_string());
+
     // Per-chunk data: the macro map has one cell per chunk.
     let mut chunks = Vec::with_capacity(map.width * map.height * SITE_MAP_CHUNK_FIELDS.len());
     let mut biome_names: BTreeMap<u8, String> = BTreeMap::new();
@@ -1213,6 +1256,25 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
                     "coastal": province.is_coastal,
                     "major_river": province.is_river_junction,
                     "neighbours": province_map.adjacency[province.id as usize].len(),
+                    // Faction id, or 0 with `state` saying why not.
+                    "faction": faction_map.faction_of_province(province.id),
+                    "state": match faction_map.political_states[(province.id - 1) as usize] {
+                        mg_life::PoliticalState::Claimed { .. } => "claimed",
+                        mg_life::PoliticalState::Unclaimed => "unclaimed",
+                        mg_life::PoliticalState::Uninhabited => "uninhabited",
+                    },
+                })
+            })
+            .collect::<Vec<_>>(),
+        // Indexed by faction id - 1.
+        "factions": faction_map
+            .factions
+            .iter()
+            .map(|faction| {
+                serde_json::json!({
+                    "capital_province": faction.capital_province,
+                    "provinces": faction.province_count,
+                    "area_chunks": faction.area_cells,
                 })
             })
             .collect::<Vec<_>>(),
@@ -1222,12 +1284,13 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         .unwrap_or_else(|e| fail(format!("writing map.json: {e}")));
 
     println!(
-        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks, {} provinces (layers '{tag}', seed {}, civ seed {civ_seed})",
+        "site map exported to {}: {} layer images at {image_w}x{image_h}, chunks.bin {}x{} chunks, {} provinces, {} factions (layers '{tag}', seed {}, civ seed {civ_seed})",
         output_dir.display(),
         layer_files.len(),
         map.width,
         map.height,
         province_map.provinces.len(),
+        faction_map.factions.len(),
         manifest.seed
     );
 }
@@ -1248,45 +1311,112 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
     [channel(0), channel(1), channel(2), 255]
 }
 
-/// Flat colour per province with darkened borders; ocean is dark.
-/// Hues run blue through magenta and red to yellow, skipping green.
-fn province_map_rgba(province_map: &mg_life::ProvinceMap) -> Vec<u8> {
-    const OCEAN: [u8; 3] = [16, 14, 38];
-    const BORDER_SHADE: f32 = 0.45;
-    let (width, height) = (province_map.width, province_map.height);
-    let ids = &province_map.province_ids;
+const LIFEGEN_OCEAN_RGB: [u8; 3] = [16, 14, 38];
+const LIFEGEN_UNINHABITED_RGB: [f32; 3] = [40.0, 36.0, 58.0];
+const LIFEGEN_UNCLAIMED_RGB: [f32; 3] = [92.0, 84.0, 110.0];
+const LIFEGEN_BORDER_SHADE: f32 = 0.45;
+const LIFEGEN_INNER_BORDER_SHADE: f32 = 0.85;
 
-    let colour = |id: u16| -> [f32; 3] {
-        // Scramble the id so neighbouring provinces get unrelated colours.
-        let hash = (id as u32).wrapping_mul(2_654_435_761);
-        let hue = 200.0 + (hash >> 8 & 0xff) as f32 / 255.0 * 220.0;
-        let saturation = 0.40 + (hash >> 16 & 0xff) as f32 / 255.0 * 0.30;
-        let value = 0.60 + (hash >> 24) as f32 / 255.0 * 0.30;
-        let channel = |offset: f32| {
-            let k = (offset + hue / 60.0) % 6.0;
-            value - value * saturation * k.min(4.0 - k).clamp(0.0, 1.0)
-        };
-        [channel(5.0) * 255.0, channel(3.0) * 255.0, channel(1.0) * 255.0]
+/// A distinct colour per id. Hues run blue through magenta and red to yellow,
+/// skipping green.
+fn id_colour(id: u16) -> [f32; 3] {
+    // Scramble the id so neighbouring regions get unrelated colours.
+    let hash = (id as u32).wrapping_mul(2_654_435_761);
+    let hue = 200.0 + (hash >> 8 & 0xff) as f32 / 255.0 * 220.0;
+    let saturation = 0.40 + (hash >> 16 & 0xff) as f32 / 255.0 * 0.30;
+    let value = 0.60 + (hash >> 24) as f32 / 255.0 * 0.30;
+    let channel = |offset: f32| {
+        let k = (offset + hue / 60.0) % 6.0;
+        value - value * saturation * k.min(4.0 - k).clamp(0.0, 1.0)
     };
+    [channel(5.0) * 255.0, channel(3.0) * 255.0, channel(1.0) * 255.0]
+}
 
+/// Render a map of regions: `colour_of(cell)` fills each land cell and
+/// `shade_of(cell, neighbour)` darkens it where it borders the cell to its
+/// right or below. Ocean (province id 0) is dark.
+fn region_map_rgba(
+    province_map: &mg_life::ProvinceMap,
+    colour_of: impl Fn(usize) -> [f32; 3],
+    shade_of: impl Fn(usize, usize) -> f32,
+) -> Vec<u8> {
+    let (width, height) = (province_map.width, province_map.height);
     let mut pixels = Vec::with_capacity(width * height * 4);
     for y in 0..height {
         for x in 0..width {
-            let id = ids[y * width + x];
-            if id == 0 {
-                pixels.extend_from_slice(&[OCEAN[0], OCEAN[1], OCEAN[2], 255]);
+            let cell = y * width + x;
+            if province_map.province_ids[cell] == 0 {
+                pixels.extend_from_slice(&[
+                    LIFEGEN_OCEAN_RGB[0],
+                    LIFEGEN_OCEAN_RGB[1],
+                    LIFEGEN_OCEAN_RGB[2],
+                    255,
+                ]);
                 continue;
             }
-            let differs = |nx: usize, ny: usize| {
-                nx < width && ny < height && ids[ny * width + nx] != id
-            };
-            let shade = if differs(x + 1, y) || differs(x, y + 1) {
-                BORDER_SHADE
-            } else {
-                1.0
-            };
-            let [r, g, b] = colour(id);
+            let mut shade = 1.0f32;
+            if x + 1 < width {
+                shade = shade.min(shade_of(cell, cell + 1));
+            }
+            if y + 1 < height {
+                shade = shade.min(shade_of(cell, cell + width));
+            }
+            let [r, g, b] = colour_of(cell);
             pixels.extend_from_slice(&[(r * shade) as u8, (g * shade) as u8, (b * shade) as u8, 255]);
+        }
+    }
+    pixels
+}
+
+/// Flat colour per province with darkened borders.
+fn province_map_rgba(province_map: &mg_life::ProvinceMap) -> Vec<u8> {
+    let ids = &province_map.province_ids;
+    region_map_rgba(
+        province_map,
+        |cell| id_colour(ids[cell]),
+        |cell, neighbour| {
+            if ids[cell] == ids[neighbour] {
+                1.0
+            } else {
+                LIFEGEN_BORDER_SHADE
+            }
+        },
+    )
+}
+
+/// Flat colour per faction, grey for unclaimed and dark for uninhabited land.
+/// Faction borders are dark, province borders inside a faction faint, and
+/// each capital's seed cell is marked white.
+fn faction_map_rgba(
+    province_map: &mg_life::ProvinceMap,
+    faction_map: &mg_life::FactionMap,
+) -> Vec<u8> {
+    let ids = &province_map.province_ids;
+    let faction_at = |cell: usize| faction_map.faction_of_province(ids[cell]);
+    let mut pixels = region_map_rgba(
+        province_map,
+        |cell| match faction_map.political_states[(ids[cell] - 1) as usize] {
+            mg_life::PoliticalState::Claimed { faction_id } => id_colour(faction_id),
+            mg_life::PoliticalState::Unclaimed => LIFEGEN_UNCLAIMED_RGB,
+            mg_life::PoliticalState::Uninhabited => LIFEGEN_UNINHABITED_RGB,
+        },
+        |cell, neighbour| {
+            if ids[neighbour] == 0 || ids[cell] == ids[neighbour] {
+                1.0
+            } else if faction_at(cell) == faction_at(neighbour) {
+                LIFEGEN_INNER_BORDER_SHADE
+            } else {
+                LIFEGEN_BORDER_SHADE
+            }
+        },
+    );
+    for faction in &faction_map.factions {
+        let (site_x, site_y) = province_map.provinces[(faction.capital_province - 1) as usize].site;
+        for y in site_y.saturating_sub(1)..=(site_y + 1).min(province_map.height - 1) {
+            for x in site_x.saturating_sub(1)..=(site_x + 1).min(province_map.width - 1) {
+                let offset = (y * province_map.width + x) * 4;
+                pixels[offset..offset + 3].copy_from_slice(&[255, 255, 255]);
+            }
         }
     }
     pixels
