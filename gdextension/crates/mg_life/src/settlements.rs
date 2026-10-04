@@ -7,6 +7,7 @@
 
 use crate::analysis::AnalysisGrids;
 use crate::factions::{FactionMap, PoliticalState};
+use crate::grid::Grid;
 use crate::provinces::{Province, ProvinceMap};
 
 /// Settlements in the same province are at least this far apart
@@ -54,10 +55,10 @@ pub fn place_settlements(
     province_map: &ProvinceMap,
     faction_map: &FactionMap,
     analysis: &AnalysisGrids,
-    cells_per_world_unit: f64,
+    grid: Grid,
 ) -> Vec<Settlement> {
     let width = province_map.width;
-    let min_spacing_cells = SETTLEMENT_MIN_SPACING_WU * cells_per_world_unit;
+    let min_spacing_cells = SETTLEMENT_MIN_SPACING_WU * grid.cells_per_world_unit;
 
     // Candidate cells per province, best habitability first. The sort is
     // stable, so equally habitable cells keep scan order.
@@ -81,9 +82,10 @@ pub fn place_settlements(
             .any(|faction| faction.capital_province == province.id);
         let sites = best_sites(
             &candidates[(province.id - 1) as usize],
-            settlement_count(province, cells_per_world_unit),
+            settlement_count(province, grid),
             width,
             min_spacing_cells,
+            grid,
         );
 
         for (slot, position) in sites.into_iter().enumerate() {
@@ -107,8 +109,8 @@ pub fn place_settlements(
 
 /// How many settlements a province gets: three, more if it is very habitable,
 /// one if it is tiny.
-fn settlement_count(province: &Province, cells_per_world_unit: f64) -> usize {
-    let area_wu2 = province.area_cells as f64 / (cells_per_world_unit * cells_per_world_unit);
+fn settlement_count(province: &Province, grid: Grid) -> usize {
+    let area_wu2 = province.area_cells as f64 / (grid.cells_per_world_unit * grid.cells_per_world_unit);
     if area_wu2 < TINY_PROVINCE_AREA_WU2 {
         1
     } else if province.habitability > 0.7 {
@@ -128,6 +130,7 @@ fn best_sites(
     count: usize,
     width: usize,
     min_spacing_cells: f64,
+    grid: Grid,
 ) -> Vec<(usize, usize)> {
     let mut sites: Vec<(usize, usize)> = Vec::new();
     for &(_, cell) in candidates {
@@ -136,7 +139,7 @@ fn best_sites(
         }
         let (x, y) = (cell % width, cell / width);
         let too_close = sites.iter().any(|&(sx, sy)| {
-            let (dx, dy) = (x as f64 - sx as f64, y as f64 - sy as f64);
+            let (dx, dy) = (grid.dx(sx, x), y as f64 - sy as f64);
             dx * dx + dy * dy < min_spacing_cells * min_spacing_cells
         });
         if !too_close {
@@ -201,17 +204,17 @@ mod tests {
 
     #[test]
     fn more_habitable_provinces_get_more_settlements() {
-        assert_eq!(settlement_count(&province(0.8, 500), 1.0), 5);
-        assert_eq!(settlement_count(&province(0.6, 500), 1.0), 4);
-        assert_eq!(settlement_count(&province(0.2, 500), 1.0), 3);
-        assert_eq!(settlement_count(&province(0.01, 500), 1.0), 3);
+        assert_eq!(settlement_count(&province(0.8, 500), Grid::flat(1.0)), 5);
+        assert_eq!(settlement_count(&province(0.6, 500), Grid::flat(1.0)), 4);
+        assert_eq!(settlement_count(&province(0.2, 500), Grid::flat(1.0)), 3);
+        assert_eq!(settlement_count(&province(0.01, 500), Grid::flat(1.0)), 3);
     }
 
     #[test]
     fn a_tiny_province_gets_one_settlement() {
-        assert_eq!(settlement_count(&province(0.8, 3), 1.0), 1);
+        assert_eq!(settlement_count(&province(0.8, 3), Grid::flat(1.0)), 1);
         // The same ground on a grid of 8 cells per world unit is 192 cells.
-        assert_eq!(settlement_count(&province(0.8, 192), 8.0), 1);
+        assert_eq!(settlement_count(&province(0.8, 192), Grid::flat(8.0)), 1);
     }
 
     #[test]
@@ -254,7 +257,7 @@ mod tests {
         let candidates = [(0.9, 0), (0.85, 10), (0.8, 100)];
 
         assert_eq!(
-            best_sites(&candidates, 3, 200, 60.0),
+            best_sites(&candidates, 3, 200, 60.0, Grid::flat(1.0)),
             vec![(0, 0), (100, 0)]
         );
     }
@@ -262,11 +265,11 @@ mod tests {
     #[test]
     fn settlements_stand_inside_their_own_province_and_each_faction_has_one_metropolis() {
         let terrain = MockTerrain::flat(96, 64);
-        let analysis = compute_analysis_grids(&terrain, 1.0);
-        let provinces = generate_provinces(&terrain, &analysis, 1.0, 7);
-        let factions = generate_factions(&provinces, &[], 1.0, 7);
+        let analysis = compute_analysis_grids(&terrain, Grid::flat(1.0));
+        let provinces = generate_provinces(&terrain, &analysis, Grid::flat(1.0), 7);
+        let factions = generate_factions(&provinces, &[], Grid::flat(1.0), 7);
 
-        let settlements = place_settlements(&provinces, &factions, &analysis, 1.0);
+        let settlements = place_settlements(&provinces, &factions, &analysis, Grid::flat(1.0));
 
         assert!(!settlements.is_empty());
         for settlement in &settlements {

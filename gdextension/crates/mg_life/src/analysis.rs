@@ -3,6 +3,7 @@
 //! Ported from Randlebrot's `rb_world::lifegen::analysis`. Each grid holds one
 //! `f32` per terrain cell and is a pure function of terrain.
 
+use crate::grid::Grid;
 use mg_core::{TerrainQuery, TileType};
 use rayon::prelude::*;
 use std::collections::VecDeque;
@@ -30,18 +31,18 @@ pub struct AnalysisGrids {
     pub resource_desirability: Vec<f32>,
 }
 
-/// Compute all stage 1 grids. `cells_per_world_unit` is the resolution of the
+/// Compute all stage 1 grids. `grid` describes the resolution and shape of the
 /// grid behind `terrain` (1.0 for the macro map: one cell per chunk).
 pub fn compute_analysis_grids(
     terrain: &dyn TerrainQuery,
-    cells_per_world_unit: f64,
+    grid: Grid,
 ) -> AnalysisGrids {
-    let river_distance = compute_river_distance_field(terrain);
+    let river_distance = compute_river_distance_field(terrain, grid);
     AnalysisGrids {
         width: terrain.width(),
         height: terrain.height(),
-        habitability: compute_habitability(terrain, &river_distance, cells_per_world_unit),
-        navigation_cost: compute_navigation_cost(terrain, &river_distance, cells_per_world_unit),
+        habitability: compute_habitability(terrain, &river_distance, grid),
+        navigation_cost: compute_navigation_cost(terrain, &river_distance, grid),
         resource_desirability: compute_resource_desirability(terrain),
         river_distance,
     }
@@ -53,16 +54,16 @@ fn reference_slope(
     terrain: &dyn TerrainQuery,
     x: usize,
     y: usize,
-    cells_per_world_unit: f64,
+    grid: Grid,
 ) -> f64 {
-    terrain.slope_at(x, y) * cells_per_world_unit / REFERENCE_CELLS_PER_WORLD_UNIT
+    terrain.slope_at(x, y) * grid.cells_per_world_unit / REFERENCE_CELLS_PER_WORLD_UNIT
 }
 
 /// Distance from every cell to the nearest river cell, in cells.
 ///
-/// 4-connected BFS from all river cells, then one pass that tightens the
+/// Goes the short way round on a ring. 4-connected BFS from all river cells, then one pass that tightens the
 /// estimate using diagonal steps. River cells are 0.0.
-pub fn compute_river_distance_field(terrain: &dyn TerrainQuery) -> Vec<f32> {
+pub fn compute_river_distance_field(terrain: &dyn TerrainQuery, grid: Grid) -> Vec<f32> {
     let w = terrain.width();
     let h = terrain.height();
     let mut dist = vec![f32::MAX; w * h];
@@ -81,12 +82,14 @@ pub fn compute_river_distance_field(terrain: &dyn TerrainQuery) -> Vec<f32> {
         let current_dist = dist[y * w + x];
         let offsets: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
         for &(dx, dy) in &offsets {
-            let nx = x as i32 + dx;
             let ny = y as i32 + dy;
-            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+            let Some(nux) = grid.step_x(x, dx, w) else {
+                continue;
+            };
+            if ny < 0 || ny >= h as i32 {
                 continue;
             }
-            let (nux, nuy) = (nx as usize, ny as usize);
+            let nuy = ny as usize;
             let ni = nuy * w + nux;
             let new_dist = current_dist + 1.0;
             if new_dist < dist[ni] {
@@ -110,12 +113,14 @@ pub fn compute_river_distance_field(terrain: &dyn TerrainQuery) -> Vec<f32> {
                 (1, 1, 1.414),
             ];
             for &(dx, dy, cost) in &neighbours {
-                let nx = x as i32 + dx;
                 let ny = y as i32 + dy;
-                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                let Some(nx) = grid.step_x(x, dx, w) else {
+                    continue;
+                };
+                if ny < 0 || ny >= h as i32 {
                     continue;
                 }
-                let candidate = snapshot[ny as usize * w + nx as usize] + cost;
+                let candidate = snapshot[ny as usize * w + nx] + cost;
                 if candidate < row[x] {
                     row[x] = candidate;
                 }
@@ -136,12 +141,12 @@ pub fn compute_river_distance_field(terrain: &dyn TerrainQuery) -> Vec<f32> {
 pub fn compute_habitability(
     terrain: &dyn TerrainQuery,
     river_distance: &[f32],
-    cells_per_world_unit: f64,
+    grid: Grid,
 ) -> Vec<f32> {
     let w = terrain.width();
-    let mut grid = vec![0.0f32; w * terrain.height()];
+    let mut scores = vec![0.0f32; w * terrain.height()];
 
-    grid.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+    scores.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         for x in 0..w {
             if terrain.is_ocean(x, y) {
                 continue;
@@ -151,7 +156,7 @@ pub fn compute_habitability(
             let temperature_score = (1.0 - ((temperature - 15.0) / 35.0).powi(2)).clamp(0.0, 1.0);
 
             let river_cells = river_distance[y * w + x] as f64;
-            let river_wu = river_cells / cells_per_world_unit;
+            let river_wu = river_cells / grid.cells_per_world_unit;
             let river_bonus = if river_cells < 1.0 {
                 0.4
             } else if river_wu < RIVER_WATER_BONUS_RADIUS_WU {
@@ -175,7 +180,7 @@ pub fn compute_habitability(
             };
 
             let slope_penalty =
-                (reference_slope(terrain, x, y, cells_per_world_unit) * 5.0).min(1.0);
+                (reference_slope(terrain, x, y, grid) * 5.0).min(1.0);
             let tectonic_penalty = (terrain.tectonic_at(x, y) * 0.5).min(0.5);
             let stability_score = (1.0 - slope_penalty - tectonic_penalty).max(0.0);
 
@@ -187,7 +192,7 @@ pub fn compute_habitability(
         }
     });
 
-    grid
+    scores
 }
 
 /// Ease of travel: 0.0 impassable, 1.0 trivial. (The name follows Randlebrot;
@@ -198,12 +203,12 @@ pub fn compute_habitability(
 pub fn compute_navigation_cost(
     terrain: &dyn TerrainQuery,
     river_distance: &[f32],
-    cells_per_world_unit: f64,
+    grid: Grid,
 ) -> Vec<f32> {
     let w = terrain.width();
-    let mut grid = vec![0.0f32; w * terrain.height()];
+    let mut scores = vec![0.0f32; w * terrain.height()];
 
-    grid.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+    scores.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         for x in 0..w {
             if terrain.is_ocean(x, y) {
                 continue;
@@ -211,7 +216,7 @@ pub fn compute_navigation_cost(
 
             let biome_ease = biome_traversability(terrain.biome_at(x, y)) as f64;
             let slope_penalty =
-                (reference_slope(terrain, x, y, cells_per_world_unit) * 3.0).min(0.7);
+                (reference_slope(terrain, x, y, grid) * 3.0).min(0.7);
             let elevation = terrain.heightmap_at(x, y);
             let elevation_penalty = if elevation > 0.7 {
                 (elevation - 0.7) * 2.0
@@ -221,7 +226,7 @@ pub fn compute_navigation_cost(
             let mut ease = (biome_ease - slope_penalty - elevation_penalty).clamp(0.0, 1.0);
 
             let river_cells = river_distance[y * w + x] as f64;
-            let river_wu = river_cells / cells_per_world_unit;
+            let river_wu = river_cells / grid.cells_per_world_unit;
             if river_cells < 1.0 {
                 ease *= 0.15;
             } else if river_wu < VALLEY_ROAD_BONUS_RADIUS_WU {
@@ -233,7 +238,7 @@ pub fn compute_navigation_cost(
         }
     });
 
-    grid
+    scores
 }
 
 /// Geological resource potential, 0.0 to 1.0:
@@ -243,9 +248,9 @@ pub fn compute_navigation_cost(
 /// - Fertility (15%): humidity, reduced by erosion
 pub fn compute_resource_desirability(terrain: &dyn TerrainQuery) -> Vec<f32> {
     let w = terrain.width();
-    let mut grid = vec![0.0f32; w * terrain.height()];
+    let mut scores = vec![0.0f32; w * terrain.height()];
 
-    grid.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+    scores.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         for x in 0..w {
             let erosion = terrain.erosion_at(x, y);
             let mineral_score = (terrain.tectonic_at(x, y) * 1.5).min(1.0);
@@ -262,7 +267,7 @@ pub fn compute_resource_desirability(terrain: &dyn TerrainQuery) -> Vec<f32> {
         }
     });
 
-    grid
+    scores
 }
 
 /// How easy a biome is to cross on foot: 0.0 impassable, 1.0 trivial.
@@ -333,7 +338,7 @@ mod tests {
     #[test]
     fn river_distance_grows_away_from_the_river() {
         let terrain = MockTerrain::with_river_along_row(100, 100, 50);
-        let dist = compute_river_distance_field(&terrain);
+        let dist = compute_river_distance_field(&terrain, Grid::flat(1.0));
 
         for x in 0..100 {
             assert_eq!(dist[50 * 100 + x], 0.0);
@@ -349,7 +354,7 @@ mod tests {
     #[test]
     fn habitability_is_higher_beside_a_river_than_far_from_it() {
         let terrain = MockTerrain::with_river_along_row(40, 40, 20);
-        let grids = compute_analysis_grids(&terrain, 1.0);
+        let grids = compute_analysis_grids(&terrain, Grid::flat(1.0));
 
         let beside_river = grids.habitability[19 * 40 + 20];
         let far_from_river = grids.habitability[2 * 40 + 20];
@@ -360,8 +365,8 @@ mod tests {
     fn river_bonus_reach_is_the_same_distance_on_a_finer_grid() {
         // 1.5 world units is the water bonus radius: 1 cell away is inside it
         // at 1 cell per world unit, 11 cells away is inside it at 8.
-        let coarse = compute_analysis_grids(&MockTerrain::with_river_along_row(40, 40, 20), 1.0);
-        let fine = compute_analysis_grids(&MockTerrain::with_river_along_row(40, 40, 20), 8.0);
+        let coarse = compute_analysis_grids(&MockTerrain::with_river_along_row(40, 40, 20), Grid::flat(1.0));
+        let fine = compute_analysis_grids(&MockTerrain::with_river_along_row(40, 40, 20), Grid::flat(8.0));
         let baseline = coarse.habitability[2 * 40 + 20];
 
         assert!(coarse.habitability[19 * 40 + 20] > baseline);
@@ -372,7 +377,7 @@ mod tests {
     #[test]
     fn crossing_a_river_is_harder_than_walking_beside_it() {
         let terrain = MockTerrain::with_river_along_row(40, 40, 20);
-        let grids = compute_analysis_grids(&terrain, 1.0);
+        let grids = compute_analysis_grids(&terrain, Grid::flat(1.0));
 
         assert!(grids.navigation_cost[20 * 40 + 20] < grids.navigation_cost[19 * 40 + 20]);
     }

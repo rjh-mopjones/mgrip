@@ -4,7 +4,11 @@
 //! linked is decided on straight-line distance; each link is then routed over
 //! the navigation grid with A*, so roads bend around hard terrain and never
 //! cross open water. A link with no land route is dropped.
+//!
+//! On a ring, links and routes take the short way round, across the seam if
+//! that is nearer.
 
+use crate::grid::Grid;
 use crate::settlements::{Settlement, SizeClass};
 use rayon::prelude::*;
 use std::cmp::Reverse;
@@ -52,11 +56,18 @@ pub struct Road {
     pub from_settlement: u32,
     pub to_settlement: u32,
     pub kind: RoadKind,
-    /// Simplified route, as cells from one end to the other.
+    /// Simplified route, as cells from one end to the other. On a ring,
+    /// consecutive cells may sit on opposite edges of the grid: the road
+    /// crosses the seam between them.
     pub path: Vec<(usize, usize)>,
     /// Travel cost of the full route: distance in cells weighted by terrain.
     pub cost: f32,
 }
+
+/// A cell position that may lie beyond the grid's east or west edge. Routes
+/// are searched in these coordinates so that one crossing the seam is as
+/// continuous as any other, then folded back onto the grid.
+type Unwrapped = (i64, i64);
 
 /// Build the road network. `navigation_cost` is the stage 1 grid: 0.0
 /// impassable, 1.0 trivial. Deterministic; uses no seed.
@@ -65,38 +76,47 @@ pub fn build_roads(
     navigation_cost: &[f32],
     width: usize,
     height: usize,
-    cells_per_world_unit: f64,
+    grid: Grid,
 ) -> Vec<Road> {
     if settlements.len() < 2 {
         return Vec::new();
     }
-    let links = choose_links(settlements, cells_per_world_unit);
-    let padding = (SEARCH_PADDING_WU * cells_per_world_unit).ceil() as usize;
-    let tolerance = SIMPLIFY_TOLERANCE_WU * cells_per_world_unit;
+    let links = choose_links(settlements, grid);
+    let padding = (SEARCH_PADDING_WU * grid.cells_per_world_unit).ceil() as i64;
+    let tolerance = SIMPLIFY_TOLERANCE_WU * grid.cells_per_world_unit;
 
     links
         .par_iter()
         .filter_map(|&(a, b, kind)| {
             let (from, to) = (&settlements[a], &settlements[b]);
-            if distance(from.position, to.position) > MAX_ROAD_LENGTH_WU * cells_per_world_unit {
+            if grid.distance(from.position, to.position)
+                > MAX_ROAD_LENGTH_WU * grid.cells_per_world_unit
+            {
                 return None;
             }
-            let bounds = SearchBounds::around(from.position, to.position, padding, width, height);
-            let (path, cost) =
-                find_route(from.position, to.position, navigation_cost, width, bounds)?;
+            let start = (from.position.0 as i64, from.position.1 as i64);
+            let goal = (
+                start.0 + grid.dx(from.position.0, to.position.0) as i64,
+                to.position.1 as i64,
+            );
+            let bounds = SearchBounds::around(start, goal, padding, width, height, grid);
+            let (path, cost) = find_route(start, goal, navigation_cost, width, bounds)?;
             Some(Road {
                 from_settlement: from.id,
                 to_settlement: to.id,
                 kind,
-                path: simplify_path(&path, tolerance),
+                path: simplify_path(&path, tolerance)
+                    .into_iter()
+                    .map(|(x, y)| (x.rem_euclid(width as i64) as usize, y as usize))
+                    .collect(),
                 cost,
             })
         })
         .collect()
 }
 
-fn distance(a: (usize, usize), b: (usize, usize)) -> f64 {
-    let (dx, dy) = (a.0 as f64 - b.0 as f64, a.1 as f64 - b.1 as f64);
+fn unwrapped_distance(a: Unwrapped, b: Unwrapped) -> f64 {
+    let (dx, dy) = ((a.0 - b.0) as f64, (a.1 - b.1) as f64);
     (dx * dx + dy * dy).sqrt()
 }
 
@@ -125,10 +145,7 @@ fn road_kind(a: &Settlement, b: &Settlement) -> RoadKind {
 /// 2. a spanning tree over capitals, plus one extra nearby capital each;
 /// 3. up to two extra links from each town or larger to nearby ones;
 /// 4. highways split to pass through towns along their way.
-fn choose_links(
-    settlements: &[Settlement],
-    cells_per_world_unit: f64,
-) -> Vec<(usize, usize, RoadKind)> {
+fn choose_links(settlements: &[Settlement], grid: Grid) -> Vec<(usize, usize, RoadKind)> {
     let positions: Vec<(usize, usize)> = settlements.iter().map(|s| s.position).collect();
     let mut links: Vec<(usize, usize)> = Vec::new();
     let mut linked: BTreeSet<(usize, usize)> = BTreeSet::new();
@@ -138,7 +155,7 @@ fn choose_links(
         }
     };
 
-    for (a, b) in minimum_spanning_tree(&positions) {
+    for (a, b) in minimum_spanning_tree(&positions, grid) {
         add_link(&mut links, a, b);
     }
 
@@ -146,7 +163,7 @@ fn choose_links(
         .filter(|&i| settlements[i].size_class == SizeClass::Metropolis)
         .collect();
     let capital_positions: Vec<(usize, usize)> = capitals.iter().map(|&i| positions[i]).collect();
-    for (a, b) in minimum_spanning_tree(&capital_positions) {
+    for (a, b) in minimum_spanning_tree(&capital_positions, grid) {
         add_link(&mut links, capitals[a], capitals[b]);
     }
     let already_linked: BTreeSet<(usize, usize)> =
@@ -157,12 +174,12 @@ fn choose_links(
             .filter(|&&other| {
                 other != capital
                     && !already_linked.contains(&(capital.min(other), capital.max(other)))
-                    && distance(positions[capital], positions[other])
-                        <= EXTRA_CAPITAL_LINK_MAX_WU * cells_per_world_unit
+                    && grid.distance(positions[capital], positions[other])
+                        <= EXTRA_CAPITAL_LINK_MAX_WU * grid.cells_per_world_unit
             })
             .min_by(|&&a, &&b| {
-                distance(positions[capital], positions[a])
-                    .total_cmp(&distance(positions[capital], positions[b]))
+                grid.distance(positions[capital], positions[a])
+                    .total_cmp(&grid.distance(positions[capital], positions[b]))
             });
         if let Some(&other) = nearest_unlinked {
             add_link(&mut links, capital, other);
@@ -180,8 +197,8 @@ fn choose_links(
             .filter(|&&other| {
                 other != town && !already_linked.contains(&(town.min(other), town.max(other)))
             })
-            .map(|&other| (distance(positions[town], positions[other]), other))
-            .filter(|&(d, _)| d <= TOWN_LINK_MAX_WU * cells_per_world_unit)
+            .map(|&other| (grid.distance(positions[town], positions[other]), other))
+            .filter(|&(d, _)| d <= TOWN_LINK_MAX_WU * grid.cells_per_world_unit)
             .collect();
         nearby.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         for &(_, other) in nearby.iter().take(TOWN_EXTRA_LINKS) {
@@ -197,7 +214,7 @@ fn choose_links(
             continue;
         }
         let mut chain = vec![a];
-        chain.extend(highway_waypoints(a, b, settlements, cells_per_world_unit));
+        chain.extend(highway_waypoints(a, b, settlements, grid));
         chain.push(b);
         for pair in chain.windows(2) {
             kinded.push((pair[0], pair[1], RoadKind::Highway));
@@ -207,7 +224,7 @@ fn choose_links(
 }
 
 /// Prim's algorithm on straight-line distance. Returns index pairs.
-fn minimum_spanning_tree(positions: &[(usize, usize)]) -> Vec<(usize, usize)> {
+fn minimum_spanning_tree(positions: &[(usize, usize)], grid: Grid) -> Vec<(usize, usize)> {
     let count = positions.len();
     if count < 2 {
         return Vec::new();
@@ -224,7 +241,7 @@ fn minimum_spanning_tree(positions: &[(usize, usize)]) -> Vec<(usize, usize)> {
             if in_tree[i] {
                 continue;
             }
-            let d = distance(positions[newest], positions[i]);
+            let d = grid.distance(positions[newest], positions[i]);
             if d < best_distance[i] {
                 best_distance[i] = d;
                 best_parent[i] = newest;
@@ -243,22 +260,22 @@ fn minimum_spanning_tree(positions: &[(usize, usize)]) -> Vec<(usize, usize)> {
 
 /// Towns or larger near the straight line from `a` to `b`, in order along it.
 /// A highway is routed through them instead of running end to end.
-fn highway_waypoints(
-    a: usize,
-    b: usize,
-    settlements: &[Settlement],
-    cells_per_world_unit: f64,
-) -> Vec<usize> {
+fn highway_waypoints(a: usize, b: usize, settlements: &[Settlement], grid: Grid) -> Vec<usize> {
     let (start, end) = (settlements[a].position, settlements[b].position);
-    let length = distance(start, end);
+    let length = grid.distance(start, end);
     if length < 1.0 {
         return Vec::new();
     }
-    let direction = (
-        (end.0 as f64 - start.0 as f64) / length,
-        (end.1 as f64 - start.1 as f64) / length,
-    );
-    let margin = WAYPOINT_END_MARGIN_WU * cells_per_world_unit;
+    // Offset of a position from `start`, the short way round.
+    let offset_from_start = |position: (usize, usize)| {
+        (
+            grid.dx(start.0, position.0),
+            position.1 as f64 - start.1 as f64,
+        )
+    };
+    let to_end = offset_from_start(end);
+    let direction = (to_end.0 / length, to_end.1 / length);
+    let margin = WAYPOINT_END_MARGIN_WU * grid.cells_per_world_unit;
 
     let mut along_line: Vec<(f64, usize)> = settlements
         .iter()
@@ -267,15 +284,12 @@ fn highway_waypoints(
             index != a && index != b && is_town_or_larger(settlement.size_class)
         })
         .filter_map(|(index, settlement)| {
-            let offset = (
-                settlement.position.0 as f64 - start.0 as f64,
-                settlement.position.1 as f64 - start.1 as f64,
-            );
+            let offset = offset_from_start(settlement.position);
             let along = offset.0 * direction.0 + offset.1 * direction.1;
             let across = (offset.1 * direction.0 - offset.0 * direction.1).abs();
             let on_the_way = along >= margin
                 && along <= length - margin
-                && across <= WAYPOINT_CORRIDOR_WU * cells_per_world_unit;
+                && across <= WAYPOINT_CORRIDOR_WU * grid.cells_per_world_unit;
             on_the_way.then_some((along, index))
         })
         .collect();
@@ -284,7 +298,7 @@ fn highway_waypoints(
     let mut waypoints: Vec<(f64, usize)> = Vec::new();
     for (along, index) in along_line {
         let spaced = waypoints.last().is_none_or(|&(previous, _)| {
-            along - previous >= WAYPOINT_MIN_SPACING_WU * cells_per_world_unit
+            along - previous >= WAYPOINT_MIN_SPACING_WU * grid.cells_per_world_unit
         });
         if spaced {
             waypoints.push((along, index));
@@ -293,44 +307,63 @@ fn highway_waypoints(
     waypoints.into_iter().map(|(_, index)| index).collect()
 }
 
-/// The part of the grid a route search may use.
+/// The part of the grid a route search may use, in unwrapped coordinates.
 #[derive(Clone, Copy)]
 struct SearchBounds {
-    min_x: usize,
-    min_y: usize,
+    min_x: i64,
+    min_y: i64,
     width: usize,
     height: usize,
 }
 
 impl SearchBounds {
+    /// A box around `a` and `b`, padded on every side. On a flat grid it is
+    /// clipped to the grid. On a ring it may extend past the east or west edge,
+    /// but is never wider than the ring, so no cell appears in it twice.
     fn around(
-        a: (usize, usize),
-        b: (usize, usize),
-        padding: usize,
+        a: Unwrapped,
+        b: Unwrapped,
+        padding: i64,
         grid_width: usize,
         grid_height: usize,
+        grid: Grid,
     ) -> Self {
-        let min_x = a.0.min(b.0).saturating_sub(padding);
-        let min_y = a.1.min(b.1).saturating_sub(padding);
-        let max_x = (a.0.max(b.0) + padding).min(grid_width - 1);
+        let (grid_width, grid_height) = (grid_width as i64, grid_height as i64);
+        let mut min_x = a.0.min(b.0) - padding;
+        let mut max_x = a.0.max(b.0) + padding;
+        if grid.wrap_width.is_none() {
+            min_x = min_x.max(0);
+            max_x = max_x.min(grid_width - 1);
+        } else if max_x - min_x + 1 > grid_width {
+            min_x = a.0.min(b.0) - (grid_width - (a.0 - b.0).abs() - 1) / 2;
+            max_x = min_x + grid_width - 1;
+        }
+        let min_y = (a.1.min(b.1) - padding).max(0);
         let max_y = (a.1.max(b.1) + padding).min(grid_height - 1);
         Self {
             min_x,
             min_y,
-            width: max_x - min_x + 1,
-            height: max_y - min_y + 1,
+            width: (max_x - min_x + 1) as usize,
+            height: (max_y - min_y + 1) as usize,
         }
     }
 
-    fn local_index(&self, x: usize, y: usize) -> usize {
-        (y - self.min_y) * self.width + (x - self.min_x)
+    fn local_index(&self, cell: Unwrapped) -> usize {
+        (cell.1 - self.min_y) as usize * self.width + (cell.0 - self.min_x) as usize
     }
 
-    fn contains(&self, x: i64, y: i64) -> bool {
-        x >= self.min_x as i64
-            && y >= self.min_y as i64
-            && x < (self.min_x + self.width) as i64
-            && y < (self.min_y + self.height) as i64
+    fn cell(&self, local_index: usize) -> Unwrapped {
+        (
+            self.min_x + (local_index % self.width) as i64,
+            self.min_y + (local_index / self.width) as i64,
+        )
+    }
+
+    fn contains(&self, cell: Unwrapped) -> bool {
+        cell.0 >= self.min_x
+            && cell.1 >= self.min_y
+            && cell.0 < self.min_x + self.width as i64
+            && cell.1 < self.min_y + self.height as i64
     }
 }
 
@@ -338,13 +371,16 @@ impl SearchBounds {
 /// costs the step length divided by its navigation ease; cells with ease 0.0
 /// cannot be entered. Returns the cells of the route and its total cost, or
 /// `None` if there is no route inside `bounds`.
+///
+/// Cells are in unwrapped coordinates; a column beyond the grid's edge reads
+/// the navigation grid on the other side of the seam.
 fn find_route(
-    from: (usize, usize),
-    to: (usize, usize),
+    from: Unwrapped,
+    to: Unwrapped,
     navigation_cost: &[f32],
     grid_width: usize,
     bounds: SearchBounds,
-) -> Option<(Vec<(usize, usize)>, f32)> {
+) -> Option<(Vec<Unwrapped>, f32)> {
     const STEPS: [(i64, i64, f32); 8] = [
         (-1, 0, 1.0),
         (1, 0, 1.0),
@@ -364,17 +400,18 @@ fn find_route(
     let mut best_cost = vec![f32::MAX; cell_count];
     let mut parent = vec![NO_PARENT; cell_count];
     // Straight-line distance never overestimates: no step costs less than its length.
-    let estimate = |x: usize, y: usize| distance((x, y), to) as f32;
-    let start = bounds.local_index(from.0, from.1);
-    let goal = bounds.local_index(to.0, to.1);
+    let estimate = |cell: Unwrapped| unwrapped_distance(cell, to) as f32;
+    let ease_at = |cell: Unwrapped| {
+        navigation_cost
+            [cell.1 as usize * grid_width + cell.0.rem_euclid(grid_width as i64) as usize]
+    };
+    let start = bounds.local_index(from);
+    let goal = bounds.local_index(to);
 
     // (estimated total cost in hundredths, local cell index)
     let mut open: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
     best_cost[start] = 0.0;
-    open.push(Reverse((
-        (estimate(from.0, from.1) * 100.0) as u32,
-        start as u32,
-    )));
+    open.push(Reverse(((estimate(from) * 100.0) as u32, start as u32)));
 
     let mut expansions = 0;
     while let Some(Reverse((_, current))) = open.pop() {
@@ -383,10 +420,7 @@ fn find_route(
             let mut path = Vec::new();
             let mut cell = current;
             loop {
-                path.push((
-                    bounds.min_x + cell % bounds.width,
-                    bounds.min_y + cell / bounds.width,
-                ));
+                path.push(bounds.cell(cell));
                 if parent[cell] == NO_PARENT {
                     break;
                 }
@@ -400,25 +434,23 @@ fn find_route(
             return None;
         }
 
-        let x = bounds.min_x + current % bounds.width;
-        let y = bounds.min_y + current / bounds.width;
+        let (x, y) = bounds.cell(current);
         for &(dx, dy, step_length) in &STEPS {
-            let (nx, ny) = (x as i64 + dx, y as i64 + dy);
-            if !bounds.contains(nx, ny) {
+            let next = (x + dx, y + dy);
+            if !bounds.contains(next) {
                 continue;
             }
-            let (nx, ny) = (nx as usize, ny as usize);
-            let ease = navigation_cost[ny * grid_width + nx];
+            let ease = ease_at(next);
             if ease == 0.0 {
                 continue;
             }
             let cost = best_cost[current] + step_length / ease.max(MIN_NAVIGATION_EASE);
-            let neighbour = bounds.local_index(nx, ny);
+            let neighbour = bounds.local_index(next);
             if cost < best_cost[neighbour] {
                 best_cost[neighbour] = cost;
                 parent[neighbour] = current as u32;
                 open.push(Reverse((
-                    ((cost + estimate(nx, ny)) * 100.0) as u32,
+                    ((cost + estimate(next)) * 100.0) as u32,
                     neighbour as u32,
                 )));
             }
@@ -429,7 +461,7 @@ fn find_route(
 
 /// Douglas-Peucker: drop route points that lie within `tolerance` cells of
 /// the line through the points kept. The two ends are always kept.
-fn simplify_path(path: &[(usize, usize)], tolerance: f64) -> Vec<(usize, usize)> {
+fn simplify_path(path: &[Unwrapped], tolerance: f64) -> Vec<Unwrapped> {
     if path.len() <= 2 {
         return path.to_vec();
     }
@@ -454,10 +486,10 @@ fn simplify_path(path: &[(usize, usize)], tolerance: f64) -> Vec<(usize, usize)>
     simplified
 }
 
-fn distance_to_line(point: (usize, usize), a: (usize, usize), b: (usize, usize)) -> f64 {
-    let length = distance(a, b);
+fn distance_to_line(point: Unwrapped, a: Unwrapped, b: Unwrapped) -> f64 {
+    let length = unwrapped_distance(a, b);
     if length < 1e-6 {
-        return distance(point, a);
+        return unwrapped_distance(point, a);
     }
     let (ax, ay) = (a.0 as f64, a.1 as f64);
     let (bx, by) = (b.0 as f64, b.1 as f64);
@@ -468,6 +500,11 @@ fn distance_to_line(point: (usize, usize), a: (usize, usize), b: (usize, usize))
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FLAT: Grid = Grid {
+        cells_per_world_unit: 1.0,
+        wrap_width: None,
+    };
 
     fn settlement(id: u32, position: (usize, usize), size_class: SizeClass) -> Settlement {
         Settlement {
@@ -485,13 +522,13 @@ mod tests {
         wall_x: usize,
         gap_y: Option<usize>,
     ) -> Vec<f32> {
-        let mut grid = vec![1.0; width * height];
+        let mut cells = vec![1.0; width * height];
         for y in 0..height {
             if Some(y) != gap_y {
-                grid[y * width + wall_x] = 0.0;
+                cells[y * width + wall_x] = 0.0;
             }
         }
-        grid
+        cells
     }
 
     #[test]
@@ -500,23 +537,56 @@ mod tests {
             settlement(1, (2, 5), SizeClass::Village),
             settlement(2, (17, 5), SizeClass::Village),
         ];
-        let roads = build_roads(&settlements, &vec![1.0; 20 * 10], 20, 10, 1.0);
+        let roads = build_roads(&settlements, &vec![1.0; 20 * 10], 20, 10, FLAT);
 
         assert_eq!(roads.len(), 1);
         assert_eq!(roads[0].path.first(), Some(&(2, 5)));
         assert_eq!(roads[0].path.last(), Some(&(17, 5)));
         assert_eq!(roads[0].kind, RoadKind::Trail);
+        assert!((roads[0].cost - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn on_a_ring_a_road_takes_the_short_way_across_the_seam() {
+        let settlements = [
+            settlement(1, (2, 5), SizeClass::Village),
+            settlement(2, (97, 5), SizeClass::Village),
+        ];
+        let open_ground = vec![1.0; 100 * 10];
+
+        let flat = build_roads(&settlements, &open_ground, 100, 10, FLAT);
+        let ring = build_roads(&settlements, &open_ground, 100, 10, Grid::ring(1.0, 100));
+
+        assert!((flat[0].cost - 95.0).abs() < 0.01);
+        assert!((ring[0].cost - 5.0).abs() < 0.01);
+        assert_eq!(ring[0].path.first(), Some(&(2, 5)));
+        assert_eq!(ring[0].path.last(), Some(&(97, 5)));
+    }
+
+    #[test]
+    fn on_a_ring_water_along_the_seam_still_blocks_the_road() {
+        // Water down column 0 with no gap. The short way is blocked and the long
+        // way round is far outside the search box, so no road is built.
+        let settlements = [
+            settlement(1, (2, 5), SizeClass::Village),
+            settlement(2, (97, 5), SizeClass::Village),
+        ];
+        let cells = grid_with_wall(100, 10, 0, None);
+
+        assert!(build_roads(&settlements, &cells, 100, 10, Grid::ring(1.0, 100)).is_empty());
     }
 
     #[test]
     fn a_route_goes_through_the_gap_in_a_wall_of_water() {
-        let grid = grid_with_wall(20, 20, 10, Some(18));
-        let bounds = SearchBounds::around((2, 2), (17, 2), 25, 20, 20);
+        let cells = grid_with_wall(20, 20, 10, Some(18));
+        let bounds = SearchBounds::around((2, 2), (17, 2), 25, 20, 20, FLAT);
 
-        let (path, cost) = find_route((2, 2), (17, 2), &grid, 20, bounds).expect("a route exists");
+        let (path, cost) = find_route((2, 2), (17, 2), &cells, 20, bounds).expect("a route exists");
 
         assert!(path.contains(&(10, 18)));
-        assert!(path.iter().all(|&(x, y)| grid[y * 20 + x] > 0.0));
+        assert!(path
+            .iter()
+            .all(|&(x, y)| cells[y as usize * 20 + x as usize] > 0.0));
         assert!(cost > 15.0);
     }
 
@@ -526,9 +596,9 @@ mod tests {
             settlement(1, (2, 5), SizeClass::Village),
             settlement(2, (17, 5), SizeClass::Village),
         ];
-        let grid = grid_with_wall(20, 10, 10, None);
+        let cells = grid_with_wall(20, 10, 10, None);
 
-        assert!(build_roads(&settlements, &grid, 20, 10, 1.0).is_empty());
+        assert!(build_roads(&settlements, &cells, 20, 10, FLAT).is_empty());
     }
 
     #[test]
@@ -542,7 +612,7 @@ mod tests {
                 )
             })
             .collect();
-        let roads = build_roads(&settlements, &vec![1.0; 40 * 20], 40, 20, 1.0);
+        let roads = build_roads(&settlements, &vec![1.0; 40 * 20], 40, 20, FLAT);
 
         let mut reached = BTreeSet::from([1u32]);
         loop {
@@ -582,12 +652,28 @@ mod tests {
             settlement(4, (30, 60), SizeClass::Town),
         ];
 
-        assert_eq!(highway_waypoints(0, 1, &settlements, 1.0), vec![2]);
+        assert_eq!(highway_waypoints(0, 1, &settlements, FLAT), vec![2]);
+    }
+
+    #[test]
+    fn on_a_ring_highway_waypoints_are_found_across_the_seam() {
+        // Capitals 40 apart across the seam of a 200-wide ring, a town between them.
+        let settlements = [
+            settlement(1, (180, 10), SizeClass::Metropolis),
+            settlement(2, (20, 10), SizeClass::Metropolis),
+            settlement(3, (195, 11), SizeClass::Town),
+            settlement(4, (100, 10), SizeClass::Town),
+        ];
+
+        assert_eq!(
+            highway_waypoints(0, 1, &settlements, Grid::ring(1.0, 200)),
+            vec![2]
+        );
     }
 
     #[test]
     fn simplifying_a_straight_route_keeps_only_its_ends() {
-        let straight: Vec<(usize, usize)> = (0..10).map(|x| (x, 3)).collect();
+        let straight: Vec<Unwrapped> = (0..10).map(|x| (x, 3)).collect();
         let bent = [(0, 0), (5, 0), (5, 5)];
 
         assert_eq!(simplify_path(&straight, 0.4), vec![(0, 3), (9, 3)]);
