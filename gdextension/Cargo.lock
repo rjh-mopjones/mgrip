@@ -975,6 +975,8 @@ name = "mg_life"
 version = "0.1.0"
 dependencies = [
  "mg_core",
+ "rand",
+ "rand_xorshift",
  "rayon",
 ]
 
