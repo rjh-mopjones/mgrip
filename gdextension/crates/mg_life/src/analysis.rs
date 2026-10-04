@@ -312,14 +312,16 @@ fn biome_traversability(biome: TileType) -> f32 {
         | TileType::MoltenWaste
         | TileType::ScorchedRock => 0.1,
 
-        // Water, plus White which Randlebrot grouped with it (spec 011, open question 1).
+        // Deep-night ice: half frozen sea, half frozen land. Crossable, but
+        // harder than ordinary snow and ice.
+        TileType::White => 0.2,
+
         TileType::Sea
         | TileType::ShallowSea
         | TileType::ContinentalShelf
         | TileType::DeepOcean
         | TileType::OceanTrench
-        | TileType::OceanRidge
-        | TileType::White => 0.0,
+        | TileType::OceanRidge => 0.0,
     }
 }
 

@@ -131,6 +131,12 @@ enum GenerateKind {
 
 #[derive(Subcommand)]
 enum InspectKind {
+    /// Print value percentiles of each macro layer over land cells, for
+    /// calibrating formulas that read those layers
+    LayerStats {
+        /// Layers artifact tag
+        layers_tag: String,
+    },
     /// Compute the runtime presentation summary from a saved level artifact
     LevelPresentation {
         /// Level artifact tag
@@ -236,6 +242,7 @@ fn main() {
             } => run_generate_level(&layers_tag, x, y, &level_tag),
         },
         Commands::Inspect { kind } => match kind {
+            InspectKind::LayerStats { layers_tag } => run_inspect_layer_stats(&layers_tag),
             InspectKind::LevelPresentation { level_tag } => {
                 run_inspect_level_presentation(&level_tag)
             }
@@ -903,6 +910,104 @@ fn run_inspect_chunk_presentation(
 
 /// Discover the newest named layer image across all layers artifacts, mirroring the
 /// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
+// ─── inspect layer-stats ─────────────────────────────────────────────────────
+
+const STATS_PERCENTILES: [usize; 7] = [0, 5, 25, 50, 75, 95, 100];
+
+fn run_inspect_layer_stats(layers_tag: &str) {
+    let store = ArtifactStore::new().unwrap_or_else(|e| {
+        eprintln!("error: artifact store: {e}");
+        std::process::exit(1);
+    });
+    let (map, _river_network) = store.load_layers_data(layers_tag).unwrap_or_else(|e| {
+        eprintln!("error: could not load layers data for '{layers_tag}': {e}");
+        std::process::exit(1);
+    });
+
+    let is_land: Vec<bool> = map
+        .biomes
+        .iter()
+        .map(|&biome| !mg_noise::biome_map::tile_has_fluid_surface(biome))
+        .collect();
+    let land_cells = is_land.iter().filter(|&&land| land).count();
+    println!(
+        "layers '{layers_tag}': {}x{} cells, {land_cells} land ({:.0}%)",
+        map.width,
+        map.height,
+        land_cells as f64 / is_land.len() as f64 * 100.0
+    );
+
+    let layers: [(&str, &Vec<f64>); 12] = [
+        ("continentalness", &map.continentalness),
+        ("heightmap", &map.heightmap),
+        ("temperature", &map.temperature),
+        ("humidity", &map.humidity),
+        ("light_level", &map.light_level),
+        ("tectonic", &map.tectonic),
+        ("rock_hardness", &map.rock_hardness),
+        ("erosion", &map.erosion),
+        ("aridity", &map.aridity),
+        ("peaks_valleys", &map.peaks_valleys),
+        ("resource_richness", &map.resource_richness),
+        ("rivers", &map.rivers),
+    ];
+    let header: Vec<String> = STATS_PERCENTILES.iter().map(|p| format!("{:>9}", format!("p{p}"))).collect();
+    println!("{:<18}{}", "land cells only", header.join(""));
+    for (name, values) in layers {
+        let mut land_values: Vec<f64> = values
+            .iter()
+            .zip(&is_land)
+            .filter(|(_, &land)| land)
+            .map(|(&value, _)| value)
+            .collect();
+        land_values.sort_by(|a, b| a.total_cmp(b));
+        let row: Vec<String> = STATS_PERCENTILES
+            .iter()
+            .map(|&p| {
+                let index = (land_values.len().saturating_sub(1)) * p / 100;
+                format!("{:>9.3}", land_values.get(index).copied().unwrap_or(f64::NAN))
+            })
+            .collect();
+        println!("{name:<18}{}", row.join(""));
+    }
+
+    let analysis = mg_life::compute_analysis_grids(&map, map.width as f64 / map.world_width);
+    let lifegen_grids = [
+        ("habitability", &analysis.habitability),
+        ("navigation_cost", &analysis.navigation_cost),
+        ("resource_desir.", &analysis.resource_desirability),
+    ];
+    for (name, scores) in lifegen_grids {
+        let mut land_scores: Vec<f32> = scores
+            .iter()
+            .zip(&is_land)
+            .filter(|(_, &land)| land)
+            .map(|(&score, _)| score)
+            .collect();
+        land_scores.sort_by(|a, b| a.total_cmp(b));
+        let row: Vec<String> = STATS_PERCENTILES
+            .iter()
+            .map(|&p| format!("{:>9.3}", land_scores[(land_scores.len() - 1) * p / 100]))
+            .collect();
+        println!("{:<18}{}", format!("lifegen {name}"), row.join(""));
+    }
+
+    let mut biome_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for (index, &biome) in map.biomes.iter().enumerate() {
+        let entry = biome_counts.entry(format!("{biome:?}")).or_default();
+        entry.0 += 1;
+        if map.continentalness[index] < mg_noise::biome_map::SEA_LEVEL {
+            entry.1 += 1;
+        }
+    }
+    println!("{:<22}{:>9}{:>26}", "biome", "cells", "below sea level (cont.)");
+    let mut sorted: Vec<_> = biome_counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    for (name, (cells, below_sea)) in sorted {
+        println!("{name:<22}{cells:>9}{:>25.0}%", below_sea as f64 / cells as f64 * 100.0);
+    }
+}
+
 // ─── export site-map ─────────────────────────────────────────────────────────
 
 /// Site map images are halved until they are no wider than this.

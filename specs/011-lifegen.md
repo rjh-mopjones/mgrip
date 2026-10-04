@@ -113,22 +113,32 @@ artifact it was built from, with `generate lifegen <layers_tag> <civ_seed>`.
 - Each stage's layers are inspected on the site map page against the terrain
   layers.
 
+## Calibration against this world
+
+Measured with `margins_grip inspect layer-stats <layers_tag>` on seed 42.
+Differences from Randlebrot that the port accounts for:
+
+- **Tectonic layer is inverted.** Here it stores distance from the nearest
+  plate boundary (1.0 = quiet interior; land median 0.977). LifeGen expects
+  stress. The `TerrainQuery` implementation returns `1.0 - layer`.
+- **Ocean is liquid surface water only.** `is_ocean` uses
+  `tile_has_fluid_surface`, the same rule as `MacroOceanMask`. Dried dayside
+  basins (`ScorchedRock`, `SaltFlat`: 97-98% below sea level) and frozen
+  nightside seas are land. 89% of cells are land by this rule.
+- **`White` is crossable.** It is the most common biome (half frozen sea, half
+  frozen land). Traversability 0.2: harder than ordinary snow and ice (0.3),
+  not a wall. Randlebrot treated it as impassable.
+
+Resulting land-cell distributions (p5 / median / p95): habitability
+0.20 / 0.36 / 0.75, navigation cost 0.09 / 0.29 / 0.85, resource
+desirability 0.25 / 0.34 / 0.55.
+
 ## Open questions
 
-1. `White` (the most common nightside biome) is treated as impassable, as in
-   Randlebrot where it was grouped with ocean. If it is frozen land here, it
-   should probably be passable but slow.
-2. Temperature comfort peaks at 15 C and reaches zero at -20 C and 50 C. The
-   temperature model here is wider (-80 C to 120 C) than Randlebrot's
-   (-40 C to 40 C), so the habitable band may sit differently than intended.
-3. Whether macro resolution is fine enough for provinces (roughly 970 in
+1. Temperature comfort peaks at 15 C and reaches zero at -20 C and 50 C. The
+   temperature model here is wider (-119 C to 123 C on land) than
+   Randlebrot's (-40 C to 40 C). Habitability still concentrates in the
+   terminus, but the band has not been tuned.
+2. Whether macro resolution is fine enough for provinces (roughly 970 in
    Randlebrot at 8x the linear resolution).
-4. How generated factions map onto the named factions in the lore.
-5. Resource desirability is close to saturated: about 83% of cells score
-   above 0.7 on the current world. The tectonic and rock hardness layers here
-   have a different value distribution from Randlebrot's, so the weights need
-   recalibrating before stage 2 uses this grid.
-6. `is_ocean` is `continentalness < SEA_LEVEL`, as in Randlebrot. On this world
-   that also covers dried dayside basins (salt flats) and frozen nightside
-   seas, which therefore score 0 for habitability and navigation. Decide
-   whether those should count as land.
+3. How generated factions map onto the named factions in the lore.

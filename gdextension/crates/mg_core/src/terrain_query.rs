@@ -14,11 +14,13 @@ pub trait TerrainQuery: Send + Sync {
     fn rock_hardness_at(&self, x: usize, y: usize) -> f64;
     fn river_at(&self, x: usize, y: usize) -> f64;
     fn drainage_at(&self, x: usize, y: usize) -> f64;
+    /// Tectonic stress: 1.0 at a plate boundary, 0.0 in a quiet plate interior.
     fn tectonic_at(&self, x: usize, y: usize) -> f64;
     fn peaks_valleys_at(&self, x: usize, y: usize) -> f64;
     fn aridity_at(&self, x: usize, y: usize) -> f64;
     fn slope_at(&self, x: usize, y: usize) -> f64;
 
+    /// True where the surface is liquid water.
     fn is_ocean(&self, x: usize, y: usize) -> bool;
     fn is_river(&self, x: usize, y: usize) -> bool;
 }

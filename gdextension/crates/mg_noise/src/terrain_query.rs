@@ -1,7 +1,7 @@
 //! `TerrainQuery` over a `BiomeMap`, so consumers such as LifeGen can read
 //! terrain without depending on `BiomeMap` itself. Cells are map pixels.
 
-use crate::biome_map::{BiomeMap, SEA_LEVEL};
+use crate::biome_map::{tile_has_fluid_surface, BiomeMap};
 use mg_core::{TerrainQuery, TileType};
 
 /// Value of `layer` at a cell; 0.0 outside the map.
@@ -61,8 +61,13 @@ impl TerrainQuery for BiomeMap {
             .get(y * self.width + x)
             .map_or(0.0, |&area| area as f64)
     }
+    /// The tectonic layer stores distance from the nearest plate boundary
+    /// (1.0 = quiet interior), so stress is its complement.
     fn tectonic_at(&self, x: usize, y: usize) -> f64 {
-        cell(self, &self.tectonic, x, y)
+        if x >= self.width || y >= self.height {
+            return 0.0;
+        }
+        1.0 - cell(self, &self.tectonic, x, y)
     }
     fn peaks_valleys_at(&self, x: usize, y: usize) -> f64 {
         cell(self, &self.peaks_valleys, x, y)
@@ -86,8 +91,11 @@ impl TerrainQuery for BiomeMap {
         (dx * dx + dy * dy).sqrt()
     }
 
+    /// Liquid surface water, by the same rule as `MacroOceanMask`. Dried
+    /// dayside basins and frozen nightside seas lie below sea level but are
+    /// not ocean.
     fn is_ocean(&self, x: usize, y: usize) -> bool {
-        self.continentalness_at(x, y) < SEA_LEVEL
+        tile_has_fluid_surface(self.biome_at(x, y))
     }
     fn is_river(&self, x: usize, y: usize) -> bool {
         self.river_at(x, y) > 0.0
