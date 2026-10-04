@@ -1,6 +1,6 @@
 # Spec 011 - LifeGen: Civilisation Layers
 
-**Status:** In progress (stages 1 and 2 implemented)
+**Status:** In progress (stages 1 to 3 implemented)
 **Priority:** Medium
 **Depends On:** Spec 010 (macro map), `mg_core::TerrainQuery`
 
@@ -53,7 +53,7 @@ The river-proximity bonus (1.5 world units) reaches only cells next to a river.
 LifeGen uses its own `civ_seed`, separate from the terrain seed, so politics
 can be regenerated without changing terrain. Stage 1 is a pure function of
 terrain and needs no seed. From stage 2 on, each stage derives its own random
-stream from `civ_seed` (stage 2 uses `civ_seed + 2`).
+stream from `civ_seed` (stage 2 uses `civ_seed + 2`, stage 3 `civ_seed + 3`).
 
 ## Stages
 
@@ -122,11 +122,45 @@ Result on seed 42, civ seed 1: 1194 provinces.
 | 0.40 to 0.60 | 176 | 384 |
 | 0.60 and over | 554 | 108 |
 
-### Stage 3 - Factions
+### Stage 3 - Factions (implemented)
 
-Capital placement by habitability with minimum spacing, terrain-weighted
-region growing over the province adjacency graph. Output: faction id per
-cell, faction table. Provinces may stay unclaimed.
+Works on the province graph, not on cells.
+
+1. **Capitals.** Provinces with mean habitability over 0.35 are ranked by
+   habitability, plus 0.2 for a major river and 0.1 for a coast. The best are
+   taken in order, each at least 18.75 world units from every capital already
+   chosen. Target count is 50 plus one per 80 habitable provinces (at most 30
+   extra). If fewer than 50 fit, a second pass runs at half the spacing.
+2. **Budgets.** Each faction may hold 5 to 25 provinces, drawn at random from
+   a range set by the quality of its capital.
+3. **Growth.** All factions grow at once (Dijkstra over province adjacency).
+   Taking a province costs its terrain cost times 5 plus 0.4 per world unit
+   between province sites. The cheapest claim wins. A faction stops at its
+   budget. Provinces with habitability under 0.1 cannot be claimed.
+4. **Absorption.** Leftover claimable provinces next to a faction with room
+   (under 25 provinces) join the smallest such neighbour, repeated until
+   nothing changes. This closes holes between factions.
+5. **States.** Every province ends as Claimed (by a faction), Unclaimed
+   (habitable, no faction holds it) or Uninhabited (habitability under 0.1).
+
+API: `mg_life::generate_factions(province_map, cells_per_world_unit,
+civ_seed)` returns a `FactionMap`: a political state per province and a
+faction table (capital province, province count, area).
+
+Export: a "Factions" layer (capitals marked white, unclaimed land grey), and
+the faction and state of every province in `map.json`.
+
+Differences from Randlebrot:
+
+- **Leftover provinces are Unclaimed.** Randlebrot's code made each one its
+  own single-province faction and never assigned `Unclaimed`, although its
+  design said they should be. This port follows the design.
+- **No generated names.** Randlebrot produced names like "Kingdom of
+  Valdris". Factions here are numbered until open question 3 is settled.
+
+Result on seed 42, civ seed 1: 64 factions, 1 to 25 provinces each (median
+9). 778 provinces claimed (48% of land), 416 unclaimed (52%), none
+uninhabited. Capitals sit along the terminus coasts.
 
 ### Stage 4 - Settlements
 
@@ -143,7 +177,7 @@ Trade graph between settlements along roads.
 
 ## Storage
 
-Stages 1 and 2 take about a second on the macro map and are computed at
+Stages 1 to 3 take about a second on the macro map and are computed at
 export time; nothing is stored. A stored LifeGen artifact
 (`generate lifegen <layers_tag> <civ_seed>`) is introduced when a stage
 becomes slow or when the runtime needs to load LifeGen data.
@@ -152,7 +186,9 @@ becomes slow or when the runtime needs to load LifeGen data.
 
 - Unit tests in `mg_life` for each stage (stage 1: river distance field,
   river bonuses, traversability; stage 2: full land coverage, no province
-  spans ocean, determinism per seed, symmetric adjacency, islets).
+  spans ocean, determinism per seed, symmetric adjacency, islets; stage 3:
+  capital spacing, no capital in barren land, growth stops at barren land,
+  province limit per faction, determinism per seed).
 - `margins_grip inspect layer-stats <layers_tag>` prints layer percentiles,
   LifeGen grid percentiles and province counts and areas.
 - Each stage's layers are inspected on the site map page against the terrain
@@ -188,3 +224,9 @@ desirability 0.25 / 0.34 / 0.55.
    about 290. Whether that is the right size for a province is a design call;
    it is set by the two seed radii.
 3. How generated factions map onto the named factions in the lore.
+4. No province is Uninhabited. The 0.1 habitability threshold is below every
+   province's mean on this world (the lowest are about 0.2), so factions can
+   expand to the sub-stellar point and the deep night. A threshold near 0.25
+   would leave about 98 provinces uninhabited.
+5. Unclaimed land is one undifferentiated state. The lore has nomads and
+   orders operating there; nothing represents them yet.
