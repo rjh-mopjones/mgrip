@@ -234,8 +234,9 @@ World map for the site (generated, gitignored, needs a layers artifact):
 ./gdextension/target/release/margins_grip export site-map site/dist/map
 ```
 
-Writes one PNG per layer in the artifact, `network.json` (road paths, trade
-flows, river courses), `chunks.bin` (per chunk: light level, zone, biome, province
+Writes one PNG per layer in the artifact, `relief.png` (hillshade of the macro
+heightmap), `network.json` (road paths, trade flows, river courses),
+`chunks.bin` (per chunk: light level, zone, biome, province
 id) and `map.json` (province, faction and settlement tables). The map's seed
 must match `GameState.world_seed`, or the map and the spawned terrain will
 disagree.

@@ -14,6 +14,7 @@
 
 const DEFAULT_SPAWN_CHUNK = { x: 440, y: 220 };
 const TERRAIN_IMAGE = "macromap.png";
+const RELIEF_IMAGE = "relief.png";
 const MAX_ZOOM = 16;
 const ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_RATE = 0.0015;
@@ -61,6 +62,8 @@ const MAP_MODES = [
 	{
 		id: "political",
 		name: "Political",
+		// A darker band inside each state's border.
+		stateBands: true,
 		legend:
 			"Coloured: held by a state. Plain terrain: unclaimed. Dark: uninhabited.",
 		colour: (province) => {
@@ -418,12 +421,14 @@ precision highp int;
 uniform sampler2D uBase;        // terrain, or a raw layer
 uniform sampler2D uProvinceIds; // one texel per chunk: province id, low byte in r
 uniform sampler2D uProvinces;   // row 0: colour per province; row 1: owning faction
+uniform sampler2D uRelief;      // hillshade: 0.5 is flat ground
 uniform vec2 uCanvas;        // pixels
 uniform vec2 uWorld;         // chunks
 uniform vec2 uCentre;        // chunk at the middle of the canvas
 uniform float uPixelsPerChunk;
 uniform float uPixelRatio;
 uniform float uProvinceLayer; // 0 hides tints and borders (raw layers)
+uniform float uStateBands;    // 1 draws a darker band inside state borders
 uniform int uHovered;
 uniform int uSelected;
 
@@ -431,6 +436,12 @@ out vec4 colour;
 
 const vec3 BORDER = vec3(0.063, 0.055, 0.149);
 const vec3 OFF_MAP = vec3(0.933, 0.945, 0.957);
+// How strongly the hillshade lightens and darkens the land.
+const float RELIEF_STRENGTH = 0.9;
+// The sea is lighter within this many chunks of land.
+const float SHELF_CHUNKS = 3.0;
+// Width, in pixels, of the darker band inside a state's border.
+const float STATE_BAND_PIXELS = 5.0;
 // Eight directions round a circle, for finding borders.
 const vec2 RING[8] = vec2[8](
 	vec2(1.0, 0.0), vec2(0.707, 0.707), vec2(0.0, 1.0), vec2(-0.707, 0.707),
@@ -481,11 +492,25 @@ void main() {
 	vec3 shade = texture(uBase, chunk / uWorld).rgb;
 
 	int province = provinceAt(chunk);
+	if (province == 0 && uProvinceLayer > 0.0) {
+		// A lighter shelf along the coast: the more land near a point of sea,
+		// the lighter it is.
+		float land = 0.0;
+		for (int direction = 0; direction < 8; direction++) {
+			vec2 reach = RING[direction] * SHELF_CHUNKS;
+			if (provinceOfCell(ivec2(floor(chunk + reach * 0.5))) != 0) land += 0.6;
+			if (provinceOfCell(ivec2(floor(chunk + reach))) != 0) land += 0.4;
+		}
+		shade = mix(shade, shade * 1.25 + 0.06, min(land / 4.0, 1.0));
+	}
 	if (province != 0 && uProvinceLayer > 0.0) {
-		// Tint the terrain rather than cover it, so relief shows through.
+		// Tint the terrain rather than cover it, so its texture shows through.
 		vec4 tint = texelFetch(uProvinces, ivec2(province, 0), 0);
-		float relief = dot(shade, vec3(0.299, 0.587, 0.114));
-		shade = mix(shade, tint.rgb * mix(0.7, 1.15, relief), tint.a);
+		float brightness = dot(shade, vec3(0.299, 0.587, 0.114));
+		shade = mix(shade, tint.rgb * mix(0.7, 1.15, brightness), tint.a);
+		// Hillshade over terrain and tint alike.
+		float relief = texture(uRelief, chunk / uWorld).r - 0.5;
+		shade *= 1.0 + relief * RELIEF_STRENGTH;
 		if (province == uSelected) {
 			shade = mix(shade, vec3(1.0), 0.28);
 		} else if (province == uHovered) {
@@ -499,6 +524,7 @@ void main() {
 		float provinceHits = 0.0;
 		float stateHits = 0.0;
 		float outlineHits = 0.0;
+		float bandHits = 0.0;
 		for (int direction = 0; direction < 8; direction++) {
 			vec2 reach = RING[direction] * uPixelRatio / uPixelsPerChunk;
 			int thin = provinceAt(chunk + reach * 0.6);
@@ -506,8 +532,13 @@ void main() {
 			int thick = provinceAt(chunk + reach * 1.2);
 			if (thick != province && (thick == 0 || ownerOf(thick) != owner)) stateHits += 1.0;
 			if (province == uSelected && provinceAt(chunk + reach * 2.0) != province) outlineHits += 1.0;
+			if (uStateBands > 0.0 && owner != 0) {
+				int beyond = provinceAt(chunk + reach * STATE_BAND_PIXELS);
+				if (beyond == 0 || ownerOf(beyond) != owner) bandHits += 1.0;
+			}
 		}
 		// Province borders fade when zoomed far out; state borders stay.
+		shade = mix(shade, tint.rgb * 0.45, min(bandHits / 4.0, 1.0) * 0.45);
 		float provinceStrength = mix(0.25, 0.7, smoothstep(1.5, 5.0, uPixelsPerChunk / uPixelRatio));
 		shade = mix(shade, BORDER, min(provinceHits / 3.0, 1.0) * provinceStrength);
 		shade = mix(shade, BORDER, min(stateHits / 3.0, 1.0) * 0.9);
@@ -547,8 +578,8 @@ function createRenderer() {
 	const [wide, high] = [meta.chunks_wide, meta.chunks_high];
 	const provinceCount = meta.provinces.length;
 
-	// Texture units: 0 base image, 1 province ids, 2 province table.
-	["uBase", "uProvinceIds", "uProvinces"].forEach((name, unit) => {
+	// Texture units: 0 base image, 1 province ids, 2 province table, 3 relief.
+	["uBase", "uProvinceIds", "uProvinces", "uRelief"].forEach((name, unit) => {
 		gl.uniform1i(uniform(name), unit);
 	});
 
@@ -657,8 +688,13 @@ function createRenderer() {
 				table,
 			);
 		},
-		draw({ baseImage, showProvinces }) {
+		draw({ baseImage, showProvinces, stateBands }) {
 			gl.viewport(0, 0, canvas.width, canvas.height);
+			// Look the texture up first: creating one changes the active unit.
+			const relief = imageTexture(RELIEF_IMAGE);
+			gl.activeTexture(gl.TEXTURE3);
+			gl.bindTexture(gl.TEXTURE_2D, relief);
+			gl.uniform1f(uniform("uStateBands"), stateBands ? 1 : 0);
 			gl.activeTexture(gl.TEXTURE0);
 			gl.bindTexture(gl.TEXTURE_2D, imageTexture(baseImage));
 			gl.uniform2f(uniform("uCanvas"), canvas.width, canvas.height);
@@ -1016,6 +1052,7 @@ function draw() {
 		renderer.draw({
 			baseImage: rawLayer ?? TERRAIN_IMAGE,
 			showProvinces: !rawLayer,
+			stateBands: mapMode.stateBands === true,
 		});
 		labelContext.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
 		// A raw layer is shown bare.

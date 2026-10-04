@@ -1418,6 +1418,10 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     );
     let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
 
+    relief_image(&map, &province_map.province_ids)
+        .save(output_dir.join(SITE_MAP_RELIEF_IMAGE))
+        .unwrap_or_else(|e| fail(format!("saving {SITE_MAP_RELIEF_IMAGE}: {e}")));
+
     let names = mg_life::generate_names(
         &province_map,
         &faction_map,
@@ -1611,6 +1615,49 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
     let blend = position - lower as f32;
     let channel = |i: usize| (RAMP[lower][i] + (RAMP[lower + 1][i] - RAMP[lower][i]) * blend) as u8;
     [channel(0), channel(1), channel(2), 255]
+}
+
+const SITE_MAP_RELIEF_IMAGE: &str = "relief.png";
+/// The steepest slopes (all but this share of land cells) reach full light
+/// or full shadow.
+const RELIEF_FULL_CONTRAST_SHARE: f64 = 0.02;
+
+/// Hillshade of the macro heightmap, one pixel per chunk: 128 is flat ground,
+/// brighter faces the light, darker faces away. Lit from the north-west, the
+/// map-drawing convention (lit from below, hills read as hollows). The sea
+/// (`province_ids` 0) is left flat.
+fn relief_image(map: &BiomeMap, province_ids: &[u16]) -> image::GrayImage {
+    let (width, height) = (map.width, map.height);
+    let height_at = |x: usize, y: usize| map.heightmap[y * width + x];
+    // How steeply the ground rises towards the north-west.
+    let rise: Vec<f64> = (0..width * height)
+        .map(|cell| {
+            let (x, y) = (cell % width, cell / width);
+            if province_ids[cell] == 0 {
+                return 0.0;
+            }
+            // The map joins east to west; north and south edges are clamped.
+            let east = height_at((x + 1) % width, y);
+            let west = height_at((x + width - 1) % width, y);
+            let south = height_at(x, (y + 1).min(height - 1));
+            let north = height_at(x, y.saturating_sub(1));
+            // A slope that rises to the south-east faces north-west.
+            (east - west) + (south - north)
+        })
+        .collect();
+
+    let mut steepness: Vec<f64> = rise.iter().map(|r| r.abs()).filter(|r| *r > 0.0).collect();
+    steepness.sort_by(f64::total_cmp);
+    let full_contrast_index =
+        ((steepness.len() as f64) * (1.0 - RELIEF_FULL_CONTRAST_SHARE)) as usize;
+    let full_contrast = steepness.get(full_contrast_index).copied().unwrap_or(1.0);
+
+    let pixels = rise
+        .iter()
+        .map(|rise| (128.0 + (rise / full_contrast).clamp(-1.0, 1.0) * 127.0) as u8)
+        .collect();
+    image::GrayImage::from_raw(width as u32, height as u32, pixels)
+        .expect("relief buffer matches the map size")
 }
 
 /// Sort layer image files into `SITE_MAP_LAYER_GROUPS`, dropping empty groups.

@@ -381,6 +381,9 @@ province ids plus a table of one colour per province. Map modes (political,
 terrain, habitability, light, resources), hover and selection only rewrite
 the table. Province and state borders are drawn in the shader, which also
 turns the stair-steps of the one-cell-per-chunk province grid into diagonals.
+The shader also lays a hillshade (`relief.png`, from the macro heightmap, lit
+from the north-west) over the land, lightens the sea near coasts, and in
+political mode darkens a band inside each state's border.
 
 Rivers, roads, trade flows and settlements are drawn as lines and markers
 from `network.json`, so they stay sharp at any zoom. What shows depends on
