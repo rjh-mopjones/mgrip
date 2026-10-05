@@ -260,65 +260,72 @@ fn river_water_is_liquid(light_level: f64, temperature_c: f64) -> bool {
         && (RIVER_MIN_TEMPERATURE_C..=RIVER_MAX_TEMPERATURE_C).contains(&temperature_c)
 }
 
-/// Set `surface_from` on every segment. `is_wet(x, y)` says whether liquid
-/// water can lie at a point: on land in the terminus, or in liquid sea.
+/// A stretch of surface water shorter than this many path points is not
+/// worth drawing.
+const SURFACE_MIN_POINTS: usize = 2;
+
+/// Set each segment's stretch of surface water. `is_wet(x, y)` says whether
+/// liquid water can lie at a point: on land in the terminus, or in liquid
+/// sea. `is_open_sea(x, y)` says whether a point is in a body of water.
 ///
-/// A river is drawn only where its water stays liquid all the way to the sea.
-/// So a segment carries a surface river from the first point after which its
-/// whole path is wet, provided every segment downstream of it is wet from end
-/// to end and the last one ends in a body of water (`is_open_sea`), not in a
-/// pond.
-/// Rivers therefore start where the country turns wet enough, and never stop
-/// on dry land.
+/// A river runs wherever its water is liquid, so each segment carries one
+/// over its longest wet stretch. Where that stretch gives out before the sea
+/// or the next river (the ground turns too dry or too cold, or the water has
+/// gathered in a pond) the river ends in a terminal lake. It never just
+/// stops (`specs/013`).
 fn mark_surface_rivers(
     segments: &mut [RiverSegment],
     is_wet: impl Fn(f64, f64) -> bool,
     is_open_sea: impl Fn(f64, f64) -> bool,
 ) {
-    let meets_sea_at = |segment: &RiverSegment| {
-        segment.path.iter().position(|&(x, y)| is_open_sea(x, y))
-    };
-    // First point from which the rest of the path is wet; None if the foot is
-    // dry. The river ends where it meets a body of water: the path beyond
-    // only anchors the mouth, and the water there may be frozen further out.
-    let wet_from: Vec<Option<usize>> = segments
+    // The river ends where it meets a body of water: the path beyond only
+    // anchors the mouth, and the water there may be frozen further out.
+    let stretches: Vec<Option<(usize, usize, bool)>> = segments
         .iter()
         .map(|segment| {
-            let river = match meets_sea_at(segment) {
-                Some(sea) => &segment.path[..=sea],
-                None => &segment.path[..],
-            };
-            match river.iter().rposition(|&(x, y)| !is_wet(x, y)) {
-                None => Some(0),
-                Some(last_dry) if last_dry + 1 < river.len() => Some(last_dry + 1),
-                Some(_) => None,
+            let meets_sea = segment.path.iter().position(|&(x, y)| is_open_sea(x, y));
+            let river_end = meets_sea.map_or(segment.path.len(), |sea| sea + 1);
+            let (from, to) = longest_run(&segment.path[..river_end], |&(x, y)| is_wet(x, y));
+            if to - from < SURFACE_MIN_POINTS {
+                return None;
             }
+            // A stretch that runs to the sea takes the mouth's anchor with it.
+            let reaches_end = to == river_end;
+            let to = if reaches_end { segment.path.len() } else { to };
+            Some((from, to, reaches_end && meets_sea.is_some()))
         })
         .collect();
 
-    let ends_in_open_sea = |segment: &RiverSegment| meets_sea_at(segment).is_some();
-    // Whether water leaving a segment's foot stays liquid down to the sea.
-    let reaches_sea: Vec<bool> = (0..segments.len())
-        .map(|start| {
-            let mut current = start;
-            for _ in 0..segments.len() {
-                match segments[current].downstream {
-                    Some(next) if next < segments.len() => {
-                        if wet_from[next] != Some(0) {
-                            return false;
-                        }
-                        current = next;
-                    }
-                    _ => return ends_in_open_sea(&segments[current]),
-                }
-            }
-            false
-        })
-        .collect();
-
-    for (index, segment) in segments.iter_mut().enumerate() {
-        segment.surface_from = wet_from[index].filter(|_| reaches_sea[index]);
+    for index in 0..segments.len() {
+        let Some((from, to, reaches_sea)) = stretches[index] else {
+            segments[index].surface_from = None;
+            continue;
+        };
+        let flows_on = to == segments[index].path.len()
+            && segments[index]
+                .downstream
+                .and_then(|next| stretches.get(next).copied().flatten())
+                .is_some_and(|(downstream_from, _, _)| downstream_from == 0);
+        let segment = &mut segments[index];
+        segment.surface_from = Some(from);
+        segment.surface_to = to;
+        segment.ends_in_lake = !reaches_sea && !flows_on;
     }
+}
+
+/// The longest unbroken run of items that pass `test`, as `(from, to)` with
+/// `to` not included. `(0, 0)` if none pass.
+fn longest_run<T>(items: &[T], test: impl Fn(&T) -> bool) -> (usize, usize) {
+    let (mut best, mut start) = ((0, 0), 0);
+    for index in 0..=items.len() {
+        if index == items.len() || !test(&items[index]) {
+            if index - start > best.1 - best.0 {
+                best = (start, index);
+            }
+            start = index + 1;
+        }
+    }
+    best
 }
 
 /// The direction (an index into `D8_OFFSETS`) from each cell to the cell it
@@ -357,11 +364,17 @@ pub struct RiverSegment {
     pub character: RiverCharacter,
     pub meander_offsets: Vec<f64>,
     pub strahler_order: u32,
-    /// Index of the first point of `path` from which liquid water runs on the
-    /// surface all the way to the sea. `None` if this segment carries no such
-    /// river: it lies in country too dry or too cold, or the water it would
-    /// carry does not reach liquid sea. Only this part is drawn.
+    /// The stretch of `path` that carries liquid water on the surface, from
+    /// the point at `surface_from` up to but not including `surface_to`.
+    /// `None` if the segment carries none: it lies in country too dry or too
+    /// cold. Only this stretch is drawn.
     pub surface_from: Option<usize>,
+    pub surface_to: usize,
+    /// Whether the stretch ends in a terminal lake: its water goes no
+    /// further, because the ground beyond is too dry or too cold, or because
+    /// it has run into a pond. Otherwise it ends in the sea or in the
+    /// segment downstream.
+    pub ends_in_lake: bool,
 }
 
 // ─── River Chain (connected headwater → mouth path) ────────────────────────
@@ -1118,6 +1131,8 @@ fn build_river_tree(
             character: RiverCharacter::Permanent,
             strahler_order: 1,
             surface_from: None,
+            surface_to: 0,
+            ends_in_lake: false,
         });
     }
 
@@ -1403,6 +1418,13 @@ const MEANDER_WIGGLE_FREQUENCY: f64 = 0.25;
 /// At any resolution a river covers at least this many samples either side of
 /// its centre line, so thin rivers do not vanish on coarse grids.
 const COURSE_MIN_HALF_WIDTH_SAMPLES: f64 = 0.5;
+/// A terminal lake is this many of its river's half-widths in radius, and at
+/// least `LAKE_MIN_RADIUS_WU`. It is kept as a course of its own: a stub too
+/// short to see, as wide as the lake, so everything that draws or carves
+/// rivers draws and carves the lake too.
+const LAKE_RADIUS_HALF_WIDTHS: f32 = 3.0;
+const LAKE_MIN_RADIUS_WU: f32 = 0.12;
+const LAKE_STUB_WU: f32 = 0.01;
 /// A river's last stretch before the sea straightens out over this length,
 /// so its meander cannot swing the mouth away from the water.
 const MOUTH_STRAIGHTEN_WU: f64 = 6.0;
@@ -1493,7 +1515,11 @@ pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
             .upstream
             .iter()
             .filter_map(|&upstream| segments.get(upstream))
-            .filter(|upstream| upstream.surface_from.is_some())
+            .filter(|upstream| {
+                upstream.surface_from.is_some()
+                    && upstream.surface_to == upstream.path.len()
+                    && !upstream.ends_in_lake
+            })
             .map(|upstream| upstream.drainage_area)
             .max()
             .unwrap_or(0) as f64
@@ -1512,15 +1538,17 @@ pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
         .enumerate()
         .filter_map(|(index, segment)| Some((index, segment, segment.surface_from?)))
         .filter(|&(index, segment, surface_from)| {
-            segment.path.len() - surface_from >= 2
+            segment.surface_to - surface_from >= 2
                 && system_order(index) >= COURSE_MIN_SYSTEM_STRAHLER
         })
-        .map(|(index, segment, surface_from)| {
+        .flat_map(|(index, segment, surface_from)| {
             // A segment's path stops a cell short of the segment it flows
-            // into. Carry it on to that segment's head so the river is unbroken.
-            let mut raw_path = segment.path[surface_from..].to_vec();
+            // into. Carry it on to that segment's head so the river is
+            // unbroken, unless it ends in a lake first.
+            let mut raw_path = segment.path[surface_from..segment.surface_to].to_vec();
             let downstream_head = segment
                 .downstream
+                .filter(|_| !segment.ends_in_lake)
                 .and_then(|next| segments.get(next))
                 .and_then(|next| next.path.first());
             if let Some(&head) = downstream_head {
@@ -1547,13 +1575,13 @@ pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
             let length = last * COURSE_POINT_SPACING_WU;
             let straighten_over = MOUTH_STRAIGHTEN_WU.min(length);
             let meander_share = |point: usize| {
-                if segment.downstream.is_some() || straighten_over <= 0.0 {
+                if segment.downstream.is_some() || segment.ends_in_lake || straighten_over <= 0.0 {
                     return 1.0;
                 }
                 let to_foot = (last - point as f64) * COURSE_POINT_SPACING_WU;
                 (to_foot / straighten_over).min(1.0)
             };
-            RiverCourse {
+            let course = RiverCourse {
                 points: path
                     .iter()
                     .enumerate()
@@ -1572,7 +1600,19 @@ pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
                         half_width(drainage, segment.character) as f32
                     })
                     .collect(),
-            }
+            };
+            // A river that goes no further ends in a lake, wider than the
+            // river that feeds it.
+            let lake = segment.ends_in_lake.then(|| {
+                let (x, y) = *course.points.last().expect("a course has points");
+                let radius = (course.half_widths.last().copied().unwrap_or(0.0) * LAKE_RADIUS_HALF_WIDTHS)
+                    .max(LAKE_MIN_RADIUS_WU);
+                RiverCourse {
+                    points: vec![(x, y), (x + LAKE_STUB_WU, y)],
+                    half_widths: vec![radius, radius],
+                }
+            });
+            std::iter::once(course).chain(lake)
         })
         .collect()
 }
@@ -1936,6 +1976,8 @@ mod course_tests {
             meander_offsets: Vec::new(),
             strahler_order: 3,
             surface_from: Some(0),
+            surface_to: path.len(),
+            ends_in_lake: false,
         }
     }
 
@@ -2023,32 +2065,66 @@ mod course_tests {
     }
 
     #[test]
-    fn no_river_is_drawn_above_a_dry_stretch() {
+    fn a_river_that_meets_dry_ground_ends_in_a_lake() {
         let mut segments = headwater_and_trunk();
         // The trunk crosses dry ground at y = 130 before reaching the sea.
         mark_surface_rivers(&mut segments, |_, y| y != 130.0, |_, y| y >= 140.0);
 
-        assert_eq!(segments[0].surface_from, None);
-        assert_eq!(segments[1].surface_from, Some(2));
-    }
-
-    #[test]
-    fn no_river_is_drawn_if_it_does_not_end_in_liquid_sea() {
-        let mut segments = headwater_and_trunk();
-        // The trunk's foot is frozen or dried out.
-        mark_surface_rivers(&mut segments, |_, y| y < 140.0, |_, y| y >= 140.0);
-
-        assert_eq!(segments[0].surface_from, None);
+        // The headwater runs its length and can go no further.
+        assert_eq!(segments[0].surface_from, Some(0));
+        assert!(segments[0].ends_in_lake);
+        // The trunk has no stretch of water long enough to draw.
         assert_eq!(segments[1].surface_from, None);
     }
 
     #[test]
-    fn no_river_is_drawn_if_it_ends_in_a_pond() {
+    fn a_river_that_reaches_a_frozen_or_dried_sea_ends_in_a_lake_at_its_edge() {
+        let mut segments = headwater_and_trunk();
+        mark_surface_rivers(&mut segments, |_, y| y < 140.0, |_, y| y >= 140.0);
+
+        assert_eq!(segments[0].surface_from, Some(0));
+        assert!(!segments[0].ends_in_lake);
+        assert_eq!((segments[1].surface_from, segments[1].surface_to), (Some(0), 2));
+        assert!(segments[1].ends_in_lake);
+    }
+
+    #[test]
+    fn a_river_that_ends_in_a_pond_ends_in_a_lake() {
         let mut segments = headwater_and_trunk();
         mark_surface_rivers(&mut segments, |_, _| true, |_, _| false);
 
-        assert_eq!(segments[0].surface_from, None);
-        assert_eq!(segments[1].surface_from, None);
+        assert!(!segments[0].ends_in_lake);
+        assert_eq!(segments[1].surface_from, Some(0));
+        assert!(segments[1].ends_in_lake);
+    }
+
+    #[test]
+    fn a_river_that_reaches_the_sea_ends_in_no_lake() {
+        let mut segments = headwater_and_trunk();
+        mark_surface_rivers(&mut segments, |_, _| true, |_, y| y >= 140.0);
+
+        assert!(!segments[0].ends_in_lake && !segments[1].ends_in_lake);
+    }
+
+    #[test]
+    fn a_lake_is_a_stub_of_a_course_wider_than_its_river() {
+        let mut network = RiverNetwork::empty(1024, 512);
+        network.segments = headwater_and_trunk();
+        network.segments[1].ends_in_lake = true;
+        network.rebuild_spatial_index();
+
+        // Headwater, trunk, and the trunk's lake.
+        assert_eq!(network.courses.len(), 3);
+        let (trunk, lake) = (&network.courses[1], &network.courses[2]);
+        assert_eq!(lake.points[0], *trunk.points.last().unwrap());
+        assert!(lake.half_widths[0] > *trunk.half_widths.last().unwrap());
+    }
+
+    #[test]
+    fn the_longest_run_is_found() {
+        let wet = [true, false, true, true, true, false, true];
+        assert_eq!(longest_run(&wet, |&is_wet| is_wet), (2, 5));
+        assert_eq!(longest_run(&[false, false], |&is_wet| is_wet), (0, 0));
     }
 
     #[test]
