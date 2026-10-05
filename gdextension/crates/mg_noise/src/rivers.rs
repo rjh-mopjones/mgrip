@@ -1398,8 +1398,8 @@ const COURSE_MAX_HALF_WIDTH_WU: f64 = 0.2;
 /// would make rivers cross themselves.
 const MEANDER_SWEEP_WU: f64 = 0.25;
 const MEANDER_SWEEP_FREQUENCY: f64 = 0.05;
-const MEANDER_WIGGLE_WU: f64 = 0.1;
-const MEANDER_WIGGLE_FREQUENCY: f64 = 0.18;
+const MEANDER_WIGGLE_WU: f64 = 0.3;
+const MEANDER_WIGGLE_FREQUENCY: f64 = 0.25;
 /// At any resolution a river covers at least this many samples either side of
 /// its centre line, so thin rivers do not vanish on coarse grids.
 const COURSE_MIN_HALF_WIDTH_SAMPLES: f64 = 0.5;
@@ -1607,19 +1607,114 @@ pub fn rasterize_courses(
 /// there, in world units.
 fn paint_courses(
     courses: &[RiverCourse],
+    origin: (f64, f64),
+    world_size: (f64, f64),
+    tile_size: (usize, usize),
+    value: impl Fn(f64, f64) -> f64,
+) -> Vec<f64> {
+    let (tile_w, tile_h) = tile_size;
+    let mut grid = vec![0.0f64; tile_w * tile_h];
+    if tile_w < 2 || tile_h < 2 {
+        return grid;
+    }
+    let sample_size = (world_size.0 / (tile_w - 1) as f64).max(world_size.1 / (tile_h - 1) as f64);
+    // A river thinner than a sample still marks the samples it runs through.
+    let min_half_width = COURSE_MIN_HALF_WIDTH_SAMPLES * sample_size;
+    near_courses(courses, origin, world_size, tile_size, 1.0, min_half_width, |cell, near| {
+        if near.distance >= near.half_width {
+            return;
+        }
+        let bank = sample_size.min(near.half_width * 0.5);
+        let coverage = ((near.half_width - near.distance) / bank).min(1.0);
+        let painted = value(coverage, near.own_half_width);
+        if painted > grid[cell] {
+            grid[cell] = painted;
+        }
+    });
+    grid
+}
+
+/// A river is cut into the ground this deep at its bed, per world unit of its
+/// half-width: the largest river (200 blocks across) lies about 8 blocks
+/// down, a headwater barely one.
+const BED_DEPTH_PER_HALF_WIDTH: f64 = 0.2;
+/// Beyond its banks a river has cut a valley floor this many half-widths out
+/// to either side, shallowest at its edge.
+const VALLEY_REACH_HALF_WIDTHS: f64 = 4.0;
+/// Depth of the valley floor at the bank, as a share of the bed's depth.
+const VALLEY_FLOOR_DEPTH_SHARE: f64 = 0.5;
+
+/// How far to lower the ground at each sample of a tile so that its rivers
+/// lie in channels with a valley floor beside them. Sample positions as
+/// `rasterize_courses`. Zero away from any river.
+///
+/// The macro and fine grids cut valleys down to a few hundred blocks across;
+/// this is the river's own bed and banks, which no grid is fine enough for.
+pub fn carve_depths(
+    courses: &[RiverCourse],
+    origin_x: f64,
+    origin_y: f64,
+    world_w: f64,
+    world_h: f64,
+    tile_w: usize,
+    tile_h: usize,
+) -> Vec<f64> {
+    let mut depths = vec![0.0f64; tile_w * tile_h];
+    if tile_w < 2 || tile_h < 2 {
+        return depths;
+    }
+    near_courses(
+        courses,
+        (origin_x, origin_y),
+        (world_w, world_h),
+        (tile_w, tile_h),
+        VALLEY_REACH_HALF_WIDTHS,
+        0.0,
+        |cell, near| {
+            let bed = near.own_half_width * BED_DEPTH_PER_HALF_WIDTH;
+            let depth = if near.distance <= near.half_width {
+                // The bed: deepest in midstream, rising to the banks.
+                let to_bank = near.distance / near.half_width;
+                bed * (1.0 - (1.0 - VALLEY_FLOOR_DEPTH_SHARE) * to_bank * to_bank)
+            } else {
+                // The valley floor: from bank height, easing out to nothing.
+                let reach = near.half_width * VALLEY_REACH_HALF_WIDTHS;
+                let out = ((near.distance - near.half_width) / (reach - near.half_width)).min(1.0);
+                bed * VALLEY_FLOOR_DEPTH_SHARE * (1.0 - out) * (1.0 - out)
+            };
+            if depth > depths[cell] {
+                depths[cell] = depth;
+            }
+        },
+    );
+    depths
+}
+
+/// A sample's place relative to a stretch of river.
+struct NearRiver {
+    /// Distance from the river's centre line, in world units.
+    distance: f64,
+    /// The river's half-width there, at least the minimum asked for.
+    half_width: f64,
+    /// The river's own half-width there.
+    own_half_width: f64,
+}
+
+/// Call `visit(sample index, where)` for every sample of a tile within
+/// `reach_half_widths` half-widths of each stretch of each river. A sample
+/// near several stretches is visited once for each. Rivers are treated as at
+/// least `min_half_width` wide. The map joins east to west.
+fn near_courses(
+    courses: &[RiverCourse],
     (origin_x, origin_y): (f64, f64),
     (world_w, world_h): (f64, f64),
     (tile_w, tile_h): (usize, usize),
-    value: impl Fn(f64, f64) -> f64,
-) -> Vec<f64> {
-    let mut grid = vec![0.0f64; tile_w * tile_h];
-    if courses.is_empty() || tile_w < 2 || tile_h < 2 {
-        return grid;
-    }
+    reach_half_widths: f64,
+    min_half_width: f64,
+    mut visit: impl FnMut(usize, NearRiver),
+) {
     let step_x = world_w / (tile_w - 1) as f64;
     let step_y = world_h / (tile_h - 1) as f64;
-    let sample_size = step_x.max(step_y);
-    let min_half_width = COURSE_MIN_HALF_WIDTH_SAMPLES * sample_size;
     let (max_x, max_y) = (origin_x + world_w, origin_y + world_h);
 
     for course in courses {
@@ -1630,7 +1725,7 @@ fn paint_courses(
                 let (own_a, own_b) = (widths[0] as f64, widths[1] as f64);
                 let half_a = own_a.max(min_half_width);
                 let half_b = own_b.max(min_half_width);
-                let reach = half_a.max(half_b);
+                let reach = half_a.max(half_b) * reach_half_widths;
                 let (low_x, high_x) = (ax.min(bx) - reach, ax.max(bx) + reach);
                 let (low_y, high_y) = (ay.min(by) - reach, ay.max(by) + reach);
                 if high_x < origin_x || low_x > max_x || high_y < origin_y || low_y > max_y {
@@ -1648,29 +1743,31 @@ fn paint_courses(
                     let wy = origin_y + py as f64 * step_y;
                     for px in first_px..=last_px {
                         let wx = origin_x + px as f64 * step_x;
-                        // Nearest point on the segment, as a fraction along it.
+                        // Nearest point on the stretch, as a fraction along it.
                         let along = if length_squared > 0.0 {
                             (((wx - ax) * dx + (wy - ay) * dy) / length_squared).clamp(0.0, 1.0)
                         } else {
                             0.0
                         };
                         let (off_x, off_y) = (wx - (ax + dx * along), wy - (ay + dy * along));
-                        let distance = (off_x * off_x + off_y * off_y).sqrt();
                         let half_width = half_a + (half_b - half_a) * along;
-                        if distance >= half_width {
+                        let distance = (off_x * off_x + off_y * off_y).sqrt();
+                        if distance >= half_width * reach_half_widths {
                             continue;
                         }
-                        let bank = sample_size.min(half_width * 0.5);
-                        let coverage = ((half_width - distance) / bank).min(1.0);
-                        let painted = value(coverage, own_a + (own_b - own_a) * along);
-                        let cell = &mut grid[py * tile_w + px];
-                        *cell = cell.max(painted);
+                        visit(
+                            py * tile_w + px,
+                            NearRiver {
+                                distance,
+                                half_width,
+                                own_half_width: own_a + (own_b - own_a) * along,
+                            },
+                        );
                     }
                 }
             }
         }
     }
-    grid
 }
 
 // ─── Rasterize from Global Network ──────────────────────────────────────────
@@ -2020,6 +2117,20 @@ mod course_tests {
         assert!(!river_water_is_liquid(0.8, 15.0));
         assert!(!river_water_is_liquid(0.4, -5.0));
         assert!(!river_water_is_liquid(0.4, 60.0));
+    }
+
+    #[test]
+    fn a_river_is_cut_deepest_in_midstream_with_a_valley_floor_beside_it() {
+        // A river 0.4 wide running north to south through a 2 by 2 tile.
+        let course = straight_course((1.0, -1.0), (1.0, 3.0), 0.2);
+        let depths = carve_depths(&[course], 0.0, 0.0, 2.0, 2.0, 41, 41);
+        // Along the middle row: one sample is 0.05 world units.
+        let at = |wx: f64| depths[20 * 41 + (wx / 0.05).round() as usize];
+
+        let (midstream, at_bank, on_floor, beyond) = (at(1.0), at(1.2), at(1.5), at(1.9));
+        assert!((midstream - 0.2 * BED_DEPTH_PER_HALF_WIDTH).abs() < 1e-9);
+        assert!(at_bank < midstream && at_bank > on_floor && on_floor > 0.0);
+        assert_eq!(beyond, 0.0);
     }
 
     #[test]

@@ -14,9 +14,12 @@ use crate::landscape::{
     LandscapeInputs, REFINED_CELLS_PER_MACRO_CELL,
 };
 use crate::rivers::{
-    rasterize_courses, rasterize_to_tile, sea_bodies, RiverCourse, RiverNetwork,
+    carve_depths, rasterize_courses, rasterize_to_tile, sea_bodies, RiverCourse, RiverNetwork,
     LOD_THRESHOLD_MACRO,
 };
+
+/// Cutting a river's bed never takes the ground closer to sea level than this.
+const RIVER_BED_ABOVE_SEA: f64 = 0.0005;
 use crate::strategy::{
     ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
     RockHardnessStrategy, TectonicPlatesStrategy,
@@ -943,6 +946,23 @@ impl BiomeMap {
             tile_w,
             tile_h,
         );
+
+        // Cut each river's bed and valley floor into the ground. The land
+        // is never taken below the sea by this, and the sea is left alone.
+        let carved = carve_depths(
+            river_courses,
+            origin_x,
+            origin_y,
+            world_size_x,
+            world_size_y,
+            tile_w,
+            tile_h,
+        );
+        for i in 0..tile_w * tile_h {
+            if self.heightmap[i] > SEA_LEVEL {
+                self.heightmap[i] = (self.heightmap[i] - carved[i]).max(SEA_LEVEL + RIVER_BED_ABOVE_SEA);
+            }
+        }
 
         // Secondary derives that depend on rivers.
         for i in 0..tile_w * tile_h {

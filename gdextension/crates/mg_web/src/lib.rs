@@ -78,17 +78,26 @@ impl World {
         );
         let rendered = render_terrain(&tile, Some(&self.heights));
 
-        // Height to shade: the land on a smooth curve through its cells.
-        // The tile's own heights run in straight lines between cells, which
-        // is creased along every cell edge and would shade as facets.
+        // Height to shade: the land on a smooth curve through its cells,
+        // with whatever the tile cut into it (river beds and valley floors).
+        // The tile's own heights run in straight lines between the land's
+        // cells, which is creased along every cell edge and would shade as
+        // facets.
         let relief_heights: Vec<f64> = (0..samples * samples)
             .map(|cell| {
                 let wx = tile_x + (cell % samples) as f64 * step;
                 let wy = tile_y + (cell / samples) as f64 * step;
-                match &self.macro_map.fine_heights {
-                    Some(fine) => fine.sample_smooth(wx, wy),
-                    None => self.macro_map.sample_field_smooth_at(&self.macro_map.heightmap, wx, wy),
-                }
+                let (creased, smooth) = match &self.macro_map.fine_heights {
+                    Some(fine) => (fine.sample(wx, wy), fine.sample_smooth(wx, wy)),
+                    None => {
+                        let heights = &self.macro_map.heightmap;
+                        (
+                            self.macro_map.sample_field_at(heights, wx, wy),
+                            self.macro_map.sample_field_smooth_at(heights, wx, wy),
+                        )
+                    }
+                };
+                smooth + (tile.heightmap[cell] - creased)
             })
             .collect();
         let height = |column: usize, row: usize| relief_heights[row * samples + column];
