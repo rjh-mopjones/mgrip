@@ -13,6 +13,23 @@ pub struct NormalizationHints {
     pub heightmap_max: f64,
 }
 
+impl NormalizationHints {
+    /// The height range of the macro map. Every tile of a world is rendered
+    /// against this one range, so tiles agree on their colours.
+    pub fn for_macro_map(macro_map: &BiomeMap) -> Self {
+        let (min, max) = macro_map
+            .heightmap
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), &height| {
+                (min.min(height), max.max(height))
+            });
+        Self {
+            heightmap_min: min,
+            heightmap_max: max,
+        }
+    }
+}
+
 /// Render a fully composited terrain image from all BiomeMap layers.
 /// Returns RGBA bytes (width * height * 4).
 pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec<u8> {

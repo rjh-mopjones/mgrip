@@ -349,34 +349,18 @@ fn generate_macro_tile(
     wx: f64,
     wy: f64,
 ) -> BiomeMap {
-    let mut tile = BiomeMap::generate(
-        seed,
-        wx,
-        wy,
-        TILE_WORLD_SIZE,
-        TILE_WORLD_SIZE,
-        TILE_RENDER_PX,
-        TILE_RENDER_PX,
-        1,
-        false,
-        false,
-        1.0,
-    );
-
-    tile.anchor_to_macro(
+    mg_noise::generate_map_tile(
         macro_map,
         &river_network.courses,
         seed,
+        mg_noise::MapTileDetail::Overview,
         wx,
         wy,
         TILE_WORLD_SIZE,
         TILE_WORLD_SIZE,
-        LOD_THRESHOLD_MACRO,
-        0.2,
-        false,
-    );
-
-    tile
+        TILE_RENDER_PX,
+        TILE_RENDER_PX,
+    )
 }
 
 fn downscale_rgba_2x_box(src: &[u8], src_w: usize, src_h: usize) -> Vec<u8> {
@@ -455,37 +439,9 @@ fn run_generate_layers(seed: u32, tag: &str) {
         .unwrap_or_else(|| RiverNetwork::empty(MACRO_MAP_W, MACRO_MAP_H));
 
     // ── Step 2: Scan global height range for shared normalization ────────────
-    let pb = spinner("Scanning tile height ranges for shared normalization…");
-    let mut global_min = f64::INFINITY;
-    let mut global_max = f64::NEG_INFINITY;
+    let normalization_hints = NormalizationHints::for_macro_map(&macro_map);
     let total_tiles = TILES_X * TILES_Y;
-    let mut tiles_done = 0usize;
-
-    for ty in 0..TILES_Y {
-        for tx in 0..TILES_X {
-            let wx = tx as f64 * TILE_WORLD_SIZE;
-            let wy = ty as f64 * TILE_WORLD_SIZE;
-            let tile = generate_macro_tile(&macro_map, seed, &river_network, wx, wy);
-
-            for &height in &tile.heightmap {
-                global_min = global_min.min(height);
-                global_max = global_max.max(height);
-            }
-
-            tiles_done += 1;
-            if tiles_done % TILES_X == 0 || tiles_done == total_tiles {
-                pb.set_message(format!(
-                    "Scanning tile height ranges… {tiles_done}/{total_tiles} tiles"
-                ));
-            }
-        }
-    }
-    pb.finish_and_clear();
-
-    let normalization_hints = NormalizationHints {
-        heightmap_min: global_min,
-        heightmap_max: global_max,
-    };
+    let mut tiles_done;
 
     // ── Step 3: Tile the world at meso detail → final 4096×2048 artifact ───
     let pb = spinner("Rendering macromap tiles…");
@@ -1593,14 +1549,27 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     fs::write(output_dir.join("map.json"), metadata_text)
         .unwrap_or_else(|e| fail(format!("writing map.json: {e}")));
 
+    // The macro pack: the map page generates sharper terrain from it as the
+    // view zooms in, exactly as the game generates its chunks.
+    let (province_count, faction_count) =
+        (province_map.provinces.len(), faction_map.factions.len());
+    let mut map = map;
+    map.river_network = Some(std::sync::Arc::new(river_network));
+    let pack = mg_artifacts::MacroPack::from_macro_map(manifest.seed, &map);
+    fs::write(
+        output_dir.join(SITE_MAP_MACRO_PACK),
+        pack.to_bytes().unwrap_or_else(|e| fail(e)),
+    )
+    .unwrap_or_else(|e| fail(format!("writing {SITE_MAP_MACRO_PACK}: {e}")));
+
     println!(
         "site map exported to {}: {} layer images (terrain {image_w}x{image_h}), chunks.bin {}x{} chunks, {} provinces, {} factions, {} settlements, {} roads, {} trade flows (layers '{tag}', seed {}, civ seed {civ_seed})",
         output_dir.display(),
         layer_files.len(),
         map.width,
         map.height,
-        province_map.provinces.len(),
-        faction_map.factions.len(),
+        province_count,
+        faction_count,
         settlements.len(),
         roads.len(),
         trade_flows.len(),
@@ -1625,6 +1594,7 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
 }
 
 const SITE_MAP_RELIEF_IMAGE: &str = "relief.png";
+const SITE_MAP_MACRO_PACK: &str = "world.mgmacro";
 /// The steepest slopes (all but this share of land cells) reach full light
 /// or full shadow.
 const RELIEF_FULL_CONTRAST_SHARE: f64 = 0.02;

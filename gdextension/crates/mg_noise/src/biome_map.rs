@@ -65,6 +65,80 @@ pub fn generate_macro_map(seed: u32) -> BiomeMap {
     )
 }
 
+/// How much detail a map tile carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapTileDetail {
+    /// As `macromap.png`: the broad shape of the land.
+    Overview,
+    /// As the game's chunks: the ground a player walks on.
+    Ground,
+}
+
+// Ground tiles use the settings the game generates its chunks with
+// (`world.gd` passes the same detail level and frequency scale).
+const OVERVIEW_DETAIL_LEVEL: u32 = 1;
+const GROUND_DETAIL_LEVEL: u32 = 2;
+const OVERVIEW_FREQUENCY_SCALE: f64 = 1.0;
+const GROUND_FREQUENCY_SCALE: f64 = 8.0;
+const MAP_TILE_MOUNTAIN_DETAIL_GAIN: f64 = 0.2;
+
+/// Terrain for a rectangle of the world at any resolution, agreeing with the
+/// macro map: the tiles of `macromap.png` and the tiles the website's map
+/// renders as it zooms in are both made by this.
+pub fn generate_map_tile(
+    macro_map: &BiomeMap,
+    river_courses: &[RiverCourse],
+    seed: u32,
+    detail: MapTileDetail,
+    origin_x: f64,
+    origin_y: f64,
+    world_size_x: f64,
+    world_size_y: f64,
+    samples_x: usize,
+    samples_y: usize,
+) -> BiomeMap {
+    let (detail_level, frequency_scale, river_threshold, micro_detail) = match detail {
+        MapTileDetail::Overview => (
+            OVERVIEW_DETAIL_LEVEL,
+            OVERVIEW_FREQUENCY_SCALE,
+            crate::rivers::LOD_THRESHOLD_MACRO,
+            false,
+        ),
+        MapTileDetail::Ground => (
+            GROUND_DETAIL_LEVEL,
+            GROUND_FREQUENCY_SCALE,
+            crate::rivers::LOD_THRESHOLD_MICRO,
+            true,
+        ),
+    };
+    let mut tile = BiomeMap::generate(
+        seed,
+        origin_x,
+        origin_y,
+        world_size_x,
+        world_size_y,
+        samples_x,
+        samples_y,
+        detail_level,
+        false,
+        false,
+        frequency_scale,
+    );
+    tile.anchor_to_macro(
+        macro_map,
+        river_courses,
+        seed,
+        origin_x,
+        origin_y,
+        world_size_x,
+        world_size_y,
+        river_threshold,
+        MAP_TILE_MOUNTAIN_DETAIL_GAIN,
+        micro_detail,
+    );
+    tile
+}
+
 /// A coarse heightmap of the whole world, cheap to generate. Saved macro data
 /// stores it; if this build produces a different probe for the same seed, the
 /// generator has changed and the saved data is stale.
@@ -137,6 +211,51 @@ impl MacroOceanMask {
 /// The x-axis wraps (cylindrical world); the y-axis is clamped. Used to smoothly
 /// interpolate macro artifact fields when projecting them into finer runtime tiles —
 /// nearest-neighbor sampling would produce hard seams at runtime chunk boundaries.
+/// Sample a field at a world coordinate with a smooth curve (a cubic
+/// B-spline) over its cells, on the same lattice as `sample_field_bilinear`.
+/// Bilinear sampling is continuous but creased along every cell edge, which
+/// shows as square facets when the result is shaded as relief; this has no
+/// creases. It rounds the field off slightly rather than passing exactly
+/// through the cell values, so use it for shading, not for terrain.
+pub fn sample_field_smooth(
+    field: &[f64],
+    wx: f64,
+    wy: f64,
+    world_width: f64,
+    world_height: f64,
+    width: usize,
+    height: usize,
+) -> f64 {
+    if field.is_empty() || width == 0 || height == 0 {
+        return 0.0;
+    }
+    let fx = crate::wrap::wrap_x(wx, world_width) * width as f64 / world_width;
+    let fy = (wy.clamp(0.0, world_height) * height as f64 / world_height).min((height - 1) as f64);
+    let (x0, y0) = (fx.floor(), fy.floor());
+    let (tx, ty) = (fx - x0, fy - y0);
+    // Cubic B-spline weights for the four cells around a position.
+    let weights = |t: f64| {
+        let u = 1.0 - t;
+        [
+            u * u * u / 6.0,
+            (3.0 * t * t * t - 6.0 * t * t + 4.0) / 6.0,
+            (3.0 * u * u * u - 6.0 * u * u + 4.0) / 6.0,
+            t * t * t / 6.0,
+        ]
+    };
+    let (weights_x, weights_y) = (weights(tx), weights(ty));
+    let mut value = 0.0;
+    for (row, weight_y) in weights_y.iter().enumerate() {
+        // North and south edges are clamped; the map joins east to west.
+        let y = (y0 as i32 + row as i32 - 1).clamp(0, height as i32 - 1) as usize;
+        for (column, weight_x) in weights_x.iter().enumerate() {
+            let x = crate::wrap::wrap_grid_x(x0 as i32 + column as i32 - 1, width) as usize;
+            value += field[y * width + x] * weight_x * weight_y;
+        }
+    }
+    value
+}
+
 pub fn sample_field_bilinear(
     field: &[f64],
     wx: f64,
@@ -836,6 +955,20 @@ impl BiomeMap {
         )
     }
 
+    /// As `sample_field_at`, without creases along cell edges. See
+    /// `sample_field_smooth`.
+    pub fn sample_field_smooth_at(&self, field: &[f64], wx: f64, wy: f64) -> f64 {
+        sample_field_smooth(
+            field,
+            wx,
+            wy,
+            self.world_width,
+            self.world_height,
+            self.width,
+            self.height,
+        )
+    }
+
     /// Nearest-neighbor discrete biome sample at world coordinates.
     ///
     /// Biomes are `TileType` enums — bilinear is not meaningful. Mirrors the
@@ -1029,6 +1162,23 @@ mod tests {
         let mut chunk = BiomeMap::generate(SEED, x, y, 1.0, 1.0, 32, 32, 2, false, false, 8.0);
         chunk.anchor_to_macro(macro_map, &[], SEED, x, y, 1.0, 1.0, LOD_THRESHOLD_MICRO, 0.2, true);
         chunk
+    }
+
+    #[test]
+    fn smooth_sampling_follows_the_field_and_wraps_east_to_west() {
+        // A 4 by 2 field over a 4 by 2 world: one cell per world unit.
+        let field = [0.0, 1.0, 4.0, 9.0, 0.0, 1.0, 4.0, 9.0];
+        let sample =
+            |wx: f64, wy: f64| super::sample_field_smooth(&field, wx, wy, 4.0, 2.0, 4, 2);
+
+        // Between cells it lies between its neighbours.
+        assert!(sample(1.5, 0.0) > 1.0 && sample(1.5, 0.0) < 4.0);
+        // Just west of the seam is just east of the last column.
+        assert_eq!(sample(-0.5, 0.0), sample(3.5, 0.0));
+        // A flat field stays flat.
+        let flat = [0.3; 8];
+        let level = super::sample_field_smooth(&flat, 1.3, 0.6, 4.0, 2.0, 4, 2);
+        assert!((level - 0.3).abs() < 1e-12);
     }
 
     #[test]

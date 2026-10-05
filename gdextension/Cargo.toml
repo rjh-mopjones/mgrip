@@ -6,6 +6,7 @@ members = [
     "crates/mg_noise",
     "crates/mg_artifacts",
     "crates/mg_life",
+    "crates/mg_web",
 ]
 
 [workspace.dependencies]
