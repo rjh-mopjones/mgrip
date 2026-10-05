@@ -21,6 +21,8 @@ const stepArguments = (settings) => [
 	settings.faultUplift,
 	settings.iceWidening,
 	settings.riftSinking,
+	settings.canyonFloodArea,
+	settings.canyonPower,
 ];
 
 function draw(settings) {

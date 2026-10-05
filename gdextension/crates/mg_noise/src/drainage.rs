@@ -81,6 +81,13 @@ pub fn iciness(light_level: f64) -> f64 {
         .clamp(0.0, 1.0)
 }
 
+/// How far a cell is desert, from 0 (none) to 1 (the deep day side): where
+/// rain is so rare that only its floods do any work.
+pub fn desert(light_level: f64) -> f64 {
+    ((light_level - FULL_RUNOFF_TO_LIGHT) / (EVAPORATED_ABOVE_LIGHT - FULL_RUNOFF_TO_LIGHT))
+        .clamp(0.0, 1.0)
+}
+
 /// Run-off from a cell, relative to a well-watered cell in the terminus.
 pub fn rainfall(light_level: f64, humidity: f64) -> f64 {
     rainfall_with(light_level, humidity, FROZEN_RUNOFF, EVAPORATED_RUNOFF)
@@ -172,7 +179,7 @@ pub fn step_distance(from: usize, to: usize, width: usize) -> f64 {
 /// grid. So the neighbour is drawn by lot among the downhill ones, steeper
 /// ones being likelier by this power of their slope. Over many cells the
 /// water then heads the way the ground really falls, whatever the angle.
-const STEEPNESS_PREFERENCE: f64 = 2.0;
+const STEEPNESS_PREFERENCE: f64 = 1.0;
 
 /// A number from 0 to 1 that is fixed for a cell and a `salt`.
 fn routing_lot(cell: usize, salt: u32) -> f64 {

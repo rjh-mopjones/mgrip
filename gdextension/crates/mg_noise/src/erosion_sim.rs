@@ -35,6 +35,17 @@ pub struct ErosionParams {
     /// level each step, from 0 (not at all) to 1 (all the way). Ice does not
     /// keep to a channel as water does: it widens its valley into a trough.
     pub ice_widening: f64,
+    /// In desert a channel cuts only once it gathers the run-off of this
+    /// many square world units of well-watered land: only floods do work
+    /// there, and the ground between the few channels they cut stays whole.
+    pub canyon_flood_area: f64,
+    /// How many times harder a desert flood cuts than a steady river of the
+    /// same flow: bare rock, no soil, all the water at once.
+    pub canyon_power: f64,
+    /// How far a desert canyon pulls the ground beside it down towards its
+    /// floor each step, from 0 to 1: its walls break and fall back, so a
+    /// canyon widens while the ground beyond its rim stays whole.
+    pub scarp_retreat: f64,
 }
 
 impl Default for ErosionParams {
@@ -48,6 +59,9 @@ impl Default for ErosionParams {
             slope_creep: 0.08,
             uplift_limit: 1.0,
             ice_widening: 0.25,
+            canyon_flood_area: 0.5,
+            canyon_power: 4.0,
+            scarp_retreat: 0.12,
         }
     }
 }
@@ -80,6 +94,8 @@ pub struct Land<'a> {
     pub ice: &'a [f64],
     /// What a cell of open lake loses to the air each step.
     pub lake_evaporation: &'a [f64],
+    /// How far each cell is desert, from 0 (none) to 1.
+    pub desert: &'a [f64],
     pub width: usize,
     pub height: usize,
 }
@@ -104,6 +120,9 @@ pub fn erosion_step(
         land.height,
         step,
     );
+
+    let cells_per_wu = land.width as f64 / crate::biome_map::WORLD_WIDTH;
+    let flood = params.canyon_flood_area * cells_per_wu * cells_per_wu;
 
     // From the sea upwards, so each cell's receiver is already lowered.
     for &cell in &drainage.order {
@@ -133,24 +152,33 @@ pub fn erosion_step(
             continue;
         }
         let receiver = receiver as usize;
-        let erodibility = params.erodibility * (1.5 - land.rock_hardness[cell]);
-        let cutting = erodibility * dt * drainage.flow[cell].powf(params.flow_exponent)
+        // In desert only what a channel carries beyond a flood's worth
+        // cuts, and cuts hard.
+        let desert = land.desert[cell];
+        let working_flow = (drainage.flow[cell] - flood * desert).max(0.0);
+        let erodibility = params.erodibility
+            * (1.5 - land.rock_hardness[cell])
+            * (1.0 + (params.canyon_power - 1.0) * desert);
+        let cutting = erodibility * dt * working_flow.powf(params.flow_exponent)
             / step_distance(cell, receiver, land.width);
         let lowered = (lifted + cutting * ground[receiver]) / (1.0 + cutting);
         sediment[cell] += (ground[cell] - lowered).max(0.0);
         ground[cell] = lowered;
     }
 
-    widen_ice_valleys(ground, &drainage, land, params.ice_widening);
+    widen_valleys(ground, &drainage, land, params, flood);
     *ground = crept(ground, land.is_base_level, land.width, land.height, params.slope_creep);
     drainage
 }
 
-/// Under ice, pull the ground beside each ice stream down towards the
-/// stream's level: the more ice gathers in it, the harder. Valley floors
-/// widen into troughs with steep walls where the pull gives out.
-fn widen_ice_valleys(ground: &mut [f64], drainage: &Drainage, land: &Land, widening: f64) {
-    if widening <= 0.0 {
+/// Pull the ground beside a channel down towards the channel's level, where
+/// something other than running water is at work on the valley's sides.
+///
+/// Under ice, the more ice gathers in a stream the harder it pulls: valley
+/// floors widen into troughs with steep walls where the pull gives out. In
+/// desert, the walls of a canyon in flood break and fall back.
+fn widen_valleys(ground: &mut [f64], drainage: &Drainage, land: &Land, params: &ErosionParams, flood: f64) {
+    if params.ice_widening <= 0.0 && params.scarp_retreat <= 0.0 {
         return;
     }
     let cells_per_wu = land.width as f64 / crate::biome_map::WORLD_WIDTH;
@@ -158,10 +186,16 @@ fn widen_ice_valleys(ground: &mut [f64], drainage: &Drainage, land: &Land, widen
     // Highest first, so a trough is widened from its head down.
     for &cell in drainage.order.iter().rev() {
         let cell = cell as usize;
-        let pull = widening * land.ice[cell] * (drainage.flow[cell] / full_stream).sqrt().min(1.0);
+        let flow = drainage.flow[cell];
+        let by_ice = params.ice_widening * land.ice[cell] * (flow / full_stream).sqrt().min(1.0);
+        let in_flood = flow > flood * land.desert[cell];
+        let by_scarps = if in_flood { params.scarp_retreat * land.desert[cell] } else { 0.0 };
+        let pull = by_ice.max(by_scarps);
         if land.is_base_level[cell] || pull <= 0.0 {
             continue;
         }
+        // Ice pulls only on ground that is itself under ice.
+        let reaches = |beside: usize| if by_ice >= by_scarps { land.ice[beside] } else { 1.0 };
         let (x, y) = ((cell % land.width) as i32, (cell / land.width) as i32);
         for (dx, dy) in crate::rivers::D8_OFFSETS {
             let beside_y = y + dy;
@@ -171,7 +205,7 @@ fn widen_ice_valleys(ground: &mut [f64], drainage: &Drainage, land: &Land, widen
             let beside_x = crate::wrap::wrap_grid_x(x + dx, land.width) as usize;
             let beside = beside_y as usize * land.width + beside_x;
             if !land.is_base_level[beside] && ground[beside] > ground[cell] {
-                ground[beside] -= pull * land.ice[beside] * (ground[beside] - ground[cell]);
+                ground[beside] -= pull * reaches(beside) * (ground[beside] - ground[cell]);
             }
         }
     }
@@ -223,6 +257,12 @@ mod tests {
 
     /// As `erode`, under ice that widens its valleys by `ice_widening`.
     fn erode_under(steps: u32, ice_widening: f64) -> (Vec<f64>, Drainage) {
+        erode_in(steps, ice_widening, 0.0)
+    }
+
+    /// As `erode_under`, on land that is `desert` (0 none to 1 all).
+    fn erode_in(steps: u32, ice_widening: f64, desert: f64) -> (Vec<f64>, Drainage) {
+        let desert = [desert; 144];
         let (mut ground, sea) = grooved_slope();
         let params = ErosionParams {
             erodibility: 0.04,
@@ -232,6 +272,10 @@ mod tests {
             slope_creep: 0.04,
             uplift_limit: 1.0,
             ice_widening,
+            // On this 16-cell-wide grid, the rain of three cells.
+            canyon_flood_area: 3.0 * (1024.0 / 16.0) * (1024.0 / 16.0),
+            canyon_power: 4.0,
+            scarp_retreat: 0.0,
         };
         let land = Land {
             is_base_level: &sea,
@@ -240,6 +284,7 @@ mod tests {
             rainfall: &[1.0; 144],
             ice: &[1.0; 144],
             lake_evaporation: &[0.0; 144],
+            desert: &desert,
             width: 16,
             height: 9,
         };
@@ -272,6 +317,20 @@ mod tests {
         let valley_side = 3 * 16 + 8;
 
         assert!(by_ice[valley_side] < by_water[valley_side]);
+    }
+
+    #[test]
+    fn in_desert_only_the_channel_is_cut() {
+        let (before, _) = grooved_slope();
+        let (after, _) = erode_in(5, 0.0, 1.0);
+        // Low on the slope: in the groove, where the water has gathered, and
+        // three rows off it, where each cell has only its own rain.
+        let (in_channel, beside) = (4 * 16 + 3, 1 * 16 + 3);
+
+        assert!(before[in_channel] - after[in_channel] > 0.0);
+        // Off the channel nothing is cut; the ground only creeps.
+        let (plain, _) = erode_in(5, 0.0, 0.0);
+        assert!(before[beside] - after[beside] < before[beside] - plain[beside]);
     }
 
     #[test]

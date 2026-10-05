@@ -289,9 +289,24 @@ own.
    rivers cutting their rims. The heightmap now keeps its hollows, with a
    water level beside it; a lake is open water, ice or salt flat by the
    same rule as the sea.
-3. **To do: the day side.** Ridged uplift, canyons cut only by the largest
-   floods, cliffs where rock breaks: canyons and mesas near the terminus,
-   grading to sand seas.
+3. **Done: the day side.**
+   - Uplift along belts and faults runs along crests (ridged noise, crests
+     about 14 world units apart): 0.35 of its strength between them, 1.75
+     on them. A range has a spine, and where nothing wears it down the spine
+     shows. This sharpens ranges everywhere, the terminus included.
+   - In desert (light above 0.62, fully by 0.85) a channel cuts only what
+     it carries beyond a flood's worth, the run-off of 0.5 square world
+     units of well-watered land, and then cuts 4 times as hard. A few
+     canyons are cut deep and the ground between them stays whole.
+   - A canyon in flood pulls the ground beside it down towards its floor
+     (`scarp_retreat`, 0.12): its walls fall back and it widens.
+   - Water is drawn among downhill neighbours in proportion to slope, no
+     longer to slope squared: the steeper relief had brought straight
+     valleys back.
+
+   Not done: sand seas towards the sub-stellar point (item 5), and cliffs
+   as such. A cliff is narrower than the finest cell; mesas' steep sides
+   are for the ground detail of issue #6.
 4. **To do: ice with its own flow,** and fjords.
 5. **To do: wind.** A wind field and a sand budget; salt where water ends.
 

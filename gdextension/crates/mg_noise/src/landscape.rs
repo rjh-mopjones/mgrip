@@ -10,7 +10,7 @@
 
 use crate::biome_map::{SEA_LEVEL, WORLD_WIDTH};
 use crate::drainage::{
-    iciness, lake_evaporation, rainfall, solve_drainage, Drainage, LAKE_MIN_DEPTH,
+    desert, iciness, lake_evaporation, rainfall, solve_drainage, Drainage, LAKE_MIN_DEPTH,
 };
 use crate::erosion_sim::{crept, erosion_step, ErosionParams, Land};
 use crate::rivers::{position_jitter, sea_bodies};
@@ -102,14 +102,28 @@ impl UpliftSources {
                 trough * faults[cell]
             })
             .collect();
+        // Belts and faults are pushed up along crests, not evenly: a range
+        // has a spine, and where nothing wears it down the spine shows.
+        let crested = |field: Vec<f64>, shift: f64| -> Vec<f64> {
+            (0..width * height)
+                .map(|cell| {
+                    let wx = (cell % width) as f64 * WORLD_WIDTH / width as f64;
+                    let wy = (cell / width) as f64 * WORLD_WIDTH / width as f64;
+                    field[cell] * (CREST_FLOOR + CREST_GAIN * crest(wx, wy, shift).powi(3))
+                })
+                .collect()
+        };
         Self {
             interior: continentalness
                 .iter()
                 .map(|cont| ((cont - SEA_LEVEL) / INTERIOR_FULL_AT).clamp(0.0, 1.0).sqrt())
                 .collect(),
             // Mountain belts follow the ridges of the peaks-and-valleys layer.
-            ranges: peaks_valleys.iter().map(|peaks| peaks.clamp(0.0, 1.0).powi(2)).collect(),
-            faults,
+            ranges: crested(
+                peaks_valleys.iter().map(|peaks| peaks.clamp(0.0, 1.0).powi(2)).collect(),
+                0.0,
+            ),
+            faults: crested(faults, 500.0),
             rifts,
         }
     }
@@ -125,6 +139,31 @@ impl UpliftSources {
             })
             .collect()
     }
+}
+
+/// Uplift along a belt or fault runs from `CREST_FLOOR` of its strength
+/// between crests to `CREST_FLOOR + CREST_GAIN` on them.
+const CREST_FLOOR: f64 = 0.35;
+const CREST_GAIN: f64 = 1.4;
+/// Crests are about this many world units apart at their broadest.
+const CREST_SPACING_WU: f64 = 14.0;
+const CREST_OCTAVES: usize = 3;
+
+/// How near a world position is to a crest line, from 0 to 1: ridged noise,
+/// continuous across the east-west seam. `shift` picks an unrelated pattern.
+fn crest(wx: f64, wy: f64, shift: f64) -> f64 {
+    use noise::NoiseFn;
+    static CRESTS: std::sync::OnceLock<noise::OpenSimplex> = std::sync::OnceLock::new();
+    let noise = CRESTS.get_or_init(|| noise::OpenSimplex::new(0xC4E5_7u32));
+    let (mut sum, mut weight, mut total) = (0.0, 1.0, 0.0);
+    for octave in 0..CREST_OCTAVES {
+        let frequency = 2f64.powi(octave as i32) / CREST_SPACING_WU;
+        let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
+        sum += weight * (1.0 - noise.get([cx + shift, cz + shift, cy]).abs());
+        total += weight;
+        weight *= 0.5;
+    }
+    sum / total
 }
 
 /// A field blurred over `reach` cells each way and rescaled to peak at 1.
@@ -296,6 +335,7 @@ impl Grid {
         let rainfall = self.rainfall();
         let ice: Vec<f64> = self.light_level.iter().map(|&light| iciness(light)).collect();
         let lake_evaporation = self.lake_evaporation();
+        let desert: Vec<f64> = self.light_level.iter().map(|&light| desert(light)).collect();
         let land = Land {
             is_base_level: is_sea,
             rock_hardness: &self.rock_hardness,
@@ -303,6 +343,7 @@ impl Grid {
             rainfall: &rainfall,
             ice: &ice,
             lake_evaporation: &lake_evaporation,
+            desert: &desert,
             width: self.width,
             height: self.height,
         };

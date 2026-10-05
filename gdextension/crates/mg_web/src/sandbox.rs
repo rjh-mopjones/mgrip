@@ -7,7 +7,7 @@
 
 use mg_noise::biome_map::SEA_LEVEL;
 use mg_noise::drainage::{
-    iciness, lake_evaporation, rainfall_with, solve_drainage, Drainage, LAKE_MIN_DEPTH,
+    desert, iciness, lake_evaporation, rainfall_with, solve_drainage, Drainage, LAKE_MIN_DEPTH,
 };
 use mg_noise::landscape::{starting_ground, UpliftMix, UpliftSources};
 use mg_noise::rivers::sea_bodies;
@@ -121,6 +121,7 @@ impl Sandbox {
         let uplift_share = self.uplift_share(settings);
         let ice: Vec<f64> = self.light_level.iter().map(|&light| iciness(light)).collect();
         let lake_evaporation = self.lake_evaporation();
+        let desert: Vec<f64> = self.light_level.iter().map(|&light| desert(light)).collect();
         let land = Land {
             is_base_level: &self.is_sea,
             rock_hardness: &self.rock_hardness,
@@ -128,6 +129,7 @@ impl Sandbox {
             rainfall: &rainfall,
             ice: &ice,
             lake_evaporation: &lake_evaporation,
+            desert: &desert,
             width: self.width,
             height: self.height,
         };
