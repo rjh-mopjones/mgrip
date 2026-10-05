@@ -626,7 +626,7 @@ impl RiverNetwork {
         // from `(1023, y)` to `(511, y)` to `(0, y)`, visible as full-width
         // stripes on `rivers.png` at the wrap-crossing y row.
         for seg in &mut segments {
-            let unwrapped = unwrap_path_x(&seg.path, width as f64);
+            let unwrapped = unwrap_path_x(&seg.path, world_width);
             seg.path = chaikin_smooth(&unwrapped, 5);
             seg.meander_offsets = vec![0.0; seg.path.len()];
         }
@@ -959,16 +959,30 @@ fn path_to_open_water(
 }
 
 /// A stretch of ground below sea level counts as a body of water, somewhere
-/// a river can end, if it covers at least this many cells. Smaller ones are
-/// ponds.
-const SEA_BODY_MIN_CELLS: usize = 12;
+/// a river can end, if it covers at least this many square world units.
+/// Smaller ones are ponds.
+const SEA_BODY_MIN_AREA_WU2: f64 = 12.0;
 /// For drainage, a pond's bed is treated as this far above sea level.
 const POND_RAISED_ABOVE_SEA: f64 = 0.001;
 
 /// For every cell, whether it lies in a body of water: a connected stretch
-/// of at least `SEA_BODY_MIN_CELLS` cells below sea level. The map joins east
-/// to west.
+/// of at least `SEA_BODY_MIN_AREA_WU2` below sea level, on a grid `width`
+/// cells across the world. The map joins east to west.
 pub fn sea_bodies(continentalness: &[f64], width: usize, height: usize, sea_level: f64) -> Vec<bool> {
+    let cells_per_wu = width as f64 / WORLD_WIDTH;
+    let min_cells = (SEA_BODY_MIN_AREA_WU2 * cells_per_wu * cells_per_wu).ceil() as usize;
+    stretches_below_sea(continentalness, width, height, sea_level, min_cells)
+}
+
+/// For every cell, whether it lies in a connected stretch of at least
+/// `min_cells` cells below sea level.
+fn stretches_below_sea(
+    continentalness: &[f64],
+    width: usize,
+    height: usize,
+    sea_level: f64,
+    min_cells: usize,
+) -> Vec<bool> {
     let below_sea = |cell: usize| continentalness[cell] <= sea_level;
     let mut in_body = vec![false; width * height];
     let mut seen = vec![false; width * height];
@@ -996,7 +1010,7 @@ pub fn sea_bodies(continentalness: &[f64], width: usize, height: usize, sea_leve
                 }
             }
         }
-        if stretch.len() >= SEA_BODY_MIN_CELLS {
+        if stretch.len() >= min_cells {
             for cell in stretch {
                 in_body[cell] = true;
             }
@@ -1082,12 +1096,15 @@ fn build_river_tree(
         if path.len() < 2 { continue; }
 
         let seg_id = segments.len();
-        let last = path.last().unwrap();
-        let last_idx = last.1 as usize * width + last.0 as usize;
+        // Path points are in world units; back to cells.
+        let cell_of = |&(wx, wy): &(f64, f64)| {
+            (wy / px_to_wy).round() as usize * width + (wx / px_to_wx).round() as usize
+        };
+        let last_idx = cell_of(path.last().unwrap());
         let drainage = accumulation.get(last_idx).copied().unwrap_or(0);
 
-        for &(px, py) in &path {
-            let idx = py as usize * width + px as usize;
+        for point in &path {
+            let idx = cell_of(point);
             if segment_id_at[idx].is_none() { segment_id_at[idx] = Some(seg_id); }
         }
 
@@ -1111,8 +1128,8 @@ fn build_river_tree(
     // segment's path so chains run unbroken to ocean.
     for i in 0..segments.len() {
         let last = *segments[i].path.last().unwrap();
-        let mut cur_idx = (last.1 * px_to_wy.recip()) as usize * width
-            + (last.0 * px_to_wx.recip()) as usize;
+        let mut cur_idx = (last.1 / px_to_wy).round() as usize * width
+            + (last.0 / px_to_wx).round() as usize;
         cur_idx = cur_idx.min(width * height - 1);
         let mut bridge_path: Vec<(f64, f64)> = Vec::new();
         let to_world =
@@ -1379,9 +1396,9 @@ const COURSE_MAX_HALF_WIDTH_WU: f64 = 0.2;
 /// river it joins are moved together and still meet. Amplitudes are small
 /// enough for their wavelengths that the warp never folds the plane, which
 /// would make rivers cross themselves.
-const MEANDER_SWEEP_WU: f64 = 2.0;
+const MEANDER_SWEEP_WU: f64 = 0.25;
 const MEANDER_SWEEP_FREQUENCY: f64 = 0.05;
-const MEANDER_WIGGLE_WU: f64 = 0.4;
+const MEANDER_WIGGLE_WU: f64 = 0.1;
 const MEANDER_WIGGLE_FREQUENCY: f64 = 0.18;
 /// At any resolution a river covers at least this many samples either side of
 /// its centre line, so thin rivers do not vanish on coarse grids.
@@ -1973,7 +1990,7 @@ mod course_tests {
             *cell = -0.1;
         }
 
-        let in_body = sea_bodies(&continentalness, 20, 1, 0.0);
+        let in_body = stretches_below_sea(&continentalness, 20, 1, 0.0, 12);
 
         assert!(!in_body[1]);
         assert!(!in_body[2]);

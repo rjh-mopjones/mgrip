@@ -16,7 +16,7 @@
 const DEFAULT_SPAWN_CHUNK = { x: 440, y: 220 };
 const TERRAIN_IMAGE = "macromap.png";
 const RELIEF_IMAGE = "relief.png";
-const MAX_ZOOM = 128;
+const MAX_ZOOM = 64;
 const ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_RATE = 0.0015;
 /// A press that moves further than this many pixels is a drag, not a click.
@@ -55,7 +55,7 @@ function factionColour(factionId) {
 		const shade = Math.max(0, Math.min(1, Math.min(k, 4 - k)));
 		return (value - value * saturation * shade) * 255;
 	};
-	return [channel(5), channel(3), channel(1), 205];
+	return [channel(5), channel(3), channel(1), 175];
 }
 
 // Each map mode gives one colour per province, laid over the terrain.
@@ -511,7 +511,7 @@ void main() {
 		// Tint the terrain rather than cover it, so its texture shows through.
 		vec4 tint = texelFetch(uProvinces, ivec2(province, 0), 0);
 		float brightness = dot(shade, vec3(0.299, 0.587, 0.114));
-		shade = mix(shade, tint.rgb * mix(0.7, 1.15, brightness), tint.a);
+		shade = mix(shade, tint.rgb * mix(0.45, 1.35, brightness), tint.a);
 		// Hillshade over terrain and tint alike.
 		if (uBaseShaded < 0.5) {
 			float relief = texture(uRelief, chunk / uWorld).r - 0.5;

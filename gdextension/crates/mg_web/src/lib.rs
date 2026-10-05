@@ -13,13 +13,8 @@ mod sandbox;
 use std::sync::Mutex;
 
 use mg_artifacts::MacroPack;
-use mg_noise::{
-    generate_map_tile, render_terrain, BiomeMap, MapTileDetail, NormalizationHints, RiverCourse,
-};
+use mg_noise::{generate_map_tile, render_terrain, BiomeMap, NormalizationHints, RiverCourse};
 
-/// Tiles this sharp or sharper (pixels per world unit) show the ground as
-/// the game generates it; coarser tiles show the broad shape of the land.
-const GROUND_DETAIL_FROM_PIXELS_PER_WU: f64 = 12.0;
 /// Height is in units of 200 blocks and a world unit is 512 blocks, so this
 /// turns a rise in height per world unit into a true slope.
 const TRUE_SLOPE_PER_HEIGHT_PER_WU: f64 = 200.0 / 512.0;
@@ -27,7 +22,7 @@ const TRUE_SLOPE_PER_HEIGHT_PER_WU: f64 = 200.0 / 512.0;
 /// per world unit, and by less the sharper the tile, so that both mountain
 /// ranges from afar and single slopes up close read clearly.
 const RELIEF_EXAGGERATION_AT_ONE_WU: f64 = 30.0;
-const RELIEF_EXAGGERATION_FALLOFF: f64 = 0.54;
+const RELIEF_EXAGGERATION_FALLOFF: f64 = 0.2;
 const RELIEF_MIN_EXAGGERATION: f64 = 1.5;
 /// Direction towards the light: north-west and above.
 const LIGHT: [f64; 3] = [-1.0, -1.0, 1.6];
@@ -70,16 +65,10 @@ impl World {
         let step = size / pixels as f64;
         let samples = pixels + 2;
         let (tile_x, tile_y) = (origin_x - step * 0.5, origin_y - step * 0.5);
-        let detail = if pixels as f64 / size >= GROUND_DETAIL_FROM_PIXELS_PER_WU {
-            MapTileDetail::Ground
-        } else {
-            MapTileDetail::Overview
-        };
         let tile = generate_map_tile(
             &self.macro_map,
             &self.river_courses,
             self.seed,
-            detail,
             tile_x,
             tile_y,
             step * (samples - 1) as f64,
@@ -89,17 +78,17 @@ impl World {
         );
         let rendered = render_terrain(&tile, Some(&self.heights));
 
-        // Height to shade. The tile's heights rest on the macro heightmap
-        // sampled bilinearly, which is creased along every chunk edge and
-        // would shade as square facets; rest them on a smooth sampling of it
-        // instead. The local detail on top is kept.
-        let macro_heights = &self.macro_map.heightmap;
+        // Height to shade: the land on a smooth curve through its cells.
+        // The tile's own heights run in straight lines between cells, which
+        // is creased along every cell edge and would shade as facets.
         let relief_heights: Vec<f64> = (0..samples * samples)
             .map(|cell| {
                 let wx = tile_x + (cell % samples) as f64 * step;
                 let wy = tile_y + (cell / samples) as f64 * step;
-                tile.heightmap[cell] - self.macro_map.sample_field_at(macro_heights, wx, wy)
-                    + self.macro_map.sample_field_smooth_at(macro_heights, wx, wy)
+                match &self.macro_map.fine_heights {
+                    Some(fine) => fine.sample_smooth(wx, wy),
+                    None => self.macro_map.sample_field_smooth_at(&self.macro_map.heightmap, wx, wy),
+                }
             })
             .collect();
         let height = |column: usize, row: usize| relief_heights[row * samples + column];

@@ -13,7 +13,7 @@ pub mod visualization;
 pub mod wrap;
 
 pub use biome_map::{
-    generate_map_tile, MapTileDetail,
+    generate_map_tile,
     generate_macro_map, generate_macro_probe, sample_field_bilinear, tile_has_fluid_surface,
     BiomeMap, MacroOceanMask, MACRO_MAP_HEIGHT, MACRO_MAP_WIDTH, SEA_LEVEL, WORLD_HEIGHT,
     WORLD_WIDTH,

@@ -178,6 +178,12 @@ pushed up, and is cut by rivers until the two balance. Biomes read the real
 height and slope of that land. Do not add height from an independent noise
 layer at macro scale.
 
+The macro map also carries its land on a finer grid, four cells per chunk
+(`BiomeMap::fine_heights`, in the macro pack too). Rivers are read from the
+drainage of that grid, and anchored tiles and chunks take their ground from
+it. Generating the macro map takes about 35 seconds and 2 GB.
+`margins_grip inspect relief <seed> <png>` writes a hillshade of it.
+
 `/sandbox/` is the erosion sandbox for `specs/013`: the landscape step
 (uplift, drainage, stream power erosion) running on the real coastline in the
 browser, with its parameters on sliders (`mg_web/src/sandbox.rs`,

@@ -127,15 +127,35 @@ pub fn step_distance(from: usize, to: usize, width: usize) -> f64 {
     }
 }
 
+/// Water can only run to one of a cell's eight neighbours. Always taking
+/// the steepest makes valleys run dead straight along those eight directions
+/// for as long as the slope allows, and the land comes out looking like a
+/// grid. So the neighbour is drawn by lot among the downhill ones, steeper
+/// ones being likelier by this power of their slope. Over many cells the
+/// water then heads the way the ground really falls, whatever the angle.
+const STEEPNESS_PREFERENCE: f64 = 2.0;
+
+/// A number from 0 to 1 that is fixed for a cell and a `salt`.
+fn routing_lot(cell: usize, salt: u32) -> f64 {
+    position_jitter(
+        (cell as u32).wrapping_mul(2_654_435_761) ^ salt.wrapping_mul(40_503),
+        (cell as u32 >> 7).wrapping_add(salt.wrapping_mul(2_246_822_519)),
+    )
+}
+
 /// Solve drainage over `ground`. Water runs to `is_base_level` cells (the
 /// sea), which stay as they are. `rainfall` is the run-off each cell adds.
 /// Land with no way to base level is left with no receiver.
+///
+/// `salt` picks how the lots fall (see `STEEPNESS_PREFERENCE`): erosion
+/// changes it every step so no one pattern is cut into the land.
 pub fn solve_drainage(
     ground: &[f64],
     is_base_level: &[bool],
     rainfall: &[f64],
     width: usize,
     height: usize,
+    salt: u32,
 ) -> Drainage {
     let total = width * height;
     let mut filled = ground.to_vec();
@@ -170,11 +190,20 @@ pub fn solve_drainage(
             if is_base_level[cell] || !reached[cell] {
                 return NO_RECEIVER;
             }
-            neighbours(cell, width, height)
+            let downhill: Vec<(usize, f64)> = neighbours(cell, width, height)
                 .map(|(neighbour, distance)| (neighbour, (filled[cell] - filled[neighbour]) / distance))
                 .filter(|&(_, slope)| slope > 0.0)
-                .max_by(|a, b| a.1.total_cmp(&b.1))
-                .map_or(NO_RECEIVER, |(neighbour, _)| neighbour as u32)
+                .map(|(neighbour, slope)| (neighbour, slope.powf(STEEPNESS_PREFERENCE)))
+                .collect();
+            let total: f64 = downhill.iter().map(|&(_, chance)| chance).sum();
+            let mut lot = routing_lot(cell, salt) * total;
+            for &(neighbour, chance) in &downhill {
+                lot -= chance;
+                if lot <= 0.0 {
+                    return neighbour as u32;
+                }
+            }
+            downhill.last().map_or(NO_RECEIVER, |&(neighbour, _)| neighbour as u32)
         })
         .collect();
 
@@ -212,7 +241,7 @@ mod tests {
     #[test]
     fn water_runs_downhill_to_the_sea_and_gathers_on_the_way() {
         let (ground, sea) = strip([0.0, 1.0, 2.0, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3);
+        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3, 0);
 
         assert_eq!(drainage.receivers[5], NO_RECEIVER);
         assert_eq!(drainage.receivers[8], 7);
@@ -224,7 +253,7 @@ mod tests {
     fn a_hollow_is_filled_until_it_spills_and_water_crosses_it() {
         // A hollow at x = 2, behind a sill at x = 1.
         let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3);
+        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3, 0);
 
         assert!(drainage.filled[7] > 2.0);
         assert_eq!(drainage.receivers[7], 6);
@@ -234,7 +263,7 @@ mod tests {
     #[test]
     fn every_cell_comes_after_the_cell_it_drains_to() {
         let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3);
+        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3, 0);
         let position = |cell: u32| drainage.order.iter().position(|&c| c == cell).unwrap();
 
         for cell in 0..15u32 {

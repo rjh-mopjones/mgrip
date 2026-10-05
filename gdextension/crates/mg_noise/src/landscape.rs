@@ -10,7 +10,7 @@
 
 use crate::biome_map::{SEA_LEVEL, WORLD_WIDTH};
 use crate::drainage::{rainfall, solve_drainage, Drainage};
-use crate::erosion_sim::{erosion_step, ErosionParams, Land};
+use crate::erosion_sim::{crept, erosion_step, ErosionParams, Land};
 use crate::rivers::{position_jitter, sea_bodies};
 
 /// Land starts this far above sea level, with a little unevenness so water
@@ -28,8 +28,19 @@ const FAULT_SPREAD_PASSES: usize = 3;
 /// full resolution, which adds the smaller valleys.
 const COARSE_STEPS: u32 = 400;
 const FINE_STEPS: u32 = 40;
+/// Routing variation used for the drainage of the finished land.
+const FINAL_DRAINAGE: u32 = u32::MAX;
 /// Grids narrower than this are too small to be worth halving.
 const COARSE_MIN_WIDTH: usize = 128;
+/// After the macro land is grown it is refined twice more, doubling the
+/// resolution each time, to four cells per world unit: valleys then exist
+/// down to a few hundred blocks across. Steps of erosion at each doubling.
+const REFINING_STEPS: [u32; 2] = [20, 8];
+/// The finest grid is left with gullies a single cell wide, which read as a
+/// rash of bumps when shaded. A few rounds of slope creep alone, with no
+/// cutting, close those and leave every valley wider than a cell or two.
+const SETTLING_ROUNDS: usize = 4;
+const SETTLING_CREEP: f64 = 0.5;
 
 /// How much each source of uplift contributes, as shares of the uplift rate.
 pub struct UpliftMix {
@@ -206,12 +217,34 @@ impl Grid {
         }
     }
 
+    /// Twice the resolution, each field filled in smoothly.
+    fn doubled(&self) -> Self {
+        let (width, height) = (self.width * 2, self.height * 2);
+        let double = |field: &[f64]| doubled(field, self.width, self.height, width, height);
+        Self {
+            continentalness: double(&self.continentalness),
+            peaks_valleys: double(&self.peaks_valleys),
+            tectonic: double(&self.tectonic),
+            rock_hardness: double(&self.rock_hardness),
+            light_level: double(&self.light_level),
+            humidity: double(&self.humidity),
+            width,
+            height,
+        }
+    }
+
     fn is_sea(&self) -> Vec<bool> {
         sea_bodies(&self.continentalness, self.width, self.height, SEA_LEVEL)
     }
 
-    /// Run `steps` of uplift and erosion on `ground`.
-    fn erode(&self, ground: &mut Vec<f64>, sediment: &mut [f64], steps: u32) {
+    fn rainfall(&self) -> Vec<f64> {
+        (0..self.width * self.height)
+            .map(|cell| rainfall(self.light_level[cell], self.humidity[cell]))
+            .collect()
+    }
+
+    /// Run `steps` of uplift and erosion on `ground`, draining to `is_sea`.
+    fn erode(&self, ground: &mut Vec<f64>, sediment: &mut [f64], is_sea: &[bool], steps: u32) {
         let uplift_share = UpliftSources::new(
             &self.continentalness,
             &self.peaks_valleys,
@@ -220,12 +253,9 @@ impl Grid {
             self.height,
         )
         .mixed(&UpliftMix::default());
-        let rainfall: Vec<f64> = (0..self.width * self.height)
-            .map(|cell| rainfall(self.light_level[cell], self.humidity[cell]))
-            .collect();
-        let is_sea = self.is_sea();
+        let rainfall = self.rainfall();
         let land = Land {
-            is_base_level: &is_sea,
+            is_base_level: is_sea,
             rock_hardness: &self.rock_hardness,
             uplift_share: &uplift_share,
             rainfall: &rainfall,
@@ -233,8 +263,8 @@ impl Grid {
             height: self.height,
         };
         let params = ErosionParams::default();
-        for _ in 0..steps {
-            erosion_step(ground, sediment, &land, &params);
+        for step in 0..steps {
+            erosion_step(ground, sediment, &land, &params, step);
         }
     }
 }
@@ -267,9 +297,10 @@ pub fn grow_landscape(inputs: &LandscapeInputs) -> Landscape {
     let can_halve = width % 2 == 0 && height % 2 == 0 && width >= COARSE_MIN_WIDTH;
     if can_halve {
         let coarse = fine.halved();
-        let mut coarse_ground = starting_ground(&coarse.continentalness, &coarse.is_sea(), coarse.width);
+        let coarse_sea = coarse.is_sea();
+        let mut coarse_ground = starting_ground(&coarse.continentalness, &coarse_sea, coarse.width);
         let mut coarse_sediment = vec![0.0; coarse.width * coarse.height];
-        coarse.erode(&mut coarse_ground, &mut coarse_sediment, COARSE_STEPS);
+        coarse.erode(&mut coarse_ground, &mut coarse_sediment, &coarse_sea, COARSE_STEPS);
 
         // Carry the coarse land up. Where the two grids disagree about the
         // coast, the fine grid's sea stays sea and its land stays land.
@@ -281,18 +312,15 @@ pub fn grow_landscape(inputs: &LandscapeInputs) -> Landscape {
                 sediment[cell] = removed[cell];
             }
         }
-        fine.erode(&mut ground, &mut sediment, FINE_STEPS);
+        fine.erode(&mut ground, &mut sediment, &is_sea, FINE_STEPS);
     } else {
-        fine.erode(&mut ground, &mut sediment, COARSE_STEPS);
+        fine.erode(&mut ground, &mut sediment, &is_sea, COARSE_STEPS);
     }
 
     for cell in ground.iter_mut() {
         *cell = cell.clamp(-1.0, 1.0);
     }
-    let rainfall: Vec<f64> = (0..width * height)
-        .map(|cell| rainfall(fine.light_level[cell], fine.humidity[cell]))
-        .collect();
-    let drainage = solve_drainage(&ground, &is_sea, &rainfall, width, height);
+    let drainage = solve_drainage(&ground, &is_sea, &fine.rainfall(), width, height, FINAL_DRAINAGE);
     // Any hollow left is filled level, so water runs across it.
     let heightmap = (0..width * height)
         .map(|cell| if is_sea[cell] { ground[cell] } else { drainage.filled[cell] })
@@ -301,6 +329,137 @@ pub fn grow_landscape(inputs: &LandscapeInputs) -> Landscape {
         heightmap,
         drainage,
         sediment,
+    }
+}
+
+/// The land's height on a grid finer than the macro map, for everything that
+/// looks closer than one cell per chunk: map tiles and the game's chunks.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct FineHeights {
+    pub cells_per_wu: usize,
+    pub width: usize,
+    pub height: usize,
+    pub heights: Vec<f32>,
+}
+
+impl FineHeights {
+    /// The four cells around a world position and how far between them it
+    /// lies. The map joins east to west; north and south edges are clamped.
+    fn around(&self, wx: f64, wy: f64) -> (i64, i64, f64, f64) {
+        let fx = wx * self.cells_per_wu as f64;
+        let fy = (wy * self.cells_per_wu as f64).clamp(0.0, (self.height - 1) as f64);
+        (fx.floor() as i64, fy.floor() as i64, fx - fx.floor(), fy - fy.floor())
+    }
+
+    fn at(&self, x: i64, y: i64) -> f64 {
+        let x = x.rem_euclid(self.width as i64) as usize;
+        let y = y.clamp(0, self.height as i64 - 1) as usize;
+        self.heights[y * self.width + x] as f64
+    }
+
+    /// Height at a world position, between cells in straight lines.
+    pub fn sample(&self, wx: f64, wy: f64) -> f64 {
+        let (x, y, tx, ty) = self.around(wx, wy);
+        let north = self.at(x, y) + (self.at(x + 1, y) - self.at(x, y)) * tx;
+        let south = self.at(x, y + 1) + (self.at(x + 1, y + 1) - self.at(x, y + 1)) * tx;
+        north + (south - north) * ty
+    }
+
+    /// Height at a world position on a smooth curve (a cubic B-spline) over
+    /// the cells: no creases along cell edges, so it shades cleanly as relief.
+    pub fn sample_smooth(&self, wx: f64, wy: f64) -> f64 {
+        let (x, y, tx, ty) = self.around(wx, wy);
+        let weights = |t: f64| {
+            let u = 1.0 - t;
+            [
+                u * u * u / 6.0,
+                (3.0 * t * t * t - 6.0 * t * t + 4.0) / 6.0,
+                (3.0 * u * u * u - 6.0 * u * u + 4.0) / 6.0,
+                t * t * t / 6.0,
+            ]
+        };
+        let (weights_x, weights_y) = (weights(tx), weights(ty));
+        let mut height = 0.0;
+        for (row, weight_y) in weights_y.iter().enumerate() {
+            for (column, weight_x) in weights_x.iter().enumerate() {
+                height += self.at(x + column as i64 - 1, y + row as i64 - 1) * weight_x * weight_y;
+            }
+        }
+        height
+    }
+}
+
+/// The macro land refined to a finer grid, with the drainage that cut it.
+pub struct FineLand {
+    pub heights: FineHeights,
+    pub drainage: Drainage,
+    // The fields the river network needs, on the fine grid.
+    pub ground: Vec<f64>,
+    pub tectonic: Vec<f64>,
+    pub light_level: Vec<f64>,
+    pub humidity: Vec<f64>,
+}
+
+/// `field` (on a grid `width` across) filled in smoothly on a grid `factor`
+/// times finer, `factor` a power of two.
+pub fn refined_field(field: &[f64], width: usize, height: usize, factor: usize) -> Vec<f64> {
+    let (mut current, mut current_width, mut current_height) = (field.to_vec(), width, height);
+    while current_width < width * factor {
+        current = doubled(&current, current_width, current_height, current_width * 2, current_height * 2);
+        current_width *= 2;
+        current_height *= 2;
+    }
+    current
+}
+
+/// How many times finer than the macro grid `refine_landscape` makes the land.
+pub const REFINED_CELLS_PER_MACRO_CELL: usize = 1 << REFINING_STEPS.len();
+
+/// Carry the macro land (`macro_heights`, from `grow_landscape`) to a finer
+/// grid, eroding a little more at each doubling so the finer grid has
+/// valleys of its own and not just the macro ones blurred.
+pub fn refine_landscape(inputs: &LandscapeInputs, macro_heights: &[f64]) -> FineLand {
+    let mut grid = Grid::from_inputs(inputs);
+    let mut ground = macro_heights.to_vec();
+    let mut is_sea = Vec::new();
+    for steps in REFINING_STEPS {
+        let finer = grid.doubled();
+        ground = doubled(&ground, grid.width, grid.height, finer.width, finer.height);
+        // The coast is where the land crosses sea level; ponds are land.
+        is_sea = sea_bodies(&ground, finer.width, finer.height, SEA_LEVEL);
+        for cell in 0..ground.len() {
+            if !is_sea[cell] {
+                ground[cell] = ground[cell].max(SEA_LEVEL + STARTING_HEIGHT);
+            }
+        }
+        let mut sediment = vec![0.0; ground.len()];
+        finer.erode(&mut ground, &mut sediment, &is_sea, steps);
+        grid = finer;
+    }
+
+    for _ in 0..SETTLING_ROUNDS {
+        ground = crept(&ground, &is_sea, grid.width, grid.height, SETTLING_CREEP);
+    }
+    for cell in ground.iter_mut() {
+        *cell = cell.clamp(-1.0, 1.0);
+    }
+    let drainage = solve_drainage(&ground, &is_sea, &grid.rainfall(), grid.width, grid.height, FINAL_DRAINAGE);
+    // Any hollow left is filled level, so water runs across it.
+    let ground: Vec<f64> = (0..ground.len())
+        .map(|cell| if is_sea[cell] { ground[cell] } else { drainage.filled[cell] })
+        .collect();
+    FineLand {
+        heights: FineHeights {
+            cells_per_wu: (grid.width as f64 / WORLD_WIDTH).round() as usize,
+            width: grid.width,
+            height: grid.height,
+            heights: ground.iter().map(|&height| height as f32).collect(),
+        },
+        drainage,
+        ground,
+        tectonic: grid.tectonic,
+        light_level: grid.light_level,
+        humidity: grid.humidity,
     }
 }
 

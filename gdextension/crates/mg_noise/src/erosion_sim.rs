@@ -58,15 +58,18 @@ pub struct Land<'a> {
 }
 
 /// One step of uplift and erosion on `ground`. Adds the rock removed to
-/// `sediment`. Returns the drainage the step was cut with.
+/// `sediment`. Returns the drainage the step was cut with. `step` is the
+/// number of the step, so each routes its water a little differently.
 pub fn erosion_step(
     ground: &mut Vec<f64>,
     sediment: &mut [f64],
     land: &Land,
     params: &ErosionParams,
+    step: u32,
 ) -> Drainage {
     let dt = params.time_step;
-    let drainage = solve_drainage(ground, land.is_base_level, land.rainfall, land.width, land.height);
+    let drainage =
+        solve_drainage(ground, land.is_base_level, land.rainfall, land.width, land.height, step);
 
     // From the sea upwards, so each cell's receiver is already lowered.
     for &cell in &drainage.order {
@@ -96,7 +99,7 @@ pub fn erosion_step(
 
 /// The ground after one step of slope creep: each land cell moves `share` of
 /// the way towards the mean of its four neighbours.
-fn crept(ground: &[f64], is_base_level: &[bool], width: usize, height: usize, share: f64) -> Vec<f64> {
+pub fn crept(ground: &[f64], is_base_level: &[bool], width: usize, height: usize, share: f64) -> Vec<f64> {
     (0..width * height)
         .map(|cell| {
             if is_base_level[cell] {
@@ -154,8 +157,8 @@ mod tests {
         };
         let mut sediment = vec![0.0; 144];
         let mut drainage = None;
-        for _ in 0..steps {
-            drainage = Some(erosion_step(&mut ground, &mut sediment, &land, &params));
+        for step in 0..steps {
+            drainage = Some(erosion_step(&mut ground, &mut sediment, &land, &params, step));
         }
         (ground, drainage.expect("at least one step"))
     }

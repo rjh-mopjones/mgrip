@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use crate::biome_splines::BiomeSplines;
 use crate::derived;
-use crate::landscape::{flatness, flatness_of_slope, grow_landscape, LandscapeInputs};
+use crate::landscape::{
+    flatness, flatness_of_slope, grow_landscape, refine_landscape, refined_field, FineHeights,
+    LandscapeInputs, REFINED_CELLS_PER_MACRO_CELL,
+};
 use crate::rivers::{
     rasterize_courses, rasterize_to_tile, sea_bodies, RiverCourse, RiverNetwork,
     LOD_THRESHOLD_MACRO,
@@ -74,21 +77,9 @@ pub fn light_level_at(seed: u32, wx: f64, wy: f64) -> f64 {
         .generate(wx, wy, 0)
 }
 
-/// How much detail a map tile carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MapTileDetail {
-    /// As `macromap.png`: the broad shape of the land.
-    Overview,
-    /// As the game's chunks: the ground a player walks on.
-    Ground,
-}
-
-// Ground tiles use the settings the game generates its chunks with
-// (`world.gd` passes the same detail level and frequency scale).
-const OVERVIEW_DETAIL_LEVEL: u32 = 1;
-const GROUND_DETAIL_LEVEL: u32 = 2;
-const OVERVIEW_FREQUENCY_SCALE: f64 = 1.0;
-const GROUND_FREQUENCY_SCALE: f64 = 8.0;
+// Map tiles show the shape of the land, not the roughness of the ground
+// underfoot: they are generated without the fine noise the game's chunks add.
+const MAP_TILE_DETAIL_LEVEL: u32 = 1;
 const MAP_TILE_MOUNTAIN_DETAIL_GAIN: f64 = 0.2;
 
 /// Terrain for a rectangle of the world at any resolution, agreeing with the
@@ -98,7 +89,6 @@ pub fn generate_map_tile(
     macro_map: &BiomeMap,
     river_courses: &[RiverCourse],
     seed: u32,
-    detail: MapTileDetail,
     origin_x: f64,
     origin_y: f64,
     world_size_x: f64,
@@ -106,20 +96,6 @@ pub fn generate_map_tile(
     samples_x: usize,
     samples_y: usize,
 ) -> BiomeMap {
-    let (detail_level, frequency_scale, river_threshold, micro_detail) = match detail {
-        MapTileDetail::Overview => (
-            OVERVIEW_DETAIL_LEVEL,
-            OVERVIEW_FREQUENCY_SCALE,
-            crate::rivers::LOD_THRESHOLD_MACRO,
-            false,
-        ),
-        MapTileDetail::Ground => (
-            GROUND_DETAIL_LEVEL,
-            GROUND_FREQUENCY_SCALE,
-            crate::rivers::LOD_THRESHOLD_MICRO,
-            true,
-        ),
-    };
     let mut tile = BiomeMap::generate(
         seed,
         origin_x,
@@ -128,10 +104,10 @@ pub fn generate_map_tile(
         world_size_y,
         samples_x,
         samples_y,
-        detail_level,
+        MAP_TILE_DETAIL_LEVEL,
         false,
         false,
-        frequency_scale,
+        1.0,
     );
     tile.anchor_to_macro(
         macro_map,
@@ -141,9 +117,9 @@ pub fn generate_map_tile(
         origin_y,
         world_size_x,
         world_size_y,
-        river_threshold,
+        crate::rivers::LOD_THRESHOLD_MACRO,
         MAP_TILE_MOUNTAIN_DETAIL_GAIN,
-        micro_detail,
+        false,
     );
     tile
 }
@@ -352,6 +328,10 @@ pub struct BiomeMap {
     #[serde(skip)]
     pub river_network: Option<Arc<RiverNetwork>>,
 
+    /// The macro map only: the land's height on a finer grid, which tiles
+    /// and chunks anchored to this map take their ground from.
+    pub fine_heights: Option<FineHeights>,
+
     pub world_width: f64,
     pub world_height: f64,
 }
@@ -387,6 +367,7 @@ impl BiomeMap {
             drainage_area: vec![0; n],
             sediment: vec![0.0; n],
             river_network: None,
+            fine_heights: None,
             world_width,
             world_height,
         }
@@ -547,6 +528,7 @@ impl BiomeMap {
         // Erosion and the rivers share one drainage: water runs to the sea
         // (not to ponds), fed by run-off that is fullest in the terminus.
         let mut drainage = None;
+        let mut fine_land = None;
         let drains = |ground: &[f64], map: &BiomeMap| {
             let is_sea = sea_bodies(&map.continentalness, tile_w, tile_h, SEA_LEVEL);
             let rainfall: Vec<f64> = (0..tile_w * tile_h)
@@ -558,7 +540,7 @@ impl BiomeMap {
             // The land is grown from uplift and erosion; the noise heightmap
             // above only stands in for tiles that are anchored to the macro
             // map later.
-            let landscape = grow_landscape(&LandscapeInputs {
+            let inputs = LandscapeInputs {
                 continentalness: &map.continentalness,
                 peaks_valleys: &map.peaks_valleys,
                 tectonic: &map.tectonic,
@@ -567,7 +549,13 @@ impl BiomeMap {
                 humidity: &map.humidity,
                 width: tile_w,
                 height: tile_h,
-            });
+            };
+            let landscape = grow_landscape(&inputs);
+            // Rivers are read from a finer copy of the land, so they follow
+            // valleys narrower than a macro cell.
+            if run_rivers {
+                fine_land = Some(refine_landscape(&inputs, &landscape.heightmap));
+            }
             map.heightmap = landscape.heightmap;
             map.drainage_area = landscape
                 .drainage
@@ -591,23 +579,42 @@ impl BiomeMap {
 
         // ── Phase 4: River network (macro only) ───────────────────────────────
         if run_rivers {
-            // Without erosion there is no drainage yet: solve it on the
-            // ground as it stands.
-            let drainage = drainage.unwrap_or_else(|| {
-                let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
-                crate::drainage::solve_drainage(&ground, &is_sea, &rainfall, tile_w, tile_h)
-            });
-            let network = RiverNetwork::generate(
-                &drainage,
-                &map.tectonic,
-                &map.continentalness,
-                &map.light_level,
-                &map.humidity,
-                &map.temperature,
-                tile_w,
-                tile_h,
-                SEA_LEVEL,
-            );
+            let network = if let Some(fine) = fine_land {
+                let scale = REFINED_CELLS_PER_MACRO_CELL;
+                let temperature = refined_field(&map.temperature, tile_w, tile_h, scale);
+                // On the fine grid the ground itself says where the sea is.
+                let network = RiverNetwork::generate(
+                    &fine.drainage,
+                    &fine.tectonic,
+                    &fine.ground,
+                    &fine.light_level,
+                    &fine.humidity,
+                    &temperature,
+                    fine.heights.width,
+                    fine.heights.height,
+                    SEA_LEVEL,
+                );
+                map.fine_heights = Some(fine.heights);
+                network
+            } else {
+                // Without erosion there is no drainage yet: solve it on the
+                // ground as it stands.
+                let drainage = drainage.unwrap_or_else(|| {
+                    let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
+                    crate::drainage::solve_drainage(&ground, &is_sea, &rainfall, tile_w, tile_h, 0)
+                });
+                RiverNetwork::generate(
+                    &drainage,
+                    &map.tectonic,
+                    &map.continentalness,
+                    &map.light_level,
+                    &map.humidity,
+                    &map.temperature,
+                    tile_w,
+                    tile_h,
+                    SEA_LEVEL,
+                )
+            };
             map.rivers = network.to_flow_grid(tile_w, tile_h);
             map.river_network = Some(Arc::new(network));
         }
@@ -857,7 +864,12 @@ impl BiomeMap {
                 // Sample the macro heightmap. This is the value the macro pass
                 // used for ALL its derivations and biome classification. Runtime
                 // must use the same value as the spline input to match macro.
-                let macro_hm = macro_map.sample_field_at(&macro_map.heightmap, wx, wy);
+                // Where the macro map carries a finer copy of its land, the
+                // ground comes from that.
+                let macro_hm = match &macro_map.fine_heights {
+                    Some(fine) => fine.sample(wx, wy),
+                    None => macro_map.sample_field_at(&macro_map.heightmap, wx, wy),
+                };
 
                 // Pull anchored base identity layers.
                 let cont = self.continentalness[idx];
@@ -903,7 +915,13 @@ impl BiomeMap {
                 let stress = 1.0 - tect;
                 let above_sea = (macro_hm - SEA_LEVEL).max(0.0);
                 let mountain_intensity = (stress * above_sea * 3.0).min(1.0);
-                let mountain_detail = peaks * mountain_intensity * mountain_detail_gain;
+                // Fine land has its own relief; the peaks layer adds bumps
+                // only where there is none.
+                let mountain_detail = if macro_map.fine_heights.is_some() {
+                    0.0
+                } else {
+                    peaks * mountain_intensity * mountain_detail_gain
+                };
                 let mut hm = (macro_hm + mountain_detail).clamp(-1.0, 1.0);
                 if apply_micro_detail {
                     hm = derived::derive_micro_heightmap(hm, wx, wy, &detail_noise);

@@ -129,7 +129,7 @@ impl Sandbox {
         };
         for _ in 0..count {
             let before = self.ground.clone();
-            erosion_step(&mut self.ground, &mut self.sediment, &land, &settings.erosion);
+            erosion_step(&mut self.ground, &mut self.sediment, &land, &settings.erosion, self.steps);
             let land_cells = self.is_sea.iter().filter(|sea| !**sea).count().max(1);
             self.last_change = before
                 .iter()
@@ -160,7 +160,7 @@ impl Sandbox {
     }
 
     fn drainage(&self, settings: &Settings) -> Drainage {
-        solve_drainage(&self.ground, &self.is_sea, &self.runoff(settings), self.width, self.height)
+        solve_drainage(&self.ground, &self.is_sea, &self.runoff(settings), self.width, self.height, self.steps)
     }
 
     /// Height of the highest land, in blocks above sea level.

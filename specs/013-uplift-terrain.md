@@ -1,6 +1,6 @@
 # Spec 013 - Terrain From Uplift and Erosion
 
-**Status:** In progress. Stage 0 (sandbox) and stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) done. Stages 2 to 6 not started.
+**Status:** In progress. Stage 0 (sandbox), stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) and the first half of stage 5 (land on a finer grid) done. Stages 2, 3, 4 and 6 not started.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (drainage, river courses)
 **Supersedes:** the noise heightmap, the noise-driven biome inputs, and the "every river reaches the sea" invariant
@@ -188,6 +188,43 @@ Seed 42: half the land lies below 0.38 (76 blocks) and a tenth above 0.86
 LifeGen was not recalibrated and it shows: 1079 provinces, 44% of them
 uninhabited (17% before), 20 cities (102 before). The taller, steeper land
 scores as less habitable. That is stage 6's work.
+
+## Fine grid (first half of stage 5) as built
+
+Stage 5 was brought forward: on the map, close up is where the land is
+looked at, and at one cell per chunk the grown terrain was a few smooth
+blobs under a uniform noise texture.
+
+- **Four cells per chunk.** After the macro land is grown, it is doubled in
+  resolution twice (to 4096 by 2048), with 20 and then 8 steps of erosion,
+  so the finer grids have valleys of their own. A few rounds of slope creep
+  alone then close gullies a single cell wide, which shade as a rash of
+  bumps. Valleys exist down to a few hundred blocks across.
+- **Rivers come from the fine drainage,** so they run in the fine valleys.
+  The meander warp is cut from 2.4 world units to 0.35 so it cannot carry a
+  river out of its valley.
+- **Water is routed by lot.** Water can only run to one of eight
+  neighbours. Always taking the steepest made valleys and rivers run dead
+  straight along those eight directions. The neighbour is now drawn by lot
+  among the downhill ones, likelier the steeper (by slope squared), and
+  differently each step. This removed most of the grid look.
+- **Tiles and chunks take their ground from the fine grid.** The macro pack
+  carries it as 16-bit heights (pack: 14 MB to 29 MB). Map tiles are
+  generated without the ground noise the game's chunks add and are shaded
+  from the fine land alone; the map's zoom stops at 64, about 16 chunks
+  across, below which there is no more shape to show.
+- Generating the macro map takes about 35 seconds and 2 GB.
+
+Seed 42: 162 river courses; 39 provinces with a major river.
+
+Still to do in stage 5: a real channel and valley floor cut along each
+river at chunk scale, and ground detail that depends on regime in place of
+one noise. The game's chunks still add that one noise.
+
+Known faults: some valleys and ridges still run straight along the grid;
+land at the uplift limit is a flat plateau; the map's sea and province
+borders are still one cell per chunk, so they are blocky against the fine
+coast.
 
 ## Costs
 

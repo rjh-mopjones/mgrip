@@ -4,7 +4,8 @@
 //! Runtime chunks are anchored to the macro map (ocean mask, heights, rivers).
 //! Generating that map takes several seconds, so the game loads it from a pack
 //! instead. A pack holds the layers anchoring and macro sampling read, as
-//! 32-bit floats, plus the river courses, gzip-compressed.
+//! 32-bit floats, plus the land's fine-grid heights and the river courses,
+//! gzip-compressed.
 //!
 //! A pack is only valid for the seed and the generator code it was made with.
 //! It carries a low-resolution probe of the terrain; `matches_generator`
@@ -15,11 +16,12 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use mg_core::TileType;
+use mg_noise::landscape::FineHeights;
 use mg_noise::{generate_macro_probe, BiomeMap, RiverCourse};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-const MAGIC: &[u8; 6] = b"MGMP02";
+const MAGIC: &[u8; 6] = b"MGMP03";
 /// Largest probe difference still counted as the same generator. Allows for
 /// maths library differences between native and web builds.
 const PROBE_TOLERANCE: f32 = 1.0e-4;
@@ -42,7 +44,47 @@ pub struct MacroPack {
     temperature: Vec<f32>,
     aridity: Vec<f32>,
     biomes: Vec<TileType>,
+    fine_heights: Option<PackedHeights>,
     river_courses: Vec<RiverCourse>,
+}
+
+/// The land's fine-grid heights (`mg_noise::landscape::FineHeights`), each as
+/// a 16-bit step between -1 and 1: about a 160th of a block, in half the
+/// space of a 32-bit float.
+#[derive(Serialize, Deserialize)]
+struct PackedHeights {
+    cells_per_wu: u32,
+    width: u32,
+    height: u32,
+    steps: Vec<u16>,
+}
+
+impl PackedHeights {
+    fn from_heights(heights: &FineHeights) -> Self {
+        Self {
+            cells_per_wu: heights.cells_per_wu as u32,
+            width: heights.width as u32,
+            height: heights.height as u32,
+            steps: heights
+                .heights
+                .iter()
+                .map(|height| ((height.clamp(-1.0, 1.0) + 1.0) * 0.5 * u16::MAX as f32).round() as u16)
+                .collect(),
+        }
+    }
+
+    fn to_heights(&self) -> FineHeights {
+        FineHeights {
+            cells_per_wu: self.cells_per_wu as usize,
+            width: self.width as usize,
+            height: self.height as usize,
+            heights: self
+                .steps
+                .iter()
+                .map(|&step| step as f32 / u16::MAX as f32 * 2.0 - 1.0)
+                .collect(),
+        }
+    }
 }
 
 fn narrowed(layer: &[f64]) -> Vec<f32> {
@@ -73,6 +115,7 @@ impl MacroPack {
             temperature: narrowed(&map.temperature),
             aridity: narrowed(&map.aridity),
             biomes: map.biomes.clone(),
+            fine_heights: map.fine_heights.as_ref().map(PackedHeights::from_heights),
             river_courses: map
                 .river_network
                 .as_ref()
@@ -105,6 +148,7 @@ impl MacroPack {
         map.temperature = widened(&self.temperature);
         map.aridity = widened(&self.aridity);
         map.biomes = self.biomes.clone();
+        map.fine_heights = self.fine_heights.as_ref().map(PackedHeights::to_heights);
         map
     }
 

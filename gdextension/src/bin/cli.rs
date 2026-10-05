@@ -154,6 +154,14 @@ enum InspectKind {
         /// Chunk Y
         chunk_y: u32,
     },
+    /// Generate the macro map and write a hillshade of its land at the
+    /// finest grid it has, for judging the shape of the terrain
+    Relief {
+        /// World seed
+        seed: u32,
+        /// PNG to write
+        output: std::path::PathBuf,
+    },
     /// Print value percentiles of each macro layer over land cells, for
     /// calibrating formulas that read those layers
     LayerStats {
@@ -272,6 +280,7 @@ fn main() {
                 chunk_x,
                 chunk_y,
             } => run_inspect_chunk_seam(seed, chunk_x, chunk_y),
+            InspectKind::Relief { seed, output } => run_inspect_relief(seed, &output),
             InspectKind::LayerStats { layers_tag } => run_inspect_layer_stats(&layers_tag),
             InspectKind::LevelPresentation { level_tag } => {
                 run_inspect_level_presentation(&level_tag)
@@ -353,7 +362,6 @@ fn generate_macro_tile(
         macro_map,
         &river_network.courses,
         seed,
-        mg_noise::MapTileDetail::Overview,
         wx,
         wy,
         TILE_WORLD_SIZE,
@@ -889,6 +897,31 @@ fn run_export_macro_pack(seed: u32, output: &Path) {
         "macro pack for seed {seed} written to {}: {:.1} MB, {:.1}s",
         output.display(),
         bytes.len() as f64 / 1_048_576.0,
+        started.elapsed().as_secs_f64()
+    );
+}
+
+// ─── inspect relief ──────────────────────────────────────────────────────────
+
+fn run_inspect_relief(seed: u32, output: &Path) {
+    let started = Instant::now();
+    let map = mg_noise::generate_macro_map(seed);
+    // Anything below sea level is left flat, as on the site's map.
+    let land: Vec<u16> = map
+        .heightmap
+        .iter()
+        .map(|&height| u16::from(height >= mg_noise::SEA_LEVEL))
+        .collect();
+    let image = relief_image(&map, &land);
+    if let Err(error) = image.save(output) {
+        eprintln!("error: saving {}: {error}", output.display());
+        std::process::exit(1);
+    }
+    println!(
+        "relief of seed {seed} written to {}: {}x{}, {:.1}s",
+        output.display(),
+        image.width(),
+        image.height(),
         started.elapsed().as_secs_f64()
     );
 }
@@ -1606,13 +1639,19 @@ const RELIEF_FULL_CONTRAST_SHARE: f64 = 0.02;
 /// map-drawing convention (lit from below, hills read as hollows). The sea
 /// (`province_ids` 0) is left flat.
 fn relief_image(map: &BiomeMap, province_ids: &[u16]) -> image::GrayImage {
-    let (width, height) = (map.width, map.height);
-    let height_at = |x: usize, y: usize| map.heightmap[y * width + x];
+    // Shade the finest land there is: the fine grid if the map carries one.
+    let fine = map.fine_heights.as_ref();
+    let scale = fine.map_or(1, |fine| fine.cells_per_wu);
+    let (width, height) = (map.width * scale, map.height * scale);
+    let height_at = |x: usize, y: usize| match fine {
+        Some(fine) => fine.heights[y * width + x] as f64,
+        None => map.heightmap[y * width + x],
+    };
     // How steeply the ground rises towards the north-west.
     let rise: Vec<f64> = (0..width * height)
         .map(|cell| {
             let (x, y) = (cell % width, cell / width);
-            if province_ids[cell] == 0 {
+            if province_ids[(y / scale) * map.width + x / scale] == 0 {
                 return 0.0;
             }
             // The map joins east to west; north and south edges are clamped.
