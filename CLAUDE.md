@@ -269,8 +269,9 @@ Rust, no emscripten; the site build copies it to `dist/assets/terrain.wasm`):
 cd site && bun run build
 ```
 
-Writes one PNG per layer in the artifact, `relief.png` (hillshade of the macro
-heightmap), `network.json` (road paths, trade flows, river courses),
+Writes one PNG per layer in the artifact, `relief.png` (hillshade of the
+fine-grid land), `sea.png` (liquid sea on the same grid; the map's coast),
+`network.json` (road paths, trade flows, river courses),
 `chunks.bin` (per chunk: light level, zone, biome, province
 id) and `map.json` (province, faction and settlement tables). The map's seed
 must match `GameState.world_seed`, or the map and the spawned terrain will

@@ -217,14 +217,24 @@ blobs under a uniform noise texture.
 
 Seed 42: 162 river courses; 39 provinces with a major river.
 
-Still to do in stage 5: a real channel and valley floor cut along each
-river at chunk scale, and ground detail that depends on regime in place of
-one noise. The game's chunks still add that one noise.
+- **River channels.** Anchoring cuts each river into the ground of a tile
+  or chunk (`rivers::carve_depths`): a bed deepest in midstream, 0.2 of
+  height per world unit of half-width (about 8 blocks for the largest
+  river), and a valley floor half as deep at the bank, easing out over four
+  half-widths. Land is never cut below the sea. Chunk seams stay exact.
+- **Meander.** A sweep of 0.25 world units and a wiggle of 0.3 at a
+  wavelength of 4, enough to stop rivers running in straight stretches
+  without leaving their valleys.
+- **The map's coast** is drawn from `sea.png`, liquid sea at four cells per
+  chunk, not from province ids at one. Land in a chunk whose middle is sea
+  is given to a province next door.
+
+Still to do in stage 5: ground detail that depends on regime, in place of
+the one noise the game's chunks still add (issue #6).
 
 Known faults: some valleys and ridges still run straight along the grid;
-land at the uplift limit is a flat plateau; the map's sea and province
-borders are still one cell per chunk, so they are blocky against the fine
-coast.
+land at the uplift limit is a flat plateau; rivers still turn in angular
+steps where the fine grid's cells show through.
 
 ## Costs
 

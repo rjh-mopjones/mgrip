@@ -16,6 +16,7 @@
 const DEFAULT_SPAWN_CHUNK = { x: 440, y: 220 };
 const TERRAIN_IMAGE = "macromap.png";
 const RELIEF_IMAGE = "relief.png";
+const SEA_IMAGE = "sea.png";
 const MAX_ZOOM = 64;
 const ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_RATE = 0.0015;
@@ -145,19 +146,67 @@ function provinceOfCell(x, y) {
 	return chunkAt(wrapColumn(x), Math.max(0, Math.min(high - 1, y))).provinceId;
 }
 
+// Whether a point given in chunks is liquid sea. The sea is known on a
+// finer grid than provinces are (sea.png).
+function isSea(x, y) {
+	const { pixels, width, height } = worldMap.sea;
+	const perChunk = width / worldMap.meta.chunks_wide;
+	const column = ((Math.floor(x * perChunk) % width) + width) % width;
+	const row = Math.max(0, Math.min(height - 1, Math.floor(y * perChunk)));
+	return pixels[row * width + column] > 127;
+}
+
+// The eight cells round a cell, nearest first as the shader lists them.
+const CELLS_BESIDE = [
+	[1, 0],
+	[1, 1],
+	[0, 1],
+	[-1, 1],
+	[-1, 0],
+	[-1, -1],
+	[0, -1],
+	[1, -1],
+];
+
 // Province at a point given in chunks. Where a cell's corner pokes into a
 // neighbouring province the corner belongs to that province, which turns
-// stair-stepped borders into diagonals. The shader's provinceAt applies the
-// same rule, so what is clicked is what is drawn.
+// stair-stepped borders into diagonals. Land in a chunk with no province
+// belongs to a province next door. The shader's provinceAt applies the same
+// rules, so what is clicked is what is drawn.
 function provinceAtPoint(x, y) {
+	if (isSea(x, y)) return 0;
 	const [cellX, cellY] = [Math.floor(x), Math.floor(y)];
 	const own = provinceOfCell(cellX, cellY);
-	if (own === 0) return 0;
+	if (own === 0) {
+		for (const [dx, dy] of CELLS_BESIDE) {
+			const beside = provinceOfCell(cellX + dx, cellY + dy);
+			if (beside !== 0) return beside;
+		}
+		return 0;
+	}
 	const [inX, inY] = [x - cellX, y - cellY];
 	if (Math.min(inX, 1 - inX) + Math.min(inY, 1 - inY) >= 0.5) return own;
 	const across = provinceOfCell(cellX + (inX < 0.5 ? -1 : 1), cellY);
 	const along = provinceOfCell(cellX, cellY + (inY < 0.5 ? -1 : 1));
 	return across === along && across !== 0 ? across : own;
+}
+
+// The red channel of an image, for reading it as data.
+async function imagePixels(fileName) {
+	const element = new Image();
+	element.src = fileName;
+	await element.decode();
+	const surface = new OffscreenCanvas(
+		element.naturalWidth,
+		element.naturalHeight,
+	);
+	const context = surface.getContext("2d");
+	context.drawImage(element, 0, 0);
+	const rgba = context.getImageData(0, 0, surface.width, surface.height).data;
+	const pixels = new Uint8Array(surface.width * surface.height);
+	for (let index = 0; index < pixels.length; index++)
+		pixels[index] = rgba[index * 4];
+	return { pixels, width: surface.width, height: surface.height };
 }
 
 const provinceById = (provinceId) => worldMap.meta.provinces[provinceId - 1];
@@ -423,6 +472,7 @@ uniform sampler2D uBase;        // terrain, or a raw layer
 uniform sampler2D uProvinceIds; // one texel per chunk: province id, low byte in r
 uniform sampler2D uProvinces;   // row 0: colour per province; row 1: owning faction
 uniform sampler2D uRelief;      // hillshade: 0.5 is flat ground
+uniform sampler2D uSea;         // liquid sea, finer than one cell per chunk
 uniform vec2 uBaseOrigin;    // chunk at the base image's top-left corner
 uniform vec2 uBaseSize;      // chunks the base image covers
 uniform float uBaseShaded;   // 1 if the base image already has relief shading
@@ -464,15 +514,29 @@ int provinceOfCell(ivec2 cell) {
 	return unpackId(texelFetch(uProvinceIds, cell, 0));
 }
 
+// The sea is known on a finer grid than provinces are, so the coast is
+// drawn from it and not from the province ids.
+bool isSea(vec2 chunk) {
+	return texture(uSea, chunk / uWorld).r > 0.5;
+}
+
 // Province at a point. Province ids come one per chunk, which would give
 // stair-stepped borders; where a cell's corner pokes into a neighbouring
 // province, the corner is given to that province, turning steps into
-// diagonals. Coasts are left alone so they match the terrain image.
-// provinceAtPoint in map.js applies the same rule.
+// diagonals. Land in a chunk that has no province (its middle is sea)
+// belongs to a province next door. provinceAtPoint in map.js applies the
+// same rules.
 int provinceAt(vec2 chunk) {
+	if (isSea(chunk)) return 0;
 	ivec2 cell = ivec2(floor(chunk));
 	int own = provinceOfCell(cell);
-	if (own == 0) return 0;
+	if (own == 0) {
+		for (int direction = 0; direction < 8; direction++) {
+			int beside = provinceOfCell(cell + ivec2(round(RING[direction] * 1.3)));
+			if (beside != 0) return beside;
+		}
+		return 0;
+	}
 	vec2 inCell = fract(chunk);
 	vec2 toEdge = min(inCell, 1.0 - inCell);
 	if (toEdge.x + toEdge.y >= 0.5) return own;
@@ -502,8 +566,8 @@ void main() {
 		float land = 0.0;
 		for (int direction = 0; direction < 8; direction++) {
 			vec2 reach = RING[direction] * SHELF_CHUNKS;
-			if (provinceOfCell(ivec2(floor(chunk + reach * 0.5))) != 0) land += 0.6;
-			if (provinceOfCell(ivec2(floor(chunk + reach))) != 0) land += 0.4;
+			if (!isSea(chunk + reach * 0.5)) land += 0.6;
+			if (!isSea(chunk + reach)) land += 0.4;
 		}
 		shade = mix(shade, shade * 1.25 + 0.06, min(land / 4.0, 1.0));
 	}
@@ -590,10 +654,13 @@ function createRenderer() {
 	const [wide, high] = [meta.chunks_wide, meta.chunks_high];
 	const provinceCount = meta.provinces.length;
 
-	// Texture units: 0 base image, 1 province ids, 2 province table, 3 relief.
-	["uBase", "uProvinceIds", "uProvinces", "uRelief"].forEach((name, unit) => {
-		gl.uniform1i(uniform(name), unit);
-	});
+	// Texture units: 0 base image, 1 province ids, 2 province table, 3 relief,
+	// 4 sea.
+	["uBase", "uProvinceIds", "uProvinces", "uRelief", "uSea"].forEach(
+		(name, unit) => {
+			gl.uniform1i(uniform(name), unit);
+		},
+	);
 
 	const dataTexture = (unit) => {
 		gl.activeTexture(gl.TEXTURE0 + unit);
@@ -733,6 +800,9 @@ function createRenderer() {
 			gl.viewport(0, 0, canvas.width, canvas.height);
 			// Look the texture up first: creating one changes the active unit.
 			const relief = imageTexture(RELIEF_IMAGE);
+			const sea = imageTexture(SEA_IMAGE);
+			gl.activeTexture(gl.TEXTURE4);
+			gl.bindTexture(gl.TEXTURE_2D, sea);
 			gl.activeTexture(gl.TEXTURE3);
 			gl.bindTexture(gl.TEXTURE_2D, relief);
 			gl.uniform1f(uniform("uStateBands"), stateBands ? 1 : 0);
@@ -1558,6 +1628,7 @@ async function loadWorldMap() {
 		]);
 		worldMap = { meta, chunks: new Uint8Array(chunks) };
 		worldMap.network = prepareNetwork(network);
+		worldMap.sea = await imagePixels(SEA_IMAGE);
 		worldMap.roadKinds = network.road_kinds;
 	} catch {
 		status.textContent =

@@ -1411,6 +1411,10 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         .save(output_dir.join(SITE_MAP_RELIEF_IMAGE))
         .unwrap_or_else(|e| fail(format!("saving {SITE_MAP_RELIEF_IMAGE}: {e}")));
 
+    sea_image(&map)
+        .save(output_dir.join(SITE_MAP_SEA_IMAGE))
+        .unwrap_or_else(|e| fail(format!("saving {SITE_MAP_SEA_IMAGE}: {e}")));
+
     let names = mg_life::generate_names(
         &province_map,
         &faction_map,
@@ -1629,6 +1633,37 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
 }
 
 const SITE_MAP_RELIEF_IMAGE: &str = "relief.png";
+const SITE_MAP_SEA_IMAGE: &str = "sea.png";
+
+/// Liquid sea (white) on the finest grid the map's land has. The map page
+/// draws its coast from this: provinces are one cell per chunk, far coarser
+/// than the coast.
+fn sea_image(map: &BiomeMap) -> image::GrayImage {
+    let fine = map.fine_heights.as_ref();
+    let scale = fine.map_or(1, |fine| fine.cells_per_wu);
+    let (width, height) = (map.width * scale, map.height * scale);
+    let splines = mg_noise::BiomeSplines::new(mg_noise::SEA_LEVEL);
+    let pixels = (0..width * height)
+        .map(|cell| {
+            let (wx, wy) = ((cell % width) as f64 / scale as f64, (cell / width) as f64 / scale as f64);
+            let ground = match fine {
+                Some(fine) => fine.heights[cell] as f64,
+                None => map.heightmap[cell],
+            };
+            // Below sea level is sea only where it is neither frozen nor dried out.
+            let is_sea = ground < mg_noise::SEA_LEVEL
+                && splines.sea_is_liquid(
+                    ground,
+                    map.sample_field_at(&map.temperature, wx, wy),
+                    map.sample_field_at(&map.tectonic, wx, wy),
+                    map.sample_field_at(&map.light_level, wx, wy),
+                );
+            if is_sea { 255 } else { 0 }
+        })
+        .collect();
+    image::GrayImage::from_raw(width as u32, height as u32, pixels)
+        .expect("sea buffer matches the map size")
+}
 const SITE_MAP_MACRO_PACK: &str = "world.mgmacro";
 /// The steepest slopes (all but this share of land cells) reach full light
 /// or full shadow.
