@@ -42,6 +42,13 @@ pub struct Drainage {
     pub flow: Vec<f64>,
 }
 
+/// How far a cell is under ice, from 0 (none) to 1 (ice sheet): the night
+/// side, fading out towards the terminus as run-off fades in.
+pub fn iciness(light_level: f64) -> f64 {
+    ((FULL_RUNOFF_FROM_LIGHT - light_level) / (FULL_RUNOFF_FROM_LIGHT - FROZEN_BELOW_LIGHT))
+        .clamp(0.0, 1.0)
+}
+
 /// Run-off from a cell, relative to a well-watered cell in the terminus.
 pub fn rainfall(light_level: f64, humidity: f64) -> f64 {
     rainfall_with(light_level, humidity, FROZEN_RUNOFF, EVAPORATED_RUNOFF)

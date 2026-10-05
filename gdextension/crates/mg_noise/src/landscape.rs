@@ -9,7 +9,7 @@
 //! The parameters were chosen by eye in the site's erosion sandbox.
 
 use crate::biome_map::{SEA_LEVEL, WORLD_WIDTH};
-use crate::drainage::{rainfall, solve_drainage, Drainage};
+use crate::drainage::{iciness, rainfall, solve_drainage, Drainage};
 use crate::erosion_sim::{crept, erosion_step, ErosionParams, Land};
 use crate::rivers::{position_jitter, sea_bodies};
 
@@ -254,11 +254,13 @@ impl Grid {
         )
         .mixed(&UpliftMix::default());
         let rainfall = self.rainfall();
+        let ice: Vec<f64> = self.light_level.iter().map(|&light| iciness(light)).collect();
         let land = Land {
             is_base_level: is_sea,
             rock_hardness: &self.rock_hardness,
             uplift_share: &uplift_share,
             rainfall: &rainfall,
+            ice: &ice,
             width: self.width,
             height: self.height,
         };

@@ -19,6 +19,7 @@ const stepArguments = (settings) => [
 	settings.interiorUplift,
 	settings.rangeUplift,
 	settings.faultUplift,
+	settings.iceWidening,
 ];
 
 function draw(settings) {

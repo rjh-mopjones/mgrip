@@ -1,6 +1,6 @@
 # Spec 013 - Terrain From Uplift and Erosion
 
-**Status:** In progress. Stage 0 (sandbox), stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) and the first half of stage 5 (land on a finer grid) done. Stages 2, 3, 4 and 6 not started.
+**Status:** In progress. Stage 0 (sandbox), stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) stage 2 (ice, uplift ceilings, terminal lakes) and most of stage 5 (land on a finer grid, river channels) done. Stages 3, 4 and 6 not started.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (drainage, river courses)
 **Supersedes:** the noise heightmap, the noise-driven biome inputs, and the "every river reaches the sea" invariant
@@ -235,6 +235,37 @@ the one noise the game's chunks still add (issue #6).
 Known faults: some valleys and ridges still run straight along the grid;
 land at the uplift limit is a flat plateau; rivers still turn in angular
 steps where the fine grid's cells show through.
+
+## Stage 2 as built
+
+- **Ice.** Under ice (light below 0.20, fully by 0.08) an ice stream pulls
+  the ground beside it down towards its own level each step, harder the
+  more run-off gathers in it (`ice_widening`, 0.25). Valleys on the night
+  side widen into troughs. Ice still cuts along the same drainage as water;
+  it has no flow of its own, and there are no fjords.
+- **Uplift ceilings.** Land stops rising at a height set by how hard it is
+  pushed up: the full limit where its share of uplift is 1.2 or more, down
+  to 15% of it where there is little. Before, all land rose towards one
+  limit, and wherever little water ran (most of the day side) it reached it
+  and stood as one flat plateau. Now the day side keeps the shape of its
+  uplift: swells and ranges, uncut.
+- **Terminal lakes.** A river runs wherever its water is liquid; each
+  segment carries one over its longest wet stretch. Where the stretch gives
+  out before the sea or the next river (ground too dry or too cold, or a
+  pond) it ends in a lake. Before, a whole river system was dropped if any
+  stretch downstream was dry. A lake is kept as a stub of a river course as
+  wide as the lake, so everything that draws or carves rivers handles it.
+- Wind is not modelled as erosion. Dunes and salt pans belong to ground
+  detail (issue #6).
+- Hollows in the land are still filled level; with rivers cutting every
+  sill there are almost none to keep.
+
+Seed 42: 253 river courses, 20 of them terminal lakes; 52 provinces with a
+major river. With plateaus gone and more rivers, LifeGen recovers without
+being recalibrated: 21% of provinces uninhabited (45% before), 52 cities.
+
+The ceilings lower the whole world's relief, including the terminus that
+the sandbox parameters were chosen for. They may want choosing again.
 
 ## Costs
 

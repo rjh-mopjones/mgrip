@@ -199,6 +199,7 @@ fn sandbox_settings(
     interior_uplift: f64,
     range_uplift: f64,
     fault_uplift: f64,
+    ice_widening: f64,
 ) -> sandbox::Settings {
     sandbox::Settings {
         erosion: mg_noise::ErosionParams {
@@ -207,6 +208,7 @@ fn sandbox_settings(
             flow_exponent,
             slope_creep,
             uplift_limit,
+            ice_widening,
             time_step: mg_noise::ErosionParams::default().time_step,
         },
         night_runoff,
@@ -249,6 +251,7 @@ pub extern "C" fn mg_sandbox_step(
     interior_uplift: f64,
     range_uplift: f64,
     fault_uplift: f64,
+    ice_widening: f64,
 ) {
     let settings = sandbox_settings(
         erodibility,
@@ -261,6 +264,7 @@ pub extern "C" fn mg_sandbox_step(
         interior_uplift,
         range_uplift,
         fault_uplift,
+        ice_widening,
     );
     if let Some(sandbox) = SANDBOX.lock().expect("sandbox lock").as_mut() {
         sandbox.step(count, &settings);
@@ -300,6 +304,7 @@ pub extern "C" fn mg_sandbox_render(
         interior_uplift,
         range_uplift,
         fault_uplift,
+        0.0,
     );
     let (rgba, rivers, lakes) = sandbox.render(view, river_threshold, &settings);
     *SANDBOX_WATER.lock().expect("water lock") = (rivers, lakes);

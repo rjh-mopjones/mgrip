@@ -6,7 +6,7 @@
 //! coarser grid than the macro map so a step is quick enough to watch.
 
 use mg_noise::biome_map::SEA_LEVEL;
-use mg_noise::drainage::{rainfall_with, solve_drainage, Drainage};
+use mg_noise::drainage::{iciness, rainfall_with, solve_drainage, Drainage};
 use mg_noise::landscape::{starting_ground, UpliftMix, UpliftSources};
 use mg_noise::rivers::sea_bodies;
 use mg_noise::{erosion_step, BiomeMap, ErosionParams, Land};
@@ -119,11 +119,13 @@ impl Sandbox {
     pub fn step(&mut self, count: u32, settings: &Settings) {
         let rainfall = self.runoff(settings);
         let uplift_share = self.uplift_share(settings);
+        let ice: Vec<f64> = self.light_level.iter().map(|&light| iciness(light)).collect();
         let land = Land {
             is_base_level: &self.is_sea,
             rock_hardness: &self.rock_hardness,
             uplift_share: &uplift_share,
             rainfall: &rainfall,
+            ice: &ice,
             width: self.width,
             height: self.height,
         };
