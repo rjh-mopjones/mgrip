@@ -35,6 +35,11 @@ pub struct ErosionParams {
     /// level each step, from 0 (not at all) to 1 (all the way). Ice does not
     /// keep to a channel as water does: it widens its valley into a trough.
     pub ice_widening: f64,
+    /// How deep thick, fast ice digs its bed each unit of time. Ice follows
+    /// its own surface, so it digs where it is, whatever the ground does
+    /// further on: it can leave a basin deeper than its outlet, and cut
+    /// below the sea.
+    pub ice_cutting: f64,
     /// In desert a channel cuts only once it gathers the run-off of this
     /// many square world units of well-watered land: only floods do work
     /// there, and the ground between the few channels they cut stays whole.
@@ -59,6 +64,7 @@ impl Default for ErosionParams {
             slope_creep: 0.08,
             uplift_limit: 1.0,
             ice_widening: 0.25,
+            ice_cutting: 0.012,
             canyon_flood_area: 0.5,
             canyon_power: 4.0,
             scarp_retreat: 0.12,
@@ -80,6 +86,19 @@ const CEILING_LIFTED_BY_RUNOFF: f64 = 0.8;
 /// Run-off gathered from this many square world units of well-watered land
 /// makes a full-strength ice stream.
 const ICE_STREAM_AREA_WU2: f64 = 12.0;
+/// Ice lies level across anything narrower than about this many world
+/// units: it fills valleys and hollows up to the ground around them.
+const ICE_SMOOTHING_WU: f64 = 6.0;
+/// Snow that falls on a cell under an ice sheet, in the units of `rainfall`.
+const SNOWFALL: f64 = 0.6;
+/// Ice thinner than this digs nothing; water runs under and round it.
+const ICE_MIN_THICKNESS: f64 = 0.004;
+/// An ice surface falling this much height per world unit, or more, slides
+/// at full speed.
+const ICE_FULL_SLOPE: f64 = 0.03;
+/// Ice digs no deeper than this (24 blocks below the sea): the depth of a
+/// fjord.
+const FJORD_FLOOR: f64 = -0.12;
 
 /// The land being eroded: what does not change from step to step.
 pub struct Land<'a> {
@@ -111,10 +130,19 @@ pub fn erosion_step(
     step: u32,
 ) -> Drainage {
     let dt = params.time_step;
+    // Under ice it is the ice that flows, down its own surface: smoother than
+    // the ground, level across valleys, and able to ride over a sill.
+    let ice_thickness = ice_thickness(ground, land);
+    let surface: Vec<f64> = ground.iter().zip(&ice_thickness).map(|(bed, ice)| bed + ice).collect();
+    // Little water runs off the night side, but none of its snow is lost:
+    // it all leaves as ice, and as meltwater where the ice ends.
+    let gathered: Vec<f64> = (0..ground.len())
+        .map(|cell| land.rainfall[cell] + (SNOWFALL - land.rainfall[cell]).max(0.0) * land.ice[cell])
+        .collect();
     let drainage = solve_drainage(
-        ground,
+        &surface,
         land.is_base_level,
-        land.rainfall,
+        &gathered,
         land.lake_evaporation,
         land.width,
         land.height,
@@ -123,6 +151,8 @@ pub fn erosion_step(
 
     let cells_per_wu = land.width as f64 / crate::biome_map::WORLD_WIDTH;
     let flood = params.canyon_flood_area * cells_per_wu * cells_per_wu;
+    let full_ice_stream = ICE_STREAM_AREA_WU2 * cells_per_wu * cells_per_wu;
+    let sea_level = crate::biome_map::SEA_LEVEL;
 
     // From the sea upwards, so each cell's receiver is already lowered.
     for &cell in &drainage.order {
@@ -146,12 +176,41 @@ pub fn erosion_step(
         let lifted = ground[cell] + dt * params.uplift * share * room_to_rise;
         let receiver = drainage.receivers[cell];
         // Standing water cuts nothing: a lake bed only rises or sinks.
-        let under_lake = drainage.lake_depth(ground, cell) >= LAKE_MIN_DEPTH;
+        let under_lake = drainage.lake_depth(&surface, cell) >= LAKE_MIN_DEPTH;
         if receiver == NO_RECEIVER || under_lake {
             ground[cell] = lifted;
             continue;
         }
         let receiver = receiver as usize;
+        if ice_thickness[cell] >= ICE_MIN_THICKNESS {
+            // Thick ice digs by how much of it there is and how fast it
+            // slides, not towards the height of the ground downstream.
+            let fall = (surface[cell] - surface[receiver]) / step_distance(cell, receiver, land.width)
+                * cells_per_wu;
+            let dug = dt
+                * params.ice_cutting
+                * land.ice[cell]
+                * (drainage.flow[cell] / full_ice_stream).sqrt().min(1.0)
+                * (fall / ICE_FULL_SLOPE).clamp(0.0, 1.0);
+            let lowered = (lifted - dug).max(FJORD_FLOOR.min(lifted));
+            sediment[cell] += (ground[cell] - lowered).max(0.0);
+            ground[cell] = lowered;
+            continue;
+        }
+        // A river cuts down towards where it is going. At the sea that is
+        // the sea's surface, not its bed; at a dried-out sea it is the bed.
+        let towards = if land.is_base_level[receiver] {
+            ground[receiver].max(sea_level) * (1.0 - land.desert[cell])
+                + ground[receiver] * land.desert[cell]
+        } else {
+            ground[receiver]
+        };
+        // Water cannot cut towards ground that stands above it (as it may
+        // where the way out was found over ice).
+        if towards >= lifted {
+            ground[cell] = lifted;
+            continue;
+        }
         // In desert only what a channel carries beyond a flood's worth
         // cuts, and cuts hard.
         let desert = land.desert[cell];
@@ -161,7 +220,7 @@ pub fn erosion_step(
             * (1.0 + (params.canyon_power - 1.0) * desert);
         let cutting = erodibility * dt * working_flow.powf(params.flow_exponent)
             / step_distance(cell, receiver, land.width);
-        let lowered = (lifted + cutting * ground[receiver]) / (1.0 + cutting);
+        let lowered = (lifted + cutting * towards) / (1.0 + cutting);
         sediment[cell] += (ground[cell] - lowered).max(0.0);
         ground[cell] = lowered;
     }
@@ -169,6 +228,51 @@ pub fn erosion_step(
     widen_valleys(ground, &drainage, land, params, flood);
     *ground = crept(ground, land.is_base_level, land.width, land.height, params.slope_creep);
     drainage
+}
+
+/// How thick the ice lies on each cell: it fills everything below a
+/// smoothed copy of the ground, so it is deep in valleys and hollows and
+/// absent from ridges. Nothing where there is no ice.
+fn ice_thickness(ground: &[f64], land: &Land) -> Vec<f64> {
+    if land.ice.iter().all(|&ice| ice <= 0.0) {
+        return vec![0.0; ground.len()];
+    }
+    let cells_per_wu = land.width as f64 / crate::biome_map::WORLD_WIDTH;
+    let reach = (ICE_SMOOTHING_WU * cells_per_wu / 2.0).round().max(1.0) as i32;
+    let smoothed = box_blurred(ground, land.width, land.height, reach);
+    (0..ground.len())
+        .map(|cell| {
+            if land.is_base_level[cell] {
+                0.0
+            } else {
+                (smoothed[cell] - ground[cell]).max(0.0) * land.ice[cell]
+            }
+        })
+        .collect()
+}
+
+/// `field` averaged over `reach` cells each way, along rows and then along
+/// columns. The map joins east to west; north and south edges repeat.
+pub fn box_blurred(field: &[f64], width: usize, height: usize, reach: i32) -> Vec<f64> {
+    let span = (2 * reach + 1) as f64;
+    let rows: Vec<f64> = (0..width * height)
+        .map(|cell| {
+            let (x, y) = ((cell % width) as i32, cell / width);
+            (-reach..=reach)
+                .map(|dx| field[y * width + (x + dx).rem_euclid(width as i32) as usize])
+                .sum::<f64>()
+                / span
+        })
+        .collect();
+    (0..width * height)
+        .map(|cell| {
+            let (x, y) = (cell % width, (cell / width) as i32);
+            (-reach..=reach)
+                .map(|dy| rows[(y + dy).clamp(0, height as i32 - 1) as usize * width + x])
+                .sum::<f64>()
+                / span
+        })
+        .collect()
 }
 
 /// Pull the ground beside a channel down towards the channel's level, where
@@ -262,7 +366,20 @@ mod tests {
 
     /// As `erode_under`, on land that is `desert` (0 none to 1 all).
     fn erode_in(steps: u32, ice_widening: f64, desert: f64) -> (Vec<f64>, Drainage) {
+        erode_with(steps, ice_widening, desert, 0.0, 0.0)
+    }
+
+    /// The grooved slope after `steps`, with everything set: how far the
+    /// land is under `ice`, and how hard that ice widens and cuts.
+    fn erode_with(
+        steps: u32,
+        ice_widening: f64,
+        desert: f64,
+        ice: f64,
+        ice_cutting: f64,
+    ) -> (Vec<f64>, Drainage) {
         let desert = [desert; 144];
+        let ice = [ice; 144];
         let (mut ground, sea) = grooved_slope();
         let params = ErosionParams {
             erodibility: 0.04,
@@ -272,6 +389,7 @@ mod tests {
             slope_creep: 0.04,
             uplift_limit: 1.0,
             ice_widening,
+            ice_cutting,
             // On this 16-cell-wide grid, the rain of three cells.
             canyon_flood_area: 3.0 * (1024.0 / 16.0) * (1024.0 / 16.0),
             canyon_power: 4.0,
@@ -282,7 +400,7 @@ mod tests {
             rock_hardness: &[0.5; 144],
             uplift_share: &[0.0; 144],
             rainfall: &[1.0; 144],
-            ice: &[1.0; 144],
+            ice: &ice,
             lake_evaporation: &[0.0; 144],
             desert: &desert,
             width: 16,
@@ -311,12 +429,42 @@ mod tests {
 
     #[test]
     fn ice_cuts_a_wider_valley_than_water() {
-        let (by_water, _) = erode_under(5, 0.0);
-        let (by_ice, _) = erode_under(5, 0.5);
+        let (by_water, _) = erode_with(5, 0.0, 0.0, 1.0, 0.0);
+        let (by_ice, _) = erode_with(5, 0.5, 0.0, 1.0, 0.0);
         // One row off the groove, in the middle of the slope: the valley side.
         let valley_side = 3 * 16 + 8;
 
         assert!(by_ice[valley_side] < by_water[valley_side]);
+    }
+
+    #[test]
+    fn ice_fills_the_valley_and_digs_where_water_would_have_stopped() {
+        let (ground, sea) = grooved_slope();
+        let land = Land {
+            is_base_level: &sea,
+            rock_hardness: &[0.5; 144],
+            uplift_share: &[0.0; 144],
+            rainfall: &[1.0; 144],
+            ice: &[1.0; 144],
+            lake_evaporation: &[0.0; 144],
+            desert: &[0.0; 144],
+            width: 16,
+            height: 9,
+        };
+        // Ice lies in the groove and not on the high ground beside it.
+        let thickness = ice_thickness(&ground, &land);
+        assert!(thickness[4 * 16 + 8] > thickness[16 + 8]);
+
+        // Where the valley meets the sea, ice digs below sea level; water
+        // only cuts down to its outlet.
+        let coast = 4 * 16 + 1;
+        let (by_water, _) = erode_with(40, 0.0, 0.0, 0.0, 0.0);
+        // (Slopes on this 16-cell world are tiny per world unit, so the ice
+        // is given a great deal of cutting power.)
+        let (by_ice, _) = erode_with(40, 0.0, 0.0, 1.0, 2.0);
+        assert!(by_water[coast] >= ground[4 * 16]);
+        assert!(by_ice[coast] < ground[4 * 16]);
+        assert!(by_ice[coast] >= FJORD_FLOOR);
     }
 
     #[test]

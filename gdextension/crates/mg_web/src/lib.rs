@@ -203,6 +203,7 @@ fn sandbox_settings(
     rift_sinking: f64,
     canyon_flood_area: f64,
     canyon_power: f64,
+    ice_cutting: f64,
 ) -> sandbox::Settings {
     sandbox::Settings {
         erosion: mg_noise::ErosionParams {
@@ -212,6 +213,7 @@ fn sandbox_settings(
             slope_creep,
             uplift_limit,
             ice_widening,
+            ice_cutting,
             canyon_flood_area,
             canyon_power,
             scarp_retreat: mg_noise::ErosionParams::default().scarp_retreat,
@@ -262,6 +264,7 @@ pub extern "C" fn mg_sandbox_step(
     rift_sinking: f64,
     canyon_flood_area: f64,
     canyon_power: f64,
+    ice_cutting: f64,
 ) {
     let settings = sandbox_settings(
         erodibility,
@@ -278,6 +281,7 @@ pub extern "C" fn mg_sandbox_step(
         rift_sinking,
         canyon_flood_area,
         canyon_power,
+        ice_cutting,
     );
     if let Some(sandbox) = SANDBOX.lock().expect("sandbox lock").as_mut() {
         sandbox.step(count, &settings);
@@ -322,6 +326,7 @@ pub extern "C" fn mg_sandbox_render(
         rift_sinking,
         0.0,
         1.0,
+        0.0,
     );
     let (rgba, rivers, lakes) = sandbox.render(view, river_threshold, &settings);
     *SANDBOX_WATER.lock().expect("water lock") = (rivers, lakes);

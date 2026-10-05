@@ -12,7 +12,7 @@ use crate::biome_map::{SEA_LEVEL, WORLD_WIDTH};
 use crate::drainage::{
     desert, iciness, lake_evaporation, rainfall, solve_drainage, Drainage, LAKE_MIN_DEPTH,
 };
-use crate::erosion_sim::{crept, erosion_step, ErosionParams, Land};
+use crate::erosion_sim::{box_blurred, crept, erosion_step, ErosionParams, Land};
 use crate::rivers::{position_jitter, sea_bodies};
 
 /// Land starts this far above sea level, with a little unevenness so water
@@ -166,31 +166,12 @@ fn crest(wx: f64, wy: f64, shift: f64) -> f64 {
     sum / total
 }
 
-/// A field blurred over `reach` cells each way and rescaled to peak at 1.
-/// The map joins east to west.
+/// A field blurred over `reach` cells each way, several times, and rescaled
+/// to peak at 1.
 fn spread(field: &[f64], width: usize, height: usize, reach: i32) -> Vec<f64> {
-    let span = (2 * reach + 1) as f64;
     let mut current = field.to_vec();
     for _ in 0..FAULT_SPREAD_PASSES {
-        // A box blur along rows, then along columns.
-        let rows: Vec<f64> = (0..width * height)
-            .map(|cell| {
-                let (x, y) = ((cell % width) as i32, cell / width);
-                (-reach..=reach)
-                    .map(|dx| current[y * width + (x + dx).rem_euclid(width as i32) as usize])
-                    .sum::<f64>()
-                    / span
-            })
-            .collect();
-        current = (0..width * height)
-            .map(|cell| {
-                let (x, y) = (cell % width, (cell / width) as i32);
-                (-reach..=reach)
-                    .map(|dy| rows[(y + dy).clamp(0, height as i32 - 1) as usize * width + x])
-                    .sum::<f64>()
-                    / span
-            })
-            .collect();
+        current = box_blurred(&current, width, height, reach);
     }
     let peak = current.iter().copied().fold(1e-9, f64::max);
     current.iter().map(|value| value / peak).collect()

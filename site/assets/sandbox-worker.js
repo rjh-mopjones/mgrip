@@ -23,6 +23,7 @@ const stepArguments = (settings) => [
 	settings.riftSinking,
 	settings.canyonFloodArea,
 	settings.canyonPower,
+	settings.iceCutting,
 ];
 
 function draw(settings) {

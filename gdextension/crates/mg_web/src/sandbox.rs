@@ -211,7 +211,10 @@ impl Sandbox {
                     View::Uplift => blend(FLAT_FIELD, UPLIFT_FIELD, uplift_share[cell] / highest_uplift),
                     View::Runoff => blend(FLAT_FIELD, RUNOFF_FIELD, (drainage.flow[cell].ln_1p() / 8.0).min(1.0)),
                     View::Terrain => {
-                        let is_lake = drainage.filled[cell] - self.ground[cell] > LAKE_MIN_DEPTH;
+                        // Land cut below the sea is under it: a fjord, or
+                        // a river's drowned mouth.
+                        let is_lake = drainage.filled[cell] - self.ground[cell] > LAKE_MIN_DEPTH
+                            || self.ground[cell] < SEA_LEVEL;
                         let is_river = drainage.flow[cell] > river_threshold;
                         if is_lake {
                             lakes += 1;

@@ -307,7 +307,35 @@ own.
    Not done: sand seas towards the sub-stellar point (item 5), and cliffs
    as such. A cliff is narrower than the finest cell; mesas' steep sides
    are for the ground detail of issue #6.
-4. **To do: ice with its own flow,** and fjords.
+4. **Done: ice with its own flow.**
+   - **Thickness.** Ice fills everything below a copy of the ground
+     smoothed over about 6 world units, so it lies deep in valleys and
+     hollows and is absent from ridges. Scaled by how far the cell is under
+     ice (light below 0.20, fully by 0.08).
+   - **Flow.** Under ice the drainage is solved on the ice surface (ground
+     plus thickness), not the ground. The surface is smoother, so ice
+     ignores small features of its bed and can ride over a sill.
+   - **Snow.** A cell under an ice sheet adds 0.6 to what is gathered, not
+     the 7% of its rain that runs off as water: none of the snow is lost,
+     it leaves as ice and as meltwater where the ice ends. Rivers in the
+     cold terminus are larger for it.
+   - **Digging.** Ice at least 0.004 thick digs its bed by how much ice
+     gathers there and how steeply its surface falls (`ice_cutting`, 0.012
+     per unit time at full strength), not towards the height of the ground
+     downstream. So it can dig a basin deeper than its outlet, which holds
+     a lake, and it can dig below the sea, down to 24 blocks: a fjord.
+     Ground below sea level is sea to everything downstream of the
+     generator (biomes, the fine grid's coast, the map).
+   - **Rivers stop at the sea's surface.** A river used to cut towards the
+     height of the cell it drains to, which at the coast is the sea bed,
+     so with more water the whole night-side coast drowned. It now cuts
+     towards sea level there, and towards the bed only of a dried-out sea.
+   - Widening (stage 2) is unchanged and now sees the larger ice streams.
+
+   Not done: ice has no thickness in the finished world, only during
+   erosion; nothing is drawn as a glacier. Fjords are few, because most of
+   the night-side coast faces a frozen sea, where a fjord cannot be told
+   from the ice around it.
 5. **To do: wind.** A wind field and a sand budget; salt where water ends.
 
 Not yet done under 2: closed basins. A lake that loses all its water still

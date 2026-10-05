@@ -121,6 +121,16 @@ const SLIDERS = [
 		note: "Ground sinking where the crust pulls apart. Where it sinks faster than rivers cut its rim, a lake forms.",
 	},
 	{
+		key: "iceCutting",
+		label: "Ice digs its bed",
+		min: 0,
+		max: 0.03,
+		step: 0.001,
+		value: 0.012,
+		digits: 3,
+		note: "How deep thick, fast ice digs on the night side. Higher gives deeper troughs, basins behind sills, and fjords at the coast.",
+	},
+	{
 		key: "iceWidening",
 		label: "Ice widens valleys",
 		min: 0,
