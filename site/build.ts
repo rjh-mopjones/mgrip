@@ -420,6 +420,17 @@ function build(): void {
 	);
 
 	writePage(
+		"/sandbox/",
+		renderPage({
+			title: "Erosion sandbox",
+			activeNav: "/design/",
+			body: readFileSync(join(SITE_DIR, "content", "sandbox.html"), "utf8"),
+			scripts: ["/assets/sandbox.js"],
+			wide: true,
+		}),
+	);
+
+	writePage(
 		"/lore/",
 		renderPage({
 			title: "Lore",

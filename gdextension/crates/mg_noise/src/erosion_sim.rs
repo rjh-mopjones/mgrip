@@ -16,7 +16,7 @@ use crate::drainage::{solve_drainage, step_distance, Drainage, NO_RECEIVER};
 pub struct ErosionParams {
     /// How easily average rock is cut (K). Soft rock erodes faster.
     pub erodibility: f64,
-    /// Uplift per unit time where tectonic stress is highest.
+    /// Uplift per unit time where `Land::uplift_share` is 1.
     pub uplift: f64,
     /// How much more a big river cuts than a small one (m).
     pub flow_exponent: f64,
@@ -59,7 +59,8 @@ pub struct Land<'a> {
     /// The sea: fixed, and everything drains to it.
     pub is_base_level: &'a [bool],
     pub rock_hardness: &'a [f64],
-    pub tectonic_stress: &'a [f64],
+    /// How fast each cell is lifted, as a share of `ErosionParams::uplift`.
+    pub uplift_share: &'a [f64],
     /// Run-off each cell adds.
     pub rainfall: &'a [f64],
     pub width: usize,
@@ -83,9 +84,8 @@ pub fn erosion_step(
         if land.is_base_level[cell] {
             continue;
         }
-        let stress = land.tectonic_stress[cell];
         let room_to_rise = (1.0 - ground[cell] / params.uplift_limit).clamp(0.0, 1.0);
-        let lifted = ground[cell] + dt * params.uplift * stress * stress * room_to_rise;
+        let lifted = ground[cell] + dt * params.uplift * land.uplift_share[cell] * room_to_rise;
         let receiver = drainage.receivers[cell];
         if receiver == NO_RECEIVER {
             ground[cell] = lifted;
@@ -172,7 +172,7 @@ mod tests {
         let land = Land {
             is_base_level: &sea,
             rock_hardness: &[0.5; 144],
-            tectonic_stress: &[0.0; 144],
+            uplift_share: &[0.0; 144],
             rainfall: &[1.0; 144],
             width: 16,
             height: 9,

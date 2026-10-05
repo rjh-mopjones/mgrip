@@ -1,0 +1,28 @@
+<h1>Erosion sandbox</h1>
+<p>Land grown from uplift and cut by rivers, on Margin's real coastline, uplift and light. Each step lifts the land, routes water downhill, and lowers every cell towards the cell it drains to, faster the more water runs through it. Nothing is drawn by hand. Used to choose parameters for <a href="/design/specs/013/">spec 013</a>; it does not change the game's terrain.</p>
+<p class="muted">North is the night side: sea there is ice. South is the day side: sea there has dried to a basin. Half the macro map's resolution, two chunks per cell.</p>
+
+<div class="sandbox-controls">
+  <button id="play" type="button">Pause</button>
+  <button id="reset" type="button" class="plain">Start again from flat land</button>
+  <div class="layer-group" role="radiogroup" aria-label="View" id="views">
+    <span class="layer-group-name">View</span>
+  </div>
+</div>
+<div class="sandbox-sliders" id="sliders"></div>
+
+<div class="map-frame">
+  <canvas id="sandboxCanvas" aria-label="Terrain evolving under uplift and river erosion"></canvas>
+</div>
+<dl class="sandbox-stats" aria-live="off">
+  <div><dt>Step</dt><dd id="statSteps">0</dd></div>
+  <div><dt>Highest land</dt><dd id="statPeak">0</dd></div>
+  <div><dt>Change last step</dt><dd id="statChange">0</dd></div>
+  <div><dt>River cells</dt><dd id="statRivers">0</dd></div>
+  <div><dt>Lake cells</dt><dd id="statLakes">0</dd></div>
+</dl>
+<p class="muted" id="sandboxStatus">Loading the terrain generator…</p>
+
+<h2>Settings</h2>
+<p>Paste these back to have them put into the generator.</p>
+<pre id="settingsText"></pre>

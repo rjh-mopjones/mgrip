@@ -66,6 +66,14 @@ pub fn generate_macro_map(seed: u32) -> BiomeMap {
     )
 }
 
+/// Light level at a point of the world: 0 in deep night, 1 under the sun.
+/// A function of position and seed alone, so anything can ask for it without
+/// a generated map.
+pub fn light_level_at(seed: u32, wx: f64, wy: f64) -> f64 {
+    LightLevelStrategy::new(seed.wrapping_add(SEED_LIGHT_LEVEL), 0.5, 1.0, WORLD_WIDTH, WORLD_HEIGHT)
+        .generate(wx, wy, 0)
+}
+
 /// How much detail a map tile carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapTileDetail {
@@ -547,12 +555,14 @@ impl BiomeMap {
             (ground.to_vec(), is_sea, rainfall)
         };
         if run_erosion {
-            let tectonic_stress: Vec<f64> = map.tectonic.iter().map(|&t| 1.0 - t).collect();
+            // The tectonic layer is high where the crust is quiet; land is
+            // lifted fastest where it is under most stress.
+            let uplift_share: Vec<f64> = map.tectonic.iter().map(|&t| (1.0 - t) * (1.0 - t)).collect();
             let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
             let land = Land {
                 is_base_level: &is_sea,
                 rock_hardness: &map.rock_hardness,
-                tectonic_stress: &tectonic_stress,
+                uplift_share: &uplift_share,
                 rainfall: &rainfall,
                 width: tile_w,
                 height: tile_h,

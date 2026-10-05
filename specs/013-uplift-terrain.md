@@ -1,6 +1,6 @@
 # Spec 013 - Terrain From Uplift and Erosion
 
-**Status:** In progress. Stage 0 (sandbox) being built; nothing below replaces the live generator yet.
+**Status:** In progress. Stage 0 (sandbox) built, at `/sandbox/` on the site; nothing below replaces the live generator yet.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (drainage, river courses)
 **Supersedes:** the noise heightmap, the noise-driven biome inputs, and the "every river reaches the sea" invariant
@@ -41,6 +41,22 @@ fixed number of rounds: landscape, climate, landscape again.
 
 Kept as they are: the continent outline, the light field and its arc-shaped
 terminus, the east-west wrap, the macro pack, river courses, the map.
+
+## Stage 1: uplift
+
+Found while building the sandbox: the tectonic layer marks plate boundaries
+as thin lines. Used as uplift on its own it raises narrow ridges and leaves
+the rest of the land flat. Uplift needs three parts, each a share of one
+rate:
+
+- **Interiors:** whole continents rising, most in the middle (from
+  continentalness above sea level).
+- **Mountain belts:** along the ridges of the peaks-and-valleys layer.
+- **Faults:** along plate boundaries, spread from lines into belts.
+
+Also found: about 40% of the world lies below sea level but only 11% is
+liquid sea. The rest is night-side sea ice and day-side dried sea bed. Both
+are still where water drains to: the dried beds are the terminal basins.
 
 ## Stage 3: landscape
 

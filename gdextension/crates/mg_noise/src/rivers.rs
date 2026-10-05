@@ -851,7 +851,7 @@ impl Ord for FloodCell {
     }
 }
 
-pub(crate) fn position_jitter(x: u32, y: u32) -> f64 {
+pub fn position_jitter(x: u32, y: u32) -> f64 {
     let mut h = (x as u64).wrapping_mul(0x9E3779B97F4A7C15);
     h ^= (y as u64).wrapping_mul(0xBF58476D1CE4E5B9);
     h ^= h >> 33;

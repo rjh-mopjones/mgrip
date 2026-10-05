@@ -1,5 +1,7 @@
 # Design
 
+[Erosion sandbox](/sandbox/): land grown from uplift and cut by rivers on the real world, with the parameters on sliders (spec 013).
+
 ## Approach
 
 | Principle | What it means |

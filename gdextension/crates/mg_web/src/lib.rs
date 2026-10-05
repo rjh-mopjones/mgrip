@@ -8,6 +8,8 @@
 //! The interface is plain C functions over the module's memory, so the page
 //! needs no generated bindings: see `site/assets/tile-worker.js`.
 
+mod sandbox;
+
 use std::sync::Mutex;
 
 use mg_artifacts::MacroPack;
@@ -42,6 +44,11 @@ struct World {
 static WORLD: Mutex<Option<World>> = Mutex::new(None);
 /// The last tile rendered, kept alive until the page has copied it out.
 static TILE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static SANDBOX: Mutex<Option<sandbox::Sandbox>> = Mutex::new(None);
+/// The last sandbox image, kept alive until the page has copied it out.
+static SANDBOX_IMAGE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+/// River and lake cells in the last sandbox image.
+static SANDBOX_WATER: Mutex<(u32, u32)> = Mutex::new((0, 0));
 
 impl World {
     fn from_pack(pack: &MacroPack) -> Self {
@@ -179,4 +186,146 @@ pub extern "C" fn mg_render_tile(
     let mut tile = TILE.lock().expect("tile lock");
     *tile = world.render_tile(origin_x, origin_y, size, pixels as usize);
     tile.as_ptr()
+}
+
+// ─── Erosion sandbox (see sandbox.rs) ────────────────────────────────────────
+
+fn sandbox_settings(
+    erodibility: f64,
+    uplift: f64,
+    flow_exponent: f64,
+    slope_creep: f64,
+    uplift_limit: f64,
+    night_runoff: f64,
+    day_runoff: f64,
+    interior_uplift: f64,
+    range_uplift: f64,
+    fault_uplift: f64,
+) -> sandbox::Settings {
+    sandbox::Settings {
+        erosion: mg_noise::ErosionParams {
+            erodibility,
+            uplift,
+            flow_exponent,
+            slope_creep,
+            uplift_limit,
+            time_step: SANDBOX_TIME_STEP,
+            steps: 1,
+        },
+        night_runoff,
+        day_runoff,
+        interior_uplift,
+        range_uplift,
+        fault_uplift,
+    }
+}
+
+const SANDBOX_TIME_STEP: f64 = 2.0;
+
+/// Start the sandbox, or put it back to flat land. Returns its width in
+/// cells (its height is half that), or 0 if no pack is loaded.
+#[no_mangle]
+pub extern "C" fn mg_sandbox_reset() -> u32 {
+    let world = WORLD.lock().expect("world lock");
+    let Some(world) = world.as_ref() else {
+        return 0;
+    };
+    let mut sandbox = SANDBOX.lock().expect("sandbox lock");
+    match sandbox.as_mut() {
+        Some(sandbox) => sandbox.reset(),
+        None => *sandbox = Some(sandbox::Sandbox::new(&world.macro_map, world.seed)),
+    }
+    sandbox.as_ref().map_or(0, |sandbox| sandbox.width as u32)
+}
+
+/// Run `count` steps of uplift and erosion.
+#[no_mangle]
+pub extern "C" fn mg_sandbox_step(
+    count: u32,
+    erodibility: f64,
+    uplift: f64,
+    flow_exponent: f64,
+    slope_creep: f64,
+    uplift_limit: f64,
+    night_runoff: f64,
+    day_runoff: f64,
+    interior_uplift: f64,
+    range_uplift: f64,
+    fault_uplift: f64,
+) {
+    let settings = sandbox_settings(
+        erodibility,
+        uplift,
+        flow_exponent,
+        slope_creep,
+        uplift_limit,
+        night_runoff,
+        day_runoff,
+        interior_uplift,
+        range_uplift,
+        fault_uplift,
+    );
+    if let Some(sandbox) = SANDBOX.lock().expect("sandbox lock").as_mut() {
+        sandbox.step(count, &settings);
+    }
+}
+
+/// Draw the sandbox: `view` 0 terrain, 1 uplift, 2 run-off. Returns a pointer
+/// to width * height * 4 RGBA bytes, valid until the next call, or null.
+#[no_mangle]
+pub extern "C" fn mg_sandbox_render(
+    view: u32,
+    river_threshold: f64,
+    night_runoff: f64,
+    day_runoff: f64,
+    interior_uplift: f64,
+    range_uplift: f64,
+    fault_uplift: f64,
+) -> *const u8 {
+    let sandbox = SANDBOX.lock().expect("sandbox lock");
+    let Some(sandbox) = sandbox.as_ref() else {
+        return std::ptr::null();
+    };
+    let view = match view {
+        1 => sandbox::View::Uplift,
+        2 => sandbox::View::Runoff,
+        _ => sandbox::View::Terrain,
+    };
+    // Only the run-off and uplift shares matter for drawing.
+    let settings = sandbox_settings(
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        f64::INFINITY,
+        night_runoff,
+        day_runoff,
+        interior_uplift,
+        range_uplift,
+        fault_uplift,
+    );
+    let (rgba, rivers, lakes) = sandbox.render(view, river_threshold, &settings);
+    *SANDBOX_WATER.lock().expect("water lock") = (rivers, lakes);
+    let mut image = SANDBOX_IMAGE.lock().expect("image lock");
+    *image = rgba;
+    image.as_ptr()
+}
+
+/// A figure about the sandbox: 0 steps run, 1 peak height in blocks, 2 river
+/// cells and 3 lake cells in the last image, 4 mean change in land height
+/// over the last step (in blocks).
+#[no_mangle]
+pub extern "C" fn mg_sandbox_stat(which: u32) -> f64 {
+    let sandbox = SANDBOX.lock().expect("sandbox lock");
+    let Some(sandbox) = sandbox.as_ref() else {
+        return 0.0;
+    };
+    let (rivers, lakes) = *SANDBOX_WATER.lock().expect("water lock");
+    match which {
+        0 => sandbox.steps as f64,
+        1 => sandbox.peak_blocks(),
+        2 => rivers as f64,
+        3 => lakes as f64,
+        _ => sandbox.last_change * 200.0,
+    }
 }

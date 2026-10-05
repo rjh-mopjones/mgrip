@@ -172,6 +172,12 @@ In-browser play is the primary target. Native download comes later.
 Not done yet: deployment (the host must send COOP/COEP headers), release
 (non-debug) web export, download size reduction.
 
+`/sandbox/` is the erosion sandbox for `specs/013`: the landscape step
+(uplift, drainage, stream power erosion) running on the real coastline in the
+browser, with its parameters on sliders (`mg_web/src/sandbox.rs`,
+`site/assets/sandbox.js`). It is for choosing parameters; it does not feed
+the generator.
+
 Tone: matter-of-fact, portfolio style, mainly for the author's own reference.
 No marketing copy, no decorative fonts, no scroll-driven layouts. State what
 exists and what doesn't.
