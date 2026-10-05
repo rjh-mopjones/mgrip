@@ -44,18 +44,29 @@ pub struct Drainage {
 
 /// Run-off from a cell, relative to a well-watered cell in the terminus.
 pub fn rainfall(light_level: f64, humidity: f64) -> f64 {
+    rainfall_with(light_level, humidity, FROZEN_RUNOFF, EVAPORATED_RUNOFF)
+}
+
+/// As `rainfall`, with the share of run-off that survives on the frozen
+/// night side and on the evaporating day side given.
+pub fn rainfall_with(
+    light_level: f64,
+    humidity: f64,
+    frozen_runoff: f64,
+    evaporated_runoff: f64,
+) -> f64 {
     let reaches_rivers = if light_level < FROZEN_BELOW_LIGHT {
-        FROZEN_RUNOFF
+        frozen_runoff
     } else if light_level < FULL_RUNOFF_FROM_LIGHT {
         let thaw = (light_level - FROZEN_BELOW_LIGHT) / (FULL_RUNOFF_FROM_LIGHT - FROZEN_BELOW_LIGHT);
-        FROZEN_RUNOFF + (1.0 - FROZEN_RUNOFF) * thaw
+        frozen_runoff + (1.0 - frozen_runoff) * thaw
     } else if light_level < FULL_RUNOFF_TO_LIGHT {
         1.0
     } else if light_level < EVAPORATED_ABOVE_LIGHT {
         let dried = (light_level - FULL_RUNOFF_TO_LIGHT) / (EVAPORATED_ABOVE_LIGHT - FULL_RUNOFF_TO_LIGHT);
-        1.0 - (1.0 - EVAPORATED_RUNOFF) * dried
+        1.0 - (1.0 - evaporated_runoff) * dried
     } else {
-        EVAPORATED_RUNOFF
+        evaporated_runoff
     };
     reaches_rivers * (0.5 + humidity.clamp(0.0, 1.0))
 }

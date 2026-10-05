@@ -25,6 +25,10 @@ pub struct ErosionParams {
     /// Share of the way each cell moves towards the mean of its four
     /// neighbours each step: soil creep, which rounds ridges and valley sides.
     pub slope_creep: f64,
+    /// Height at which uplift stops: the higher the land stands, the less it
+    /// is lifted, as the crust sags under its load. This is what bounds land
+    /// where little water runs to cut it down. Infinite for no limit.
+    pub uplift_limit: f64,
 }
 
 impl Default for ErosionParams {
@@ -36,6 +40,7 @@ impl Default for ErosionParams {
             time_step: 1.2,
             steps: 100,
             slope_creep: 0.04,
+            uplift_limit: f64::INFINITY,
         }
     }
 }
@@ -49,61 +54,72 @@ pub struct ErosionResult {
     pub sediment: Vec<f64>,
 }
 
-/// Erode `heightmap`. `is_base_level` cells (the sea) stay fixed and
-/// everything drains to them. `rainfall` is the run-off each cell adds.
+/// The land being eroded: what does not change from step to step.
+pub struct Land<'a> {
+    /// The sea: fixed, and everything drains to it.
+    pub is_base_level: &'a [bool],
+    pub rock_hardness: &'a [f64],
+    pub tectonic_stress: &'a [f64],
+    /// Run-off each cell adds.
+    pub rainfall: &'a [f64],
+    pub width: usize,
+    pub height: usize,
+}
+
+/// One step of uplift and erosion on `ground`. Adds the rock removed to
+/// `sediment`. Returns the drainage the step was cut with.
+pub fn erosion_step(
+    ground: &mut Vec<f64>,
+    sediment: &mut [f64],
+    land: &Land,
+    params: &ErosionParams,
+) -> Drainage {
+    let dt = params.time_step;
+    let drainage = solve_drainage(ground, land.is_base_level, land.rainfall, land.width, land.height);
+
+    // From the sea upwards, so each cell's receiver is already lowered.
+    for &cell in &drainage.order {
+        let cell = cell as usize;
+        if land.is_base_level[cell] {
+            continue;
+        }
+        let stress = land.tectonic_stress[cell];
+        let room_to_rise = (1.0 - ground[cell] / params.uplift_limit).clamp(0.0, 1.0);
+        let lifted = ground[cell] + dt * params.uplift * stress * stress * room_to_rise;
+        let receiver = drainage.receivers[cell];
+        if receiver == NO_RECEIVER {
+            ground[cell] = lifted;
+            continue;
+        }
+        let receiver = receiver as usize;
+        let erodibility = params.erodibility * (1.5 - land.rock_hardness[cell]);
+        let cutting = erodibility * dt * drainage.flow[cell].powf(params.flow_exponent)
+            / step_distance(cell, receiver, land.width);
+        let lowered = (lifted + cutting * ground[receiver]) / (1.0 + cutting);
+        sediment[cell] += (ground[cell] - lowered).max(0.0);
+        ground[cell] = lowered;
+    }
+
+    *ground = crept(ground, land.is_base_level, land.width, land.height, params.slope_creep);
+    drainage
+}
+
+/// Erode `heightmap` for `params.steps` steps.
 pub fn simulate_erosion(
     heightmap: &[f64],
-    rock_hardness: &[f64],
-    tectonic_stress: &[f64],
-    is_base_level: &[bool],
-    rainfall: &[f64],
-    width: usize,
-    height: usize,
+    land: &Land,
     params: &ErosionParams,
 ) -> ErosionResult {
-    let total = width * height;
     let mut ground = heightmap.to_vec();
-    let mut sediment = vec![0.0f64; total];
-    let erodibility: Vec<f64> = rock_hardness
-        .iter()
-        .map(|&hardness| params.erodibility * (1.5 - hardness))
-        .collect();
-    let uplift: Vec<f64> = tectonic_stress
-        .iter()
-        .map(|&stress| params.uplift * stress * stress)
-        .collect();
-    let dt = params.time_step;
-
+    let mut sediment = vec![0.0f64; land.width * land.height];
     for _ in 0..params.steps {
-        let drainage = solve_drainage(&ground, is_base_level, rainfall, width, height);
-
-        // From the sea upwards, so each cell's receiver is already lowered.
-        for &cell in &drainage.order {
-            let cell = cell as usize;
-            if is_base_level[cell] {
-                continue;
-            }
-            let lifted = ground[cell] + dt * uplift[cell];
-            let receiver = drainage.receivers[cell];
-            if receiver == NO_RECEIVER {
-                ground[cell] = lifted;
-                continue;
-            }
-            let receiver = receiver as usize;
-            let cutting = erodibility[cell] * dt * drainage.flow[cell].powf(params.flow_exponent)
-                / step_distance(cell, receiver, width);
-            let lowered = (lifted + cutting * ground[receiver]) / (1.0 + cutting);
-            sediment[cell] += (ground[cell] - lowered).max(0.0);
-            ground[cell] = lowered;
-        }
-
-        ground = crept(&ground, is_base_level, width, height, params.slope_creep);
+        erosion_step(&mut ground, &mut sediment, land, params);
     }
 
     for cell in ground.iter_mut() {
         *cell = cell.clamp(-1.0, 1.0);
     }
-    let drainage = solve_drainage(&ground, is_base_level, rainfall, width, height);
+    let drainage = solve_drainage(&ground, land.is_base_level, land.rainfall, land.width, land.height);
     ErosionResult {
         heightmap: drainage.filled.clone(),
         drainage,
@@ -153,7 +169,15 @@ mod tests {
     fn erode(steps: u32) -> ErosionResult {
         let (ground, sea) = grooved_slope();
         let params = ErosionParams { steps, uplift: 0.0, ..ErosionParams::default() };
-        simulate_erosion(&ground, &[0.5; 144], &[0.0; 144], &sea, &[1.0; 144], 16, 9, &params)
+        let land = Land {
+            is_base_level: &sea,
+            rock_hardness: &[0.5; 144],
+            tectonic_stress: &[0.0; 144],
+            rainfall: &[1.0; 144],
+            width: 16,
+            height: 9,
+        };
+        simulate_erosion(&ground, &land, &params)
     }
 
     #[test]

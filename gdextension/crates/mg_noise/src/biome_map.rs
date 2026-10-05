@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::biome_splines::BiomeSplines;
 use crate::derived;
-use crate::erosion_sim::{simulate_erosion, ErosionParams};
+use crate::erosion_sim::{simulate_erosion, ErosionParams, Land};
 use crate::rivers::{
     rasterize_courses, rasterize_to_tile, sea_bodies, RiverCourse, RiverNetwork,
     LOD_THRESHOLD_MACRO,
@@ -549,16 +549,15 @@ impl BiomeMap {
         if run_erosion {
             let tectonic_stress: Vec<f64> = map.tectonic.iter().map(|&t| 1.0 - t).collect();
             let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
-            let erosion_result = simulate_erosion(
-                &ground,
-                &map.rock_hardness,
-                &tectonic_stress,
-                &is_sea,
-                &rainfall,
-                tile_w,
-                tile_h,
-                &ErosionParams::default(),
-            );
+            let land = Land {
+                is_base_level: &is_sea,
+                rock_hardness: &map.rock_hardness,
+                tectonic_stress: &tectonic_stress,
+                rainfall: &rainfall,
+                width: tile_w,
+                height: tile_h,
+            };
+            let erosion_result = simulate_erosion(&ground, &land, &ErosionParams::default());
             map.heightmap = erosion_result.heightmap;
             map.drainage_area = erosion_result
                 .drainage

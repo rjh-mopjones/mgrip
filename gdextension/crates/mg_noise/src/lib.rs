@@ -23,7 +23,7 @@ pub use derived::{
     derive_precipitation_type, derive_resource_richness, derive_snowpack, derive_soil_type,
     derive_temperature, derive_vegetation_density, derive_water_table,
 };
-pub use erosion_sim::{simulate_erosion, ErosionParams, ErosionResult};
+pub use erosion_sim::{erosion_step, simulate_erosion, ErosionParams, ErosionResult, Land};
 pub use rivers::{
     rasterize_from_network, rasterize_to_tile, RiverCharacter, RiverConstraint, RiverNetwork,
     RiverSegment, LOD_THRESHOLD_MACRO, LOD_THRESHOLD_MESO, LOD_THRESHOLD_MICRO, rasterize_courses, RiverCourse,
