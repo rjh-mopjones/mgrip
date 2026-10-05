@@ -209,18 +209,17 @@ fn sandbox_settings(
             flow_exponent,
             slope_creep,
             uplift_limit,
-            time_step: SANDBOX_TIME_STEP,
-            steps: 1,
+            time_step: mg_noise::ErosionParams::default().time_step,
         },
         night_runoff,
         day_runoff,
-        interior_uplift,
-        range_uplift,
-        fault_uplift,
+        uplift_mix: mg_noise::landscape::UpliftMix {
+            interior: interior_uplift,
+            ranges: range_uplift,
+            faults: fault_uplift,
+        },
     }
 }
-
-const SANDBOX_TIME_STEP: f64 = 2.0;
 
 /// Start the sandbox, or put it back to flat land. Returns its width in
 /// cells (its height is half that), or 0 if no pack is loaded.

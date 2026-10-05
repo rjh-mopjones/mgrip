@@ -1,6 +1,6 @@
 # Spec 013 - Terrain From Uplift and Erosion
 
-**Status:** In progress. Stage 0 (sandbox) built, at `/sandbox/` on the site; nothing below replaces the live generator yet.
+**Status:** In progress. Stage 0 (sandbox) and stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) done. Stages 2 to 6 not started.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (drainage, river courses)
 **Supersedes:** the noise heightmap, the noise-driven biome inputs, and the "every river reaches the sea" invariant
@@ -157,6 +157,37 @@ Each stage ends with something visible on the map.
 4. **Biomes** from physical fields; retire the noise layers.
 5. **Below chunk scale:** channels, valley sides, regime detail.
 6. **LifeGen** on basins, passes and floodplains.
+
+## Stage 1 as built
+
+`mg_noise/src/landscape.rs` grows the macro heightmap from flat land.
+
+- **Two grids.** The land is grown for 400 steps at half resolution, where a
+  step is four times cheaper, then carried up and refined for 40 steps at
+  full resolution, which adds the smaller valleys. Macro generation takes
+  about 10 seconds.
+- **Parameters** chosen in the sandbox on 2026-10-05: erodibility 0.021,
+  uplift 0.008, uplift stops at height 1.0, river strength (m) 0.46, slope
+  creep 0.08, time step 2; uplift mix interiors 0.55, mountain belts 0.75,
+  faults 0.70; run-off kept on the night side 7%, on the day side 2%.
+- **Sea** is every body of at least 12 cells below sea level, liquid or not.
+  Its cells keep their depth. The coast is where the ground crosses sea
+  level; the old rule that nudged the coast by rock hardness is gone, so
+  rivers and coast now agree exactly.
+- **Stopgap biomes.** Classification is unchanged except for two inputs: it
+  reads the real height of the ground instead of a height made up from
+  continentalness and the peaks layer, and the real slope ("flatness")
+  instead of a derived erosion amount. Height bands were reset to the new
+  land (lowland to 0.20, upland to 0.45, highland to 0.85, alpine above).
+- The noise heightmap is still generated: tiles that are not the macro map
+  start from it before being anchored.
+
+Seed 42: half the land lies below 0.38 (76 blocks) and a tenth above 0.86
+(172 blocks); the highest point is at the uplift limit. 105 river courses.
+
+LifeGen was not recalibrated and it shows: 1079 provinces, 44% of them
+uninhabited (17% before), 20 cities (102 before). The taller, steeper land
+scores as less habitable. That is stage 6's work.
 
 ## Costs
 

@@ -2,6 +2,7 @@ pub mod biome_map;
 pub mod biome_splines;
 pub mod derived;
 pub mod drainage;
+pub mod landscape;
 pub mod erosion_sim;
 pub mod rivers;
 pub mod runtime_presentation;
@@ -19,11 +20,11 @@ pub use biome_map::{
 };
 pub use biome_splines::BiomeSplines;
 pub use derived::{
-    derive_aridity, derive_erosion, derive_heightmap, derive_micro_heightmap, derive_peaks_valleys,
+    derive_aridity, derive_heightmap, derive_micro_heightmap, derive_peaks_valleys,
     derive_precipitation_type, derive_resource_richness, derive_snowpack, derive_soil_type,
     derive_temperature, derive_vegetation_density, derive_water_table,
 };
-pub use erosion_sim::{erosion_step, simulate_erosion, ErosionParams, ErosionResult, Land};
+pub use erosion_sim::{erosion_step, ErosionParams, Land};
 pub use rivers::{
     rasterize_from_network, rasterize_to_tile, RiverCharacter, RiverConstraint, RiverNetwork,
     RiverSegment, LOD_THRESHOLD_MACRO, LOD_THRESHOLD_MESO, LOD_THRESHOLD_MICRO, rasterize_courses, RiverCourse,

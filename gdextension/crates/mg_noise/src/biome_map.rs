@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::biome_splines::BiomeSplines;
 use crate::derived;
-use crate::erosion_sim::{simulate_erosion, ErosionParams, Land};
+use crate::landscape::{flatness, flatness_of_slope, grow_landscape, LandscapeInputs};
 use crate::rivers::{
     rasterize_courses, rasterize_to_tile, sea_bodies, RiverCourse, RiverNetwork,
     LOD_THRESHOLD_MACRO,
@@ -555,30 +555,30 @@ impl BiomeMap {
             (ground.to_vec(), is_sea, rainfall)
         };
         if run_erosion {
-            // The tectonic layer is high where the crust is quiet; land is
-            // lifted fastest where it is under most stress.
-            let uplift_share: Vec<f64> = map.tectonic.iter().map(|&t| (1.0 - t) * (1.0 - t)).collect();
-            let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
-            let land = Land {
-                is_base_level: &is_sea,
+            // The land is grown from uplift and erosion; the noise heightmap
+            // above only stands in for tiles that are anchored to the macro
+            // map later.
+            let landscape = grow_landscape(&LandscapeInputs {
+                continentalness: &map.continentalness,
+                peaks_valleys: &map.peaks_valleys,
+                tectonic: &map.tectonic,
                 rock_hardness: &map.rock_hardness,
-                uplift_share: &uplift_share,
-                rainfall: &rainfall,
+                light_level: &map.light_level,
+                humidity: &map.humidity,
                 width: tile_w,
                 height: tile_h,
-            };
-            let erosion_result = simulate_erosion(&ground, &land, &ErosionParams::default());
-            map.heightmap = erosion_result.heightmap;
-            map.drainage_area = erosion_result
+            });
+            map.heightmap = landscape.heightmap;
+            map.drainage_area = landscape
                 .drainage
                 .flow
                 .iter()
                 .map(|&flow| flow.round() as u32)
                 .collect();
-            map.sediment = erosion_result.sediment;
-            drainage = Some(erosion_result.drainage);
+            map.sediment = landscape.sediment;
+            drainage = Some(landscape.drainage);
 
-            // Recompute temperature with eroded heightmap
+            // Recompute temperature with the grown land
             for i in 0..tile_w * tile_h {
                 map.temperature[i] = derived::derive_temperature(
                     map.light_level[i],
@@ -613,6 +613,8 @@ impl BiomeMap {
         }
 
         // ── Phase 5: Remaining derived layers ─────────────────────────────────
+        // The erosion layer holds how flat the ground is (0 steep, 1 level).
+        let flat = flatness(&map.heightmap, tile_w, tile_h, world_size_x / tile_w as f64);
         for i in 0..tile_w * tile_h {
             let h = map.heightmap[i];
             let cont = map.continentalness[i];
@@ -623,7 +625,7 @@ impl BiomeMap {
             let river = map.rivers[i];
             let light = map.light_level[i];
 
-            map.erosion[i] = derived::derive_erosion(h, rock, humid);
+            map.erosion[i] = flat[i];
             map.aridity[i] = derived::derive_aridity(temp, humid);
             map.precipitation_type[i] = derived::derive_precipitation_type(temp, humid, h);
             map.snowpack[i] = derived::derive_snowpack(map.precipitation_type[i], temp, h, light);
@@ -650,7 +652,7 @@ impl BiomeMap {
 
         for i in 0..tile_w * tile_h {
             let biome = splines.evaluate_with_light(
-                map.continentalness[i],
+                map.heightmap[i],
                 map.temperature[i],
                 map.tectonic[i],
                 map.erosion[i],
@@ -868,7 +870,13 @@ impl BiomeMap {
                 // Derive climate from MACRO heightmap (matches macro Phase 5
                 // derivations exactly, since macro derives from its own hm).
                 let temp = derived::derive_temperature(light, macro_hm, humid, cont);
-                let eros = derived::derive_erosion(macro_hm, rock, humid);
+                // How flat the macro land is here, from its slope over a chunk.
+                let rise = |dx: f64, dy: f64| {
+                    macro_map.sample_field_at(&macro_map.heightmap, wx + dx, wy + dy)
+                        - macro_map.sample_field_at(&macro_map.heightmap, wx - dx, wy - dy)
+                };
+                let slope = (rise(0.5, 0.0).powi(2) + rise(0.0, 0.5).powi(2)).sqrt();
+                let eros = flatness_of_slope(slope);
                 let arid = derived::derive_aridity(temp, humid);
                 let precip = derived::derive_precipitation_type(temp, humid, macro_hm);
                 let snow = derived::derive_snowpack(precip, temp, macro_hm, light);
@@ -885,7 +893,7 @@ impl BiomeMap {
                 // (`biome_map.rs:483`, non-dithered). With every spline input
                 // matching macro, the biome enum must match macro.
                 self.biomes[idx] = splines.evaluate_with_light(
-                    cont, temp, tect, eros, peaks, humid, arid, rock, light,
+                    macro_hm, temp, tect, eros, peaks, humid, arid, rock, light,
                 );
 
                 // Write the rendered heightmap with mesh detail on top of the

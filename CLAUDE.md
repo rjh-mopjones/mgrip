@@ -172,11 +172,18 @@ In-browser play is the primary target. Native download comes later.
 Not done yet: deployment (the host must send COOP/COEP headers), release
 (non-debug) web export, download size reduction.
 
+The macro heightmap is grown, not drawn from noise (`specs/013`,
+`mg_noise/src/landscape.rs`): land starts flat, is lifted where the crust is
+pushed up, and is cut by rivers until the two balance. Biomes read the real
+height and slope of that land. Do not add height from an independent noise
+layer at macro scale.
+
 `/sandbox/` is the erosion sandbox for `specs/013`: the landscape step
 (uplift, drainage, stream power erosion) running on the real coastline in the
 browser, with its parameters on sliders (`mg_web/src/sandbox.rs`,
-`site/assets/sandbox.js`). It is for choosing parameters; it does not feed
-the generator.
+`site/assets/sandbox.js`). It runs the generator's own `erosion_step`. The
+values chosen there are copied by hand into `ErosionParams::default`,
+`UpliftMix::default` and the run-off constants in `drainage.rs`.
 
 Tone: matter-of-fact, portfolio style, mainly for the author's own reference.
 No marketing copy, no decorative fonts, no scroll-driven layouts. State what

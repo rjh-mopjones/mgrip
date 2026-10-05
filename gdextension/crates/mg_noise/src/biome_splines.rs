@@ -63,14 +63,17 @@ pub enum ElevationClass {
 }
 
 impl ElevationClass {
+    /// Bands of height above the sea, set against land grown from uplift
+    /// (spec 013): on seed 42 half the land lies below 0.38 and a tenth
+    /// above 0.86.
     pub fn from_elevation(above_sea: f64) -> Self {
         if above_sea < 0.04 {
             Self::Coastal
-        } else if above_sea < 0.12 {
+        } else if above_sea < 0.20 {
             Self::Lowland
-        } else if above_sea < 0.25 {
+        } else if above_sea < 0.45 {
             Self::Upland
-        } else if above_sea < 0.38 {
+        } else if above_sea < 0.85 {
             Self::Highland
         } else {
             Self::Alpine
@@ -179,25 +182,21 @@ impl BiomeSplines {
         }
     }
 
+    /// The biome of a cell. `elevation` is the height of its ground (below
+    /// sea level for sea) and `flatness` runs from 0 on steep ground to 1 on
+    /// level ground; both come from the land itself, not from noise.
     pub fn evaluate_with_light(
         &self,
-        continentalness: f64,
+        elevation: f64,
         temperature: f64,
         tectonic: f64,
-        erosion: f64,
+        flatness: f64,
         peaks_valleys: f64,
         humidity: f64,
         aridity: f64,
         rock_hardness: f64,
         light_level: f64,
     ) -> TileType {
-        let raw_elevation =
-            self.compute_elevation(continentalness, peaks_valleys, erosion, tectonic);
-        let coast_perturb = (rock_hardness - 0.5) * 0.10 + peaks_valleys * 0.05;
-        let dist_to_coast = (raw_elevation - self.sea_level).abs();
-        let coast_fade = (1.0 - dist_to_coast * 10.0).clamp(0.0, 1.0);
-        let elevation = raw_elevation + coast_perturb * coast_fade;
-
         if elevation < self.sea_level {
             return self.below_sea_biome(elevation, temperature, tectonic, light_level);
         }
@@ -208,7 +207,7 @@ impl BiomeSplines {
         let mut moisture = MoistureClass::from_humidity(adjusted_humidity);
         let above_sea = elevation - self.sea_level;
         let elev_class = ElevationClass::from_elevation(above_sea);
-        let terrain = TerrainClass::from_erosion(erosion);
+        let terrain = TerrainClass::from_erosion(flatness);
 
         // Temperature gate — above 45°C (fuzzy ±3°C via rock_hardness), no vegetation
         let gate_temp = 45.0 + (rock_hardness - 0.5) * 6.0;
@@ -251,22 +250,6 @@ impl BiomeSplines {
         }
 
         self.land_biome(climate, moisture, elev_class, terrain, rock_hardness)
-    }
-
-    fn compute_elevation(&self, cont: f64, pv: f64, erosion: f64, _tectonic: f64) -> f64 {
-        let is_land = cont >= self.sea_level;
-        let erosion_damp = 1.0 - erosion * 0.7;
-        let peak_height = if is_land {
-            pv.max(0.0) * 0.25 * erosion_damp
-        } else {
-            0.0
-        };
-        let valley_depth = if is_land {
-            pv.min(0.0).abs() * 0.12
-        } else {
-            0.0
-        };
-        cont + peak_height - valley_depth
     }
 
     fn ocean_biome(&self, elevation: f64, temp: f64, tectonic: f64) -> TileType {

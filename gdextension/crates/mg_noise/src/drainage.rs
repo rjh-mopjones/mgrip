@@ -27,8 +27,8 @@ const FROZEN_BELOW_LIGHT: f64 = 0.08;
 const FULL_RUNOFF_FROM_LIGHT: f64 = 0.20;
 const FULL_RUNOFF_TO_LIGHT: f64 = 0.70;
 const EVAPORATED_ABOVE_LIGHT: f64 = 0.85;
-const FROZEN_RUNOFF: f64 = 0.05;
-const EVAPORATED_RUNOFF: f64 = 0.08;
+const FROZEN_RUNOFF: f64 = 0.07;
+const EVAPORATED_RUNOFF: f64 = 0.02;
 
 pub struct Drainage {
     /// The ground with every hollow raised to the level at which it spills.

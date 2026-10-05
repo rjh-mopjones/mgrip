@@ -21,37 +21,27 @@ pub struct ErosionParams {
     /// How much more a big river cuts than a small one (m).
     pub flow_exponent: f64,
     pub time_step: f64,
-    pub steps: u32,
     /// Share of the way each cell moves towards the mean of its four
     /// neighbours each step: soil creep, which rounds ridges and valley sides.
     pub slope_creep: f64,
     /// Height at which uplift stops: the higher the land stands, the less it
     /// is lifted, as the crust sags under its load. This is what bounds land
-    /// where little water runs to cut it down. Infinite for no limit.
+    /// where little water runs to cut it down.
     pub uplift_limit: f64,
 }
 
 impl Default for ErosionParams {
+    /// Chosen by eye in the erosion sandbox (2026-10-05).
     fn default() -> Self {
         Self {
-            erodibility: 0.04,
-            uplift: 0.015,
-            flow_exponent: 0.45,
-            time_step: 1.2,
-            steps: 100,
-            slope_creep: 0.04,
-            uplift_limit: f64::INFINITY,
+            erodibility: 0.021,
+            uplift: 0.008,
+            flow_exponent: 0.46,
+            time_step: 2.0,
+            slope_creep: 0.08,
+            uplift_limit: 1.0,
         }
     }
-}
-
-pub struct ErosionResult {
-    /// The eroded ground, with any remaining hollow filled level.
-    pub heightmap: Vec<f64>,
-    /// Drainage over the eroded ground: the rivers that cut it.
-    pub drainage: Drainage,
-    /// Depth of rock removed from each cell.
-    pub sediment: Vec<f64>,
 }
 
 /// The land being eroded: what does not change from step to step.
@@ -104,29 +94,6 @@ pub fn erosion_step(
     drainage
 }
 
-/// Erode `heightmap` for `params.steps` steps.
-pub fn simulate_erosion(
-    heightmap: &[f64],
-    land: &Land,
-    params: &ErosionParams,
-) -> ErosionResult {
-    let mut ground = heightmap.to_vec();
-    let mut sediment = vec![0.0f64; land.width * land.height];
-    for _ in 0..params.steps {
-        erosion_step(&mut ground, &mut sediment, land, params);
-    }
-
-    for cell in ground.iter_mut() {
-        *cell = cell.clamp(-1.0, 1.0);
-    }
-    let drainage = solve_drainage(&ground, land.is_base_level, land.rainfall, land.width, land.height);
-    ErosionResult {
-        heightmap: drainage.filled.clone(),
-        drainage,
-        sediment,
-    }
-}
-
 /// The ground after one step of slope creep: each land cell moves `share` of
 /// the way towards the mean of its four neighbours.
 fn crept(ground: &[f64], is_base_level: &[bool], width: usize, height: usize, share: f64) -> Vec<f64> {
@@ -166,9 +133,17 @@ mod tests {
         (ground, sea)
     }
 
-    fn erode(steps: u32) -> ErosionResult {
-        let (ground, sea) = grooved_slope();
-        let params = ErosionParams { steps, uplift: 0.0, ..ErosionParams::default() };
+    /// The slope after `steps` of erosion with no uplift, and its drainage.
+    fn erode(steps: u32) -> (Vec<f64>, Drainage) {
+        let (mut ground, sea) = grooved_slope();
+        let params = ErosionParams {
+            erodibility: 0.04,
+            uplift: 0.0,
+            flow_exponent: 0.45,
+            time_step: 1.2,
+            slope_creep: 0.04,
+            uplift_limit: 1.0,
+        };
         let land = Land {
             is_base_level: &sea,
             rock_hardness: &[0.5; 144],
@@ -177,13 +152,18 @@ mod tests {
             width: 16,
             height: 9,
         };
-        simulate_erosion(&ground, &land, &params)
+        let mut sediment = vec![0.0; 144];
+        let mut drainage = None;
+        for _ in 0..steps {
+            drainage = Some(erosion_step(&mut ground, &mut sediment, &land, &params));
+        }
+        (ground, drainage.expect("at least one step"))
     }
 
     #[test]
     fn a_river_cuts_a_valley_deeper_than_the_ground_beside_it() {
         let (before, _) = grooved_slope();
-        let after = erode(5).heightmap;
+        let (after, _) = erode(5);
         // Middle of the slope: in the groove, and three rows off it.
         let (in_valley, beside) = (4 * 16 + 8, 1 * 16 + 8);
 
@@ -196,12 +176,12 @@ mod tests {
     #[test]
     fn the_sea_stays_where_it_is_and_the_result_drains_to_it() {
         let (before, _) = grooved_slope();
-        let result = erode(5);
+        let (after, drainage) = erode(5);
 
         for y in 0..9 {
-            assert_eq!(result.heightmap[y * 16], before[y * 16]);
+            assert_eq!(after[y * 16], before[y * 16]);
         }
-        let draining = result.drainage.receivers.iter().filter(|&&r| r != NO_RECEIVER).count();
+        let draining = drainage.receivers.iter().filter(|&&r| r != NO_RECEIVER).count();
         assert_eq!(draining, 144 - 9);
     }
 }

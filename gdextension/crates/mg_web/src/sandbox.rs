@@ -7,15 +7,12 @@
 
 use mg_noise::biome_map::SEA_LEVEL;
 use mg_noise::drainage::{rainfall_with, solve_drainage, Drainage};
+use mg_noise::landscape::{starting_ground, UpliftMix, UpliftSources};
 use mg_noise::rivers::sea_bodies;
 use mg_noise::{erosion_step, BiomeMap, ErosionParams, Land};
 
 /// The sandbox grid has one cell for this many macro cells each way.
 const SHRINK: usize = 2;
-/// Land starts this far above sea level, with a little unevenness so water
-/// has somewhere to start running.
-const STARTING_HEIGHT: f64 = 0.002;
-const STARTING_ROUGHNESS: f64 = 0.002;
 /// A hollow holding at least this depth of water shows as a lake.
 const LAKE_MIN_DEPTH: f64 = 0.002;
 /// Blocks of height per unit of heightmap (`VoxelMeshBuilder.HEIGHT_SCALE`).
@@ -36,12 +33,7 @@ pub struct Settings {
     /// evaporating day side.
     pub night_runoff: f64,
     pub day_runoff: f64,
-    /// What lifts the land, each as a share of the uplift rate: the interior
-    /// of a continent rising as a whole, mountain belts, and faults along
-    /// plate boundaries.
-    pub interior_uplift: f64,
-    pub range_uplift: f64,
-    pub fault_uplift: f64,
+    pub uplift_mix: UpliftMix,
 }
 
 pub struct Sandbox {
@@ -50,12 +42,7 @@ pub struct Sandbox {
     is_sea: Vec<bool>,
     sea_floor: Vec<f64>,
     rock_hardness: Vec<f64>,
-    /// 0 at the coast to 1 deep inside a continent.
-    interior: Vec<f64>,
-    /// 0 to 1 along mountain belts.
-    ranges: Vec<f64>,
-    /// 0 to 1 near plate boundaries.
-    faults: Vec<f64>,
+    uplift_sources: UpliftSources,
     light_level: Vec<f64>,
     humidity: Vec<f64>,
     ground: Vec<f64>,
@@ -81,21 +68,12 @@ impl Sandbox {
             width,
             height,
             is_sea: sea_bodies(&continentalness, width, height, SEA_LEVEL),
-            sea_floor: continentalness,
+            sea_floor: continentalness.clone(),
             rock_hardness: shrunk(&macro_map.rock_hardness),
-            interior: shrunk(&macro_map.continentalness)
-                .iter()
-                .map(|cont| ((cont - SEA_LEVEL) / INTERIOR_FULL_AT).clamp(0.0, 1.0).sqrt())
-                .collect(),
-            // Mountain belts follow the ridges of the peaks-and-valleys layer.
-            ranges: shrunk(&macro_map.peaks_valleys)
-                .iter()
-                .map(|peaks| peaks.clamp(0.0, 1.0).powi(2))
-                .collect(),
-            // The tectonic layer is high where the crust is quiet, and marks
-            // boundaries as thin lines; spread them into belts.
-            faults: spread(
-                &shrunk(&macro_map.tectonic).iter().map(|quiet| (1.0 - quiet).powi(2)).collect::<Vec<_>>(),
+            uplift_sources: UpliftSources::new(
+                &continentalness,
+                &shrunk(&macro_map.peaks_valleys),
+                &shrunk(&macro_map.tectonic),
                 width,
                 height,
             ),
@@ -119,15 +97,7 @@ impl Sandbox {
     /// Back to flat land just above the sea.
     pub fn reset(&mut self) {
         let width = self.width;
-        self.ground = (0..width * self.height)
-            .map(|cell| {
-                if self.is_sea[cell] {
-                    return self.sea_floor[cell].min(SEA_LEVEL);
-                }
-                let roughness = mg_noise::rivers::position_jitter((cell % width) as u32, (cell / width) as u32);
-                SEA_LEVEL + STARTING_HEIGHT + STARTING_ROUGHNESS * roughness
-            })
-            .collect();
+        self.ground = starting_ground(&self.sea_floor, &self.is_sea, width);
         self.sediment = vec![0.0; width * self.height];
         self.steps = 0;
         self.last_change = 0.0;
@@ -171,15 +141,8 @@ impl Sandbox {
         }
     }
 
-    /// How fast each cell rises, as a share of the uplift rate.
     fn uplift_share(&self, settings: &Settings) -> Vec<f64> {
-        (0..self.width * self.height)
-            .map(|cell| {
-                settings.interior_uplift * self.interior[cell]
-                    + settings.range_uplift * self.ranges[cell]
-                    + settings.fault_uplift * self.faults[cell]
-            })
-            .collect()
+        self.uplift_sources.mixed(&settings.uplift_mix)
     }
 
     /// What lies on a cell below sea level: liquid sea, sea ice, or the dry
@@ -289,11 +252,6 @@ const HEIGHT_COLOURS: [(f64, [f64; 3]); 6] = [
     (0.88, [192.0, 188.0, 190.0]),
     (1.0, [246.0, 244.0, 242.0]),
 ];
-/// Continentalness above sea level at which land counts as deep interior.
-const INTERIOR_FULL_AT: f64 = 0.4;
-/// Passes and reach, in cells, of the blur that spreads faults into belts.
-const FAULT_SPREAD_PASSES: usize = 3;
-const FAULT_SPREAD_CELLS: i32 = 3;
 // The light levels at which the generator freezes and dries out the sea.
 const SEA_FREEZES_BELOW_LIGHT: f64 = 0.18;
 const SEA_DRIES_ABOVE_LIGHT: f64 = 0.62;
@@ -317,30 +275,3 @@ fn blend(from: [f64; 3], to: [f64; 3], share: f64) -> [f64; 3] {
     [0, 1, 2].map(|channel| from[channel] + (to[channel] - from[channel]) * share)
 }
 
-/// A field blurred and rescaled to peak at 1. The map joins east to west.
-fn spread(field: &[f64], width: usize, height: usize) -> Vec<f64> {
-    let mut current = field.to_vec();
-    for _ in 0..FAULT_SPREAD_PASSES {
-        // A box blur along rows, then along columns.
-        let rows: Vec<f64> = (0..width * height)
-            .map(|cell| {
-                let (x, y) = ((cell % width) as i32, cell / width);
-                let sum: f64 = (-FAULT_SPREAD_CELLS..=FAULT_SPREAD_CELLS)
-                    .map(|dx| current[y * width + (x + dx).rem_euclid(width as i32) as usize])
-                    .sum();
-                sum / (2 * FAULT_SPREAD_CELLS + 1) as f64
-            })
-            .collect();
-        current = (0..width * height)
-            .map(|cell| {
-                let (x, y) = (cell % width, (cell / width) as i32);
-                let sum: f64 = (-FAULT_SPREAD_CELLS..=FAULT_SPREAD_CELLS)
-                    .map(|dy| rows[(y + dy).clamp(0, height as i32 - 1) as usize * width + x])
-                    .sum();
-                sum / (2 * FAULT_SPREAD_CELLS + 1) as f64
-            })
-            .collect();
-    }
-    let peak = current.iter().copied().fold(1e-9, f64::max);
-    current.iter().map(|value| value / peak).collect()
-}

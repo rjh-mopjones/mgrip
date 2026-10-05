@@ -107,11 +107,6 @@ pub fn derive_peaks_valleys(base_pv: f64, tectonic: f64, rock_hardness: f64) -> 
     (base_pv * amplitude * hardness_factor).clamp(-1.0, 1.0)
 }
 
-pub fn derive_erosion(heightmap: f64, rock_hardness: f64, humidity: f64) -> f64 {
-    let raw = (heightmap.max(0.0) * 2.5 + humidity * 0.8) * (1.0 - rock_hardness * 0.3);
-    raw.sqrt().clamp(0.0, 1.0)
-}
-
 pub fn derive_aridity(temperature: f64, humidity: f64) -> f64 {
     let temp_factor = ((temperature - 10.0) / 45.0).clamp(0.0, 1.0);
     (temp_factor * 0.65 + (1.0 - humidity) * 0.35).clamp(0.0, 1.0)
