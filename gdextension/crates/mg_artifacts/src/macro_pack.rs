@@ -21,7 +21,7 @@ use mg_noise::{generate_macro_probe, BiomeMap, RiverCourse};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-const MAGIC: &[u8; 6] = b"MGMP03";
+const MAGIC: &[u8; 6] = b"MGMP04";
 /// Largest probe difference still counted as the same generator. Allows for
 /// maths library differences between native and web builds.
 const PROBE_TOLERANCE: f32 = 1.0e-4;
@@ -57,6 +57,18 @@ struct PackedHeights {
     width: u32,
     height: u32,
     steps: Vec<u16>,
+    /// Lake surfaces, as `steps`; `NO_LAKE` where there is none.
+    water_steps: Vec<u16>,
+}
+
+const NO_LAKE: u16 = 0;
+
+fn height_to_step(height: f32) -> u16 {
+    ((height.clamp(-1.0, 1.0) + 1.0) * 0.5 * u16::MAX as f32).round() as u16
+}
+
+fn step_to_height(step: u16) -> f32 {
+    step as f32 / u16::MAX as f32 * 2.0 - 1.0
 }
 
 impl PackedHeights {
@@ -65,10 +77,11 @@ impl PackedHeights {
             cells_per_wu: heights.cells_per_wu as u32,
             width: heights.width as u32,
             height: heights.height as u32,
-            steps: heights
-                .heights
+            steps: heights.heights.iter().map(|&height| height_to_step(height)).collect(),
+            water_steps: heights
+                .water_level
                 .iter()
-                .map(|height| ((height.clamp(-1.0, 1.0) + 1.0) * 0.5 * u16::MAX as f32).round() as u16)
+                .map(|&level| if level.is_finite() { height_to_step(level).max(1) } else { NO_LAKE })
                 .collect(),
         }
     }
@@ -78,10 +91,11 @@ impl PackedHeights {
             cells_per_wu: self.cells_per_wu as usize,
             width: self.width as usize,
             height: self.height as usize,
-            heights: self
-                .steps
+            heights: self.steps.iter().map(|&step| step_to_height(step)).collect(),
+            water_level: self
+                .water_steps
                 .iter()
-                .map(|&step| step as f32 / u16::MAX as f32 * 2.0 - 1.0)
+                .map(|&step| if step == NO_LAKE { f32::NEG_INFINITY } else { step_to_height(step) })
                 .collect(),
         }
     }

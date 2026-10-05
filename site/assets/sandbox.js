@@ -91,6 +91,16 @@ const SLIDERS = [
 		note: "Rising along plate boundaries.",
 	},
 	{
+		key: "riftSinking",
+		label: "Sinking: rifts",
+		min: 0,
+		max: 1.5,
+		step: 0.05,
+		value: 0.6,
+		digits: 2,
+		note: "Ground sinking where the crust pulls apart. Where it sinks faster than rivers cut its rim, a lake forms.",
+	},
+	{
 		key: "iceWidening",
 		label: "Ice widens valleys",
 		min: 0,

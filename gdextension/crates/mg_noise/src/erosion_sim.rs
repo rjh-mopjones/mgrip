@@ -11,7 +11,7 @@
 //!
 //!   h = (h + dt*U + f*h_receiver) / (1 + f),   f = K * dt * flow^m / distance
 
-use crate::drainage::{solve_drainage, step_distance, Drainage, NO_RECEIVER};
+use crate::drainage::{solve_drainage, step_distance, Drainage, LAKE_MIN_DEPTH, NO_RECEIVER};
 
 pub struct ErosionParams {
     /// How easily average rock is cut (K). Soft rock erodes faster.
@@ -57,6 +57,12 @@ impl Default for ErosionParams {
 /// `CEILING_LEAST_SHARE` of it.
 const CEILING_FULL_AT_SHARE: f64 = 1.2;
 const CEILING_LEAST_SHARE: f64 = 0.15;
+/// Sinking ground stops sinking at this height (30 blocks below the sea),
+/// slowing over the last `RIFT_FLOOR_EASE` above it.
+const RIFT_FLOOR: f64 = -0.15;
+const RIFT_FLOOR_EASE: f64 = 0.1;
+/// Land with at least this much run-off has no ceiling but the full limit.
+const CEILING_LIFTED_BY_RUNOFF: f64 = 0.8;
 /// Run-off gathered from this many square world units of well-watered land
 /// makes a full-strength ice stream.
 const ICE_STREAM_AREA_WU2: f64 = 12.0;
@@ -72,6 +78,8 @@ pub struct Land<'a> {
     pub rainfall: &'a [f64],
     /// How far each cell is under ice, from 0 (none) to 1 (ice sheet).
     pub ice: &'a [f64],
+    /// What a cell of open lake loses to the air each step.
+    pub lake_evaporation: &'a [f64],
     pub width: usize,
     pub height: usize,
 }
@@ -87,8 +95,15 @@ pub fn erosion_step(
     step: u32,
 ) -> Drainage {
     let dt = params.time_step;
-    let drainage =
-        solve_drainage(ground, land.is_base_level, land.rainfall, land.width, land.height, step);
+    let drainage = solve_drainage(
+        ground,
+        land.is_base_level,
+        land.rainfall,
+        land.lake_evaporation,
+        land.width,
+        land.height,
+        step,
+    );
 
     // From the sea upwards, so each cell's receiver is already lowered.
     for &cell in &drainage.order {
@@ -96,12 +111,24 @@ pub fn erosion_step(
         if land.is_base_level[cell] {
             continue;
         }
-        let ceiling = params.uplift_limit
-            * (land.uplift_share[cell] / CEILING_FULL_AT_SHARE).clamp(CEILING_LEAST_SHARE, 1.0);
-        let room_to_rise = (1.0 - ground[cell] / ceiling).clamp(0.0, 1.0);
-        let lifted = ground[cell] + dt * params.uplift * land.uplift_share[cell] * room_to_rise;
+        // Well-watered land is kept down by its rivers and may rise to the
+        // full limit. Dry and frozen land has only the ceiling to stop it.
+        let wetness = (land.rainfall[cell] / CEILING_LIFTED_BY_RUNOFF).min(1.0);
+        let by_uplift = (land.uplift_share[cell] / CEILING_FULL_AT_SHARE).clamp(CEILING_LEAST_SHARE, 1.0);
+        let ceiling = params.uplift_limit * (by_uplift + (1.0 - by_uplift) * wetness);
+        let share = land.uplift_share[cell];
+        // Sinking ground (a negative share) sinks whatever its height, until
+        // it nears the floor of the rift.
+        let room_to_rise = if share > 0.0 {
+            (1.0 - ground[cell] / ceiling).clamp(0.0, 1.0)
+        } else {
+            ((ground[cell] - RIFT_FLOOR) / RIFT_FLOOR_EASE).clamp(0.0, 1.0)
+        };
+        let lifted = ground[cell] + dt * params.uplift * share * room_to_rise;
         let receiver = drainage.receivers[cell];
-        if receiver == NO_RECEIVER {
+        // Standing water cuts nothing: a lake bed only rises or sinks.
+        let under_lake = drainage.lake_depth(ground, cell) >= LAKE_MIN_DEPTH;
+        if receiver == NO_RECEIVER || under_lake {
             ground[cell] = lifted;
             continue;
         }
@@ -212,6 +239,7 @@ mod tests {
             uplift_share: &[0.0; 144],
             rainfall: &[1.0; 144],
             ice: &[1.0; 144],
+            lake_evaporation: &[0.0; 144],
             width: 16,
             height: 9,
         };

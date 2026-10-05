@@ -1635,7 +1635,7 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
 const SITE_MAP_RELIEF_IMAGE: &str = "relief.png";
 const SITE_MAP_SEA_IMAGE: &str = "sea.png";
 
-/// Liquid sea (white) on the finest grid the map's land has. The map page
+/// Liquid sea and lakes (white) on the finest grid the map's land has. The map page
 /// draws its coast from this: provinces are one cell per chunk, far coarser
 /// than the coast.
 fn sea_image(map: &BiomeMap) -> image::GrayImage {
@@ -1650,15 +1650,21 @@ fn sea_image(map: &BiomeMap) -> image::GrayImage {
                 Some(fine) => fine.heights[cell] as f64,
                 None => map.heightmap[cell],
             };
-            // Below sea level is sea only where it is neither frozen nor dried out.
+            let temperature = map.sample_field_at(&map.temperature, wx, wy);
+            let light = map.sample_field_at(&map.light_level, wx, wy);
+            // Below sea level is sea only where it is neither frozen nor
+            // dried out; the same goes for a lake.
             let is_sea = ground < mg_noise::SEA_LEVEL
                 && splines.sea_is_liquid(
                     ground,
-                    map.sample_field_at(&map.temperature, wx, wy),
+                    temperature,
                     map.sample_field_at(&map.tectonic, wx, wy),
-                    map.sample_field_at(&map.light_level, wx, wy),
+                    light,
                 );
-            if is_sea { 255 } else { 0 }
+            let lake_depth = fine.map_or(0.0, |fine| fine.water_level[cell] as f64 - ground);
+            let is_lake = lake_depth > 0.0
+                && mg_noise::tile_has_fluid_surface(splines.lake_biome(lake_depth, temperature, light));
+            if is_sea || is_lake { 255 } else { 0 }
         })
         .collect();
     image::GrayImage::from_raw(width as u32, height as u32, pixels)

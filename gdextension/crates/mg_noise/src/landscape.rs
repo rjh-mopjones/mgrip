@@ -9,7 +9,9 @@
 //! The parameters were chosen by eye in the site's erosion sandbox.
 
 use crate::biome_map::{SEA_LEVEL, WORLD_WIDTH};
-use crate::drainage::{iciness, rainfall, solve_drainage, Drainage};
+use crate::drainage::{
+    iciness, lake_evaporation, rainfall, solve_drainage, Drainage, LAKE_MIN_DEPTH,
+};
 use crate::erosion_sim::{crept, erosion_step, ErosionParams, Land};
 use crate::rivers::{position_jitter, sea_bodies};
 
@@ -23,6 +25,9 @@ const INTERIOR_FULL_AT: f64 = 0.4;
 /// by repeated blurring.
 const FAULT_SPREAD_WU: f64 = 6.0;
 const FAULT_SPREAD_PASSES: usize = 3;
+/// Only the deeper troughs of the peaks-and-valleys layer (below minus this)
+/// are places where the crust pulls apart.
+const RIFT_FROM_VALLEY_DEPTH: f64 = 0.35;
 /// The land is first grown on a grid of half the resolution, where a step is
 /// four times cheaper, until uplift and erosion balance; then refined at
 /// full resolution, which adds the smaller valleys.
@@ -50,6 +55,9 @@ pub struct UpliftMix {
     pub ranges: f64,
     /// Rising along plate boundaries.
     pub faults: f64,
+    /// Sinking where the crust is pulled apart. Ground that sinks faster
+    /// than rivers can cut its rim holds a lake.
+    pub rifts: f64,
 }
 
 impl Default for UpliftMix {
@@ -58,6 +66,7 @@ impl Default for UpliftMix {
             interior: 0.55,
             ranges: 0.75,
             faults: 0.70,
+            rifts: 0.6,
         }
     }
 }
@@ -70,6 +79,7 @@ pub struct UpliftSources {
     interior: Vec<f64>,
     ranges: Vec<f64>,
     faults: Vec<f64>,
+    rifts: Vec<f64>,
 }
 
 impl UpliftSources {
@@ -83,6 +93,15 @@ impl UpliftSources {
         // The tectonic layer is high where the crust is quiet.
         let stress: Vec<f64> = tectonic.iter().map(|quiet| (1.0 - quiet).powi(2)).collect();
         let reach = (FAULT_SPREAD_WU * width as f64 / WORLD_WIDTH / 2.0).round().max(1.0) as i32;
+        let faults = spread(&stress, width, height, reach);
+        // The crust pulls apart along boundaries where the peaks-and-valleys
+        // layer runs deepest, as it is pushed up where that layer peaks.
+        let rifts = (0..width * height)
+            .map(|cell| {
+                let trough = (-peaks_valleys[cell] - RIFT_FROM_VALLEY_DEPTH).max(0.0) / (1.0 - RIFT_FROM_VALLEY_DEPTH);
+                trough * faults[cell]
+            })
+            .collect();
         Self {
             interior: continentalness
                 .iter()
@@ -90,7 +109,8 @@ impl UpliftSources {
                 .collect(),
             // Mountain belts follow the ridges of the peaks-and-valleys layer.
             ranges: peaks_valleys.iter().map(|peaks| peaks.clamp(0.0, 1.0).powi(2)).collect(),
-            faults: spread(&stress, width, height, reach),
+            faults,
+            rifts,
         }
     }
 
@@ -101,6 +121,7 @@ impl UpliftSources {
                 mix.interior * self.interior[cell]
                     + mix.ranges * self.ranges[cell]
                     + mix.faults * self.faults[cell]
+                    - mix.rifts * self.rifts[cell]
             })
             .collect()
     }
@@ -163,8 +184,10 @@ pub struct LandscapeInputs<'a> {
 }
 
 pub struct Landscape {
-    /// Height of the ground. Sea cells keep their depth.
+    /// Height of the ground, lake beds included. Sea cells keep their depth.
     pub heightmap: Vec<f64>,
+    /// Level of standing water over each cell (see `water_levels`).
+    pub water_level: Vec<f32>,
     /// Drainage over the finished land: the rivers that cut it.
     pub drainage: Drainage,
     /// Depth of rock removed from each cell.
@@ -243,6 +266,23 @@ impl Grid {
             .collect()
     }
 
+    fn lake_evaporation(&self) -> Vec<f64> {
+        self.light_level.iter().map(|&light| lake_evaporation(light)).collect()
+    }
+
+    /// Drainage of the finished land.
+    fn final_drainage(&self, ground: &[f64], is_sea: &[bool]) -> Drainage {
+        solve_drainage(
+            ground,
+            is_sea,
+            &self.rainfall(),
+            &self.lake_evaporation(),
+            self.width,
+            self.height,
+            FINAL_DRAINAGE,
+        )
+    }
+
     /// Run `steps` of uplift and erosion on `ground`, draining to `is_sea`.
     fn erode(&self, ground: &mut Vec<f64>, sediment: &mut [f64], is_sea: &[bool], steps: u32) {
         let uplift_share = UpliftSources::new(
@@ -255,12 +295,14 @@ impl Grid {
         .mixed(&UpliftMix::default());
         let rainfall = self.rainfall();
         let ice: Vec<f64> = self.light_level.iter().map(|&light| iciness(light)).collect();
+        let lake_evaporation = self.lake_evaporation();
         let land = Land {
             is_base_level: is_sea,
             rock_hardness: &self.rock_hardness,
             uplift_share: &uplift_share,
             rainfall: &rainfall,
             ice: &ice,
+            lake_evaporation: &lake_evaporation,
             width: self.width,
             height: self.height,
         };
@@ -322,16 +364,28 @@ pub fn grow_landscape(inputs: &LandscapeInputs) -> Landscape {
     for cell in ground.iter_mut() {
         *cell = cell.clamp(-1.0, 1.0);
     }
-    let drainage = solve_drainage(&ground, &is_sea, &fine.rainfall(), width, height, FINAL_DRAINAGE);
-    // Any hollow left is filled level, so water runs across it.
-    let heightmap = (0..width * height)
-        .map(|cell| if is_sea[cell] { ground[cell] } else { drainage.filled[cell] })
-        .collect();
+    let drainage = fine.final_drainage(&ground, &is_sea);
+    let water_level = water_levels(&ground, &drainage);
     Landscape {
-        heightmap,
+        heightmap: ground,
+        water_level,
         drainage,
         sediment,
     }
+}
+
+/// The level of standing water over each cell: the height a lake's surface
+/// stands at, or negative infinity where there is no lake.
+fn water_levels(ground: &[f64], drainage: &Drainage) -> Vec<f32> {
+    (0..ground.len())
+        .map(|cell| {
+            if drainage.lake_depth(ground, cell) >= LAKE_MIN_DEPTH {
+                drainage.filled[cell] as f32
+            } else {
+                f32::NEG_INFINITY
+            }
+        })
+        .collect()
 }
 
 /// The land's height on a grid finer than the macro map, for everything that
@@ -342,9 +396,28 @@ pub struct FineHeights {
     pub width: usize,
     pub height: usize,
     pub heights: Vec<f32>,
+    /// Level of standing water over each cell: a lake's surface, or negative
+    /// infinity where there is none. Ground below it is lake bed.
+    pub water_level: Vec<f32>,
 }
 
 impl FineHeights {
+    /// The level of the lake at a world position, if it is under one. A
+    /// lake's level is the same all over it, so its shore is where the
+    /// ground climbs through that level.
+    pub fn lake_level(&self, wx: f64, wy: f64) -> Option<f64> {
+        let (x, y, _, _) = self.around(wx, wy);
+        let level = [(0, 0), (1, 0), (0, 1), (1, 1)]
+            .into_iter()
+            .map(|(dx, dy)| {
+                let column = (x + dx).rem_euclid(self.width as i64) as usize;
+                let row = (y + dy).clamp(0, self.height as i64 - 1) as usize;
+                self.water_level[row * self.width + column]
+            })
+            .fold(f32::NEG_INFINITY, f32::max) as f64;
+        (self.sample(wx, wy) < level).then_some(level)
+    }
+
     /// The four cells around a world position and how far between them it
     /// lies. The map joins east to west; north and south edges are clamped.
     fn around(&self, wx: f64, wy: f64) -> (i64, i64, f64, f64) {
@@ -445,17 +518,14 @@ pub fn refine_landscape(inputs: &LandscapeInputs, macro_heights: &[f64]) -> Fine
     for cell in ground.iter_mut() {
         *cell = cell.clamp(-1.0, 1.0);
     }
-    let drainage = solve_drainage(&ground, &is_sea, &grid.rainfall(), grid.width, grid.height, FINAL_DRAINAGE);
-    // Any hollow left is filled level, so water runs across it.
-    let ground: Vec<f64> = (0..ground.len())
-        .map(|cell| if is_sea[cell] { ground[cell] } else { drainage.filled[cell] })
-        .collect();
+    let drainage = grid.final_drainage(&ground, &is_sea);
     FineLand {
         heights: FineHeights {
             cells_per_wu: (grid.width as f64 / WORLD_WIDTH).round() as usize,
             width: grid.width,
             height: grid.height,
             heights: ground.iter().map(|&height| height as f32).collect(),
+            water_level: water_levels(&ground, &drainage),
         },
         drainage,
         ground,

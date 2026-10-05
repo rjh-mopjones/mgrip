@@ -38,9 +38,41 @@ pub struct Drainage {
     /// Cells from lowest to highest on the filled surface. A cell always
     /// comes after the cell it drains to.
     pub order: Vec<u32>,
-    /// Rain gathered at each cell: its own and all that drains through it.
+    /// Rain gathered at each cell: its own and all that drains through it,
+    /// less what evaporated from lakes on the way.
     pub flow: Vec<f64>,
 }
+
+impl Drainage {
+    /// Depth of standing water at a cell: how far its hollow had to be
+    /// filled before it spilled. Zero outside lakes.
+    pub fn lake_depth(&self, ground: &[f64], cell: usize) -> f64 {
+        (self.filled[cell] - ground[cell]).max(0.0)
+    }
+}
+
+/// A hollow filled at least this deep is standing water, not a dip that
+/// water runs across.
+pub const LAKE_MIN_DEPTH: f64 = 0.002;
+
+/// Water lost each step from a cell of open lake, in the units of `rainfall`
+/// (the run-off of one well-watered cell). Lakes under ice lose nothing; in
+/// the terminus little; towards the day side more than any stream brings.
+pub fn lake_evaporation(light_level: f64) -> f64 {
+    if light_level < FULL_RUNOFF_FROM_LIGHT {
+        0.0
+    } else if light_level < FULL_RUNOFF_TO_LIGHT {
+        TERMINUS_LAKE_EVAPORATION
+    } else {
+        let dried = ((light_level - FULL_RUNOFF_TO_LIGHT)
+            / (EVAPORATED_ABOVE_LIGHT - FULL_RUNOFF_TO_LIGHT))
+            .min(1.0);
+        TERMINUS_LAKE_EVAPORATION + (DAYSIDE_LAKE_EVAPORATION - TERMINUS_LAKE_EVAPORATION) * dried
+    }
+}
+
+const TERMINUS_LAKE_EVAPORATION: f64 = 0.05;
+const DAYSIDE_LAKE_EVAPORATION: f64 = 3.0;
 
 /// How far a cell is under ice, from 0 (none) to 1 (ice sheet): the night
 /// side, fading out towards the terminus as run-off fades in.
@@ -151,7 +183,8 @@ fn routing_lot(cell: usize, salt: u32) -> f64 {
 }
 
 /// Solve drainage over `ground`. Water runs to `is_base_level` cells (the
-/// sea), which stay as they are. `rainfall` is the run-off each cell adds.
+/// sea), which stay as they are. `rainfall` is the run-off each cell adds and
+/// `evaporation` what a cell of open lake loses (`lake_evaporation`).
 /// Land with no way to base level is left with no receiver.
 ///
 /// `salt` picks how the lots fall (see `STEEPNESS_PREFERENCE`): erosion
@@ -160,6 +193,7 @@ pub fn solve_drainage(
     ground: &[f64],
     is_base_level: &[bool],
     rainfall: &[f64],
+    evaporation: &[f64],
     width: usize,
     height: usize,
     salt: u32,
@@ -219,9 +253,15 @@ pub fn solve_drainage(
         .map(|cell| if is_base_level[cell] { 0.0 } else { rainfall[cell] })
         .collect();
     for &cell in order.iter().rev() {
-        let receiver = receivers[cell as usize];
+        let cell = cell as usize;
+        // Water crossing a lake loses some of itself to the air; a lake
+        // that loses all of it has no river out.
+        if filled[cell] - ground[cell] >= LAKE_MIN_DEPTH {
+            flow[cell] = (flow[cell] - evaporation[cell]).max(0.0);
+        }
+        let receiver = receivers[cell];
         if receiver != NO_RECEIVER {
-            flow[receiver as usize] += flow[cell as usize];
+            flow[receiver as usize] += flow[cell];
         }
     }
 
@@ -248,7 +288,7 @@ mod tests {
     #[test]
     fn water_runs_downhill_to_the_sea_and_gathers_on_the_way() {
         let (ground, sea) = strip([0.0, 1.0, 2.0, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3, 0);
+        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], &vec![0.0; 15], 5, 3, 0);
 
         assert_eq!(drainage.receivers[5], NO_RECEIVER);
         assert_eq!(drainage.receivers[8], 7);
@@ -260,7 +300,7 @@ mod tests {
     fn a_hollow_is_filled_until_it_spills_and_water_crosses_it() {
         // A hollow at x = 2, behind a sill at x = 1.
         let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3, 0);
+        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], &vec![0.0; 15], 5, 3, 0);
 
         assert!(drainage.filled[7] > 2.0);
         assert_eq!(drainage.receivers[7], 6);
@@ -268,9 +308,25 @@ mod tests {
     }
 
     #[test]
+    fn a_lake_gives_up_water_to_the_air() {
+        // A hollow at x = 2, behind a sill at x = 1: a lake one cell big.
+        let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
+        let flow = |evaporation: f64| {
+            solve_drainage(&ground, &sea, &vec![1.0; 15], &vec![evaporation; 15], 5, 3, 0).flow
+        };
+        let (lake, below_lake) = (7, 6);
+
+        assert!(flow(0.5)[below_lake] < flow(0.0)[below_lake]);
+        // A lake that loses all its water sends none on.
+        assert_eq!(flow(100.0)[lake], 0.0);
+        assert!(lake_evaporation(0.8) > lake_evaporation(0.4));
+        assert_eq!(lake_evaporation(0.05), 0.0);
+    }
+
+    #[test]
     fn every_cell_comes_after_the_cell_it_drains_to() {
         let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], 5, 3, 0);
+        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], &vec![0.0; 15], 5, 3, 0);
         let position = |cell: u32| drainage.order.iter().position(|&c| c == cell).unwrap();
 
         for cell in 0..15u32 {

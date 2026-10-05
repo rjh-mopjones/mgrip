@@ -532,6 +532,8 @@ impl BiomeMap {
         // (not to ponds), fed by run-off that is fullest in the terminus.
         let mut drainage = None;
         let mut fine_land = None;
+        // Level of standing water over each macro cell, where there is a lake.
+        let mut macro_water_level: Vec<f32> = Vec::new();
         let drains = |ground: &[f64], map: &BiomeMap| {
             let is_sea = sea_bodies(&map.continentalness, tile_w, tile_h, SEA_LEVEL);
             let rainfall: Vec<f64> = (0..tile_w * tile_h)
@@ -560,6 +562,7 @@ impl BiomeMap {
                 fine_land = Some(refine_landscape(&inputs, &landscape.heightmap));
             }
             map.heightmap = landscape.heightmap;
+            macro_water_level = landscape.water_level;
             map.drainage_area = landscape
                 .drainage
                 .flow
@@ -604,7 +607,20 @@ impl BiomeMap {
                 // ground as it stands.
                 let drainage = drainage.unwrap_or_else(|| {
                     let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
-                    crate::drainage::solve_drainage(&ground, &is_sea, &rainfall, tile_w, tile_h, 0)
+                    let evaporation: Vec<f64> = map
+                        .light_level
+                        .iter()
+                        .map(|&light| crate::drainage::lake_evaporation(light))
+                        .collect();
+                    crate::drainage::solve_drainage(
+                        &ground,
+                        &is_sea,
+                        &rainfall,
+                        &evaporation,
+                        tile_w,
+                        tile_h,
+                        0,
+                    )
                 });
                 RiverNetwork::generate(
                     &drainage,
@@ -672,6 +688,15 @@ impl BiomeMap {
                 map.rock_hardness[i],
                 map.light_level[i],
             );
+            // A hollow holding water is a lake: open water where the sea
+            // would be liquid, ice where it would be frozen, a salt flat
+            // where it would have dried out.
+            let lake_level = macro_water_level.get(i).copied().unwrap_or(f32::NEG_INFINITY) as f64;
+            let biome = if map.heightmap[i] >= SEA_LEVEL && map.heightmap[i] < lake_level {
+                splines.lake_biome(lake_level - map.heightmap[i], map.temperature[i], map.light_level[i])
+            } else {
+                biome
+            };
             map.biomes[i] = biome;
             map.vegetation_density[i] =
                 derived::derive_vegetation_density(biome, map.water_table[i]);
@@ -907,9 +932,18 @@ impl BiomeMap {
                 // Classify biome with the SAME spline call the macro pass uses
                 // (`biome_map.rs:483`, non-dithered). With every spline input
                 // matching macro, the biome enum must match macro.
-                self.biomes[idx] = splines.evaluate_with_light(
-                    macro_hm, temp, tect, eros, peaks, humid, arid, rock, light,
-                );
+                let lake_level = macro_map
+                    .fine_heights
+                    .as_ref()
+                    .and_then(|fine| fine.lake_level(wx, wy))
+                    .filter(|_| macro_hm >= SEA_LEVEL);
+                self.biomes[idx] = if let Some(level) = lake_level {
+                    splines.lake_biome(level - macro_hm, temp, light)
+                } else {
+                    splines.evaluate_with_light(
+                        macro_hm, temp, tect, eros, peaks, humid, arid, rock, light,
+                    )
+                };
 
                 // Write the rendered heightmap with mesh detail on top of the
                 // macro-anchored value. This drives mesh generation and visual

@@ -252,6 +252,17 @@ impl BiomeSplines {
         self.land_biome(climate, moisture, elev_class, terrain, rock_hardness)
     }
 
+    /// The biome of a lake `depth` deep: open water where the sea would be
+    /// liquid, ice where it would freeze, a salt flat where it would dry out.
+    pub fn lake_biome(&self, depth: f64, temp: f64, light_level: f64) -> TileType {
+        let as_sea = self.below_sea_biome(self.sea_level - depth, temp, 0.5, light_level);
+        if crate::biome_map::tile_has_fluid_surface(as_sea) {
+            TileType::ShallowSea
+        } else {
+            as_sea
+        }
+    }
+
     fn ocean_biome(&self, elevation: f64, temp: f64, tectonic: f64) -> TileType {
         let depth = self.sea_level - elevation;
         if temp < -15.0 {

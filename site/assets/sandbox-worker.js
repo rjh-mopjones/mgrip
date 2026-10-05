@@ -20,6 +20,7 @@ const stepArguments = (settings) => [
 	settings.rangeUplift,
 	settings.faultUplift,
 	settings.iceWidening,
+	settings.riftSinking,
 ];
 
 function draw(settings) {
@@ -31,6 +32,7 @@ function draw(settings) {
 		settings.interiorUplift,
 		settings.rangeUplift,
 		settings.faultUplift,
+		settings.riftSinking,
 	);
 	const pixels = new Uint8ClampedArray(
 		terrain.memory.buffer,

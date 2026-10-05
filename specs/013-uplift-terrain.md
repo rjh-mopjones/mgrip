@@ -267,6 +267,38 @@ being recalibrated: 21% of provinces uninhabited (45% before), 52 cities.
 The ceilings lower the whole world's relief, including the terminus that
 the sandbox parameters were chosen for. They may want choosing again.
 
+## Revisiting stage 2
+
+Five shortcuts in stage 2 are being replaced, in this order. The coastline
+may change (decided 2026-10-05), and every zone is to have character of its
+own.
+
+1. **Done: ceiling by run-off.** The uplift ceiling lowered the whole
+   world, the terminus included. Well-watered land (run-off of 0.8 or more)
+   now has only the full limit above it, as its rivers keep it down; the
+   ceiling falls to the uplift-shaped one as run-off falls. The terminus is
+   back to the relief its parameters were chosen for.
+2. **Done: lakes that last.** Standing water cuts nothing, so a lake bed
+   only rises or sinks; before, the erosion step pulled every hollow's
+   floor up towards its rim and lakes vanished within a few steps. Water
+   crossing a lake evaporates (0.05 of a cell's run-off per lake cell in
+   the terminus, up to 3 on the day side, none under ice), so a lake can
+   lose its whole river. Ground sinks where the crust pulls apart (the
+   deeper troughs of the peaks layer along plate boundaries; `rifts`, 0.6),
+   down to 30 blocks below the sea, which holds lakes open against the
+   rivers cutting their rims. The heightmap now keeps its hollows, with a
+   water level beside it; a lake is open water, ice or salt flat by the
+   same rule as the sea.
+3. **To do: the day side.** Ridged uplift, canyons cut only by the largest
+   floods, cliffs where rock breaks: canyons and mesas near the terminus,
+   grading to sand seas.
+4. **To do: ice with its own flow,** and fjords.
+5. **To do: wind.** A wind field and a sand budget; salt where water ends.
+
+Not yet done under 2: closed basins. A lake that loses all its water still
+routes it towards its rim, not its floor, so it has no true shore; the
+river-stub terminal lakes remain for rivers that dry out.
+
 ## Costs
 
 - The world is replaced. Coastline and terminus stay; every mountain, valley,

@@ -6,15 +6,15 @@
 //! coarser grid than the macro map so a step is quick enough to watch.
 
 use mg_noise::biome_map::SEA_LEVEL;
-use mg_noise::drainage::{iciness, rainfall_with, solve_drainage, Drainage};
+use mg_noise::drainage::{
+    iciness, lake_evaporation, rainfall_with, solve_drainage, Drainage, LAKE_MIN_DEPTH,
+};
 use mg_noise::landscape::{starting_ground, UpliftMix, UpliftSources};
 use mg_noise::rivers::sea_bodies;
 use mg_noise::{erosion_step, BiomeMap, ErosionParams, Land};
 
 /// The sandbox grid has one cell for this many macro cells each way.
 const SHRINK: usize = 2;
-/// A hollow holding at least this depth of water shows as a lake.
-const LAKE_MIN_DEPTH: f64 = 0.002;
 /// Blocks of height per unit of heightmap (`VoxelMeshBuilder.HEIGHT_SCALE`).
 const BLOCKS_PER_HEIGHT: f64 = 200.0;
 
@@ -120,12 +120,14 @@ impl Sandbox {
         let rainfall = self.runoff(settings);
         let uplift_share = self.uplift_share(settings);
         let ice: Vec<f64> = self.light_level.iter().map(|&light| iciness(light)).collect();
+        let lake_evaporation = self.lake_evaporation();
         let land = Land {
             is_base_level: &self.is_sea,
             rock_hardness: &self.rock_hardness,
             uplift_share: &uplift_share,
             rainfall: &rainfall,
             ice: &ice,
+            lake_evaporation: &lake_evaporation,
             width: self.width,
             height: self.height,
         };
@@ -141,6 +143,10 @@ impl Sandbox {
                 / land_cells as f64;
             self.steps += 1;
         }
+    }
+
+    fn lake_evaporation(&self) -> Vec<f64> {
+        self.light_level.iter().map(|&light| lake_evaporation(light)).collect()
     }
 
     fn uplift_share(&self, settings: &Settings) -> Vec<f64> {
@@ -162,7 +168,15 @@ impl Sandbox {
     }
 
     fn drainage(&self, settings: &Settings) -> Drainage {
-        solve_drainage(&self.ground, &self.is_sea, &self.runoff(settings), self.width, self.height, self.steps)
+        solve_drainage(
+            &self.ground,
+            &self.is_sea,
+            &self.runoff(settings),
+            &self.lake_evaporation(),
+            self.width,
+            self.height,
+            self.steps,
+        )
     }
 
     /// Height of the highest land, in blocks above sea level.
