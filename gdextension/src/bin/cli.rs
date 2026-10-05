@@ -1435,7 +1435,9 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
                     .filter(|index| index % SITE_MAP_RIVER_POINT_STRIDE == 0 || *index == last)
                     .flat_map(|index| {
                         let (x, y) = course.points[index];
-                        [x, y, course.half_widths[index]].map(two_decimals)
+                        // Half-widths are a few hundredths of a chunk.
+                        let half_width = (course.half_widths[index] as f64 * 1000.0).round() / 1000.0;
+                        [two_decimals(x), two_decimals(y), half_width]
                     })
                     .collect::<Vec<_>>()
             })

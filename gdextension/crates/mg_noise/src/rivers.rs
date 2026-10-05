@@ -1601,14 +1601,16 @@ pub fn rasterise_smooth_line_with_min(
 // alone, so scales cannot disagree and neighbouring tiles meet exactly.
 
 /// Distance between points along a course.
-const COURSE_POINT_SPACING_WU: f64 = 0.08;
+const COURSE_POINT_SPACING_WU: f64 = 0.05;
 /// River systems that never reach this Strahler order are not drawn: they are
 /// too numerous and too short to read as drainage.
 const COURSE_MIN_SYSTEM_STRAHLER: u32 = 3;
-/// Half-width of the smallest headwater and of the largest river. CLAUDE.md
-/// river invariant: a river is at most two world units wide.
-const COURSE_MIN_HALF_WIDTH_WU: f64 = 0.08;
-const COURSE_MAX_HALF_WIDTH_WU: f64 = 1.0;
+/// Half-width of the smallest headwater and of the largest river: about 20
+/// and 200 blocks across (a world unit is 512 blocks). CLAUDE.md allows a
+/// river up to two world units wide; that is a limit, and a river that wide
+/// swallows the valley it runs in.
+const COURSE_MIN_HALF_WIDTH_WU: f64 = 0.02;
+const COURSE_MAX_HALF_WIDTH_WU: f64 = 0.2;
 /// Rivers are bent by warping the plane with noise: a broad sweep plus a
 /// shorter wiggle. The warp depends only on position, so a tributary and the
 /// river it joins are moved together and still meet. Amplitudes are small

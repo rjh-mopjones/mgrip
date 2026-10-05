@@ -994,8 +994,9 @@ const ROAD_STYLES = [
 	{ from: 6, width: 1, rgb: [70, 58, 96], dash: [4, 3] },
 ];
 const RIVER_RGB = [80, 130, 180];
-/// Below this detail the rivers in the terrain image are sharp enough.
-const RIVERS_FROM_DETAIL = 3;
+const RIVER_BANK_RGB = [30, 52, 84];
+/// A river is drawn at least this many CSS pixels wide, so it shows from afar.
+const RIVER_MIN_WIDTH_PX = 1;
 /// State names fade out across this range of detail, as settlement names
 /// take over.
 const STATE_NAMES_FADE_DETAIL = [9, 14];
@@ -1086,28 +1087,36 @@ function tracePath(points, toScreen) {
 }
 
 function drawRivers() {
-	if (detail() < RIVERS_FROM_DETAIL) return;
 	const ratio = window.devicePixelRatio;
-	labelContext.strokeStyle = cssColour(RIVER_RGB);
 	labelContext.lineCap = "round";
 	labelContext.setLineDash([]);
-	for (const river of worldMap.network.rivers) {
-		forEachVisibleLap(river.box, (toScreen) => {
-			// One stroke per stretch, as wide as the river is there.
-			for (let index = 0; index + 1 < river.points.length; index++) {
-				const [from, to] = [river.points[index], river.points[index + 1]];
-				const [fromX, fromY] = toScreen(from);
-				const [toX, toY] = toScreen(to);
-				labelContext.lineWidth = Math.max(
-					1.2 * ratio,
-					(from[2] + to[2]) * pixelsPerChunk(),
-				);
-				labelContext.beginPath();
-				labelContext.moveTo(fromX, fromY);
-				labelContext.lineTo(toX, toY);
-				labelContext.stroke();
-			}
-		});
+	// Banks first, as a darker line a little wider than the water, then the
+	// water over them. A river is never drawn thinner than a hairline.
+	const passes = [
+		{ colour: cssColour(RIVER_BANK_RGB, 0.9), extra: 2 * ratio },
+		{ colour: cssColour(RIVER_RGB), extra: 0 },
+	];
+	for (const { colour, extra } of passes) {
+		labelContext.strokeStyle = colour;
+		for (const river of worldMap.network.rivers) {
+			forEachVisibleLap(river.box, (toScreen) => {
+				// One stroke per stretch, as wide as the river is there.
+				for (let index = 0; index + 1 < river.points.length; index++) {
+					const [from, to] = [river.points[index], river.points[index + 1]];
+					const [fromX, fromY] = toScreen(from);
+					const [toX, toY] = toScreen(to);
+					const water = Math.max(
+						RIVER_MIN_WIDTH_PX * ratio,
+						(from[2] + to[2]) * pixelsPerChunk(),
+					);
+					labelContext.lineWidth = water + extra;
+					labelContext.beginPath();
+					labelContext.moveTo(fromX, fromY);
+					labelContext.lineTo(toX, toY);
+					labelContext.stroke();
+				}
+			});
+		}
 	}
 }
 
