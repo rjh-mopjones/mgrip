@@ -1,234 +1,183 @@
-//! Stream power erosion simulation — implicit scheme, unconditionally stable.
+//! Erosion: uplift raises the land and rivers cut it down.
 //!
-//! h_new = (h_old + dt*U + F*h_new_receiver) / (1 + F)
-//! where F = dt * K * A^m / dx
+//! Each step lifts the land, solves drainage over it (`drainage.rs`), then
+//! lowers every cell towards the cell it drains to, faster the more water
+//! runs through it (the stream power law), and finally lets slopes creep.
+//! Valleys, ridges and the river network come out of this together.
+//!
+//! The lowering is solved implicitly, cell by cell from the sea upwards, so
+//! each cell uses the already-lowered height of the cell below it. That is
+//! what keeps large time steps stable (Braun and Willett 2013):
+//!
+//!   h = (h + dt*U + f*h_receiver) / (1 + f),   f = K * dt * flow^m / distance
 
-use crate::rivers::{D8_DISTANCES, D8_OFFSETS, NO_FLOW};
+use crate::drainage::{solve_drainage, step_distance, Drainage, NO_RECEIVER};
 
 pub struct ErosionParams {
-    pub k_base: f64,
-    pub u_base: f64,
-    pub m: f64,
-    pub dt: f64,
-    pub iterations: u32,
-    pub dx: f64,
-    pub talus_angle: f64,
-    pub thermal_rate: f64,
-    pub sea_level: f64,
+    /// How easily average rock is cut (K). Soft rock erodes faster.
+    pub erodibility: f64,
+    /// Uplift per unit time where tectonic stress is highest.
+    pub uplift: f64,
+    /// How much more a big river cuts than a small one (m).
+    pub flow_exponent: f64,
+    pub time_step: f64,
+    pub steps: u32,
+    /// Share of the way each cell moves towards the mean of its four
+    /// neighbours each step: soil creep, which rounds ridges and valley sides.
+    pub slope_creep: f64,
 }
 
 impl Default for ErosionParams {
     fn default() -> Self {
         Self {
-            k_base: 0.04,
-            u_base: 0.015,
-            m: 0.45,
-            dt: 1.0,
-            iterations: 120,
-            dx: 1.0,
-            talus_angle: 0.5,
-            thermal_rate: 0.3,
-            sea_level: -0.01,
+            erodibility: 0.04,
+            uplift: 0.015,
+            flow_exponent: 0.45,
+            time_step: 1.2,
+            steps: 100,
+            slope_creep: 0.04,
         }
     }
 }
 
 pub struct ErosionResult {
+    /// The eroded ground, with any remaining hollow filled level.
     pub heightmap: Vec<f64>,
-    pub drainage_area: Vec<u32>,
+    /// Drainage over the eroded ground: the rivers that cut it.
+    pub drainage: Drainage,
+    /// Depth of rock removed from each cell.
     pub sediment: Vec<f64>,
 }
 
-fn compute_d8_flow(elevation: &[f64], width: usize, height: usize) -> Vec<u8> {
-    let total = width * height;
-    let mut flow_dir = vec![NO_FLOW; total];
-
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            let h = elevation[idx];
-            let mut best_slope = 0.0;
-            let mut best_dir = NO_FLOW;
-
-            for (d, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
-                let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width);
-                let ny = y as i32 + dy;
-                if ny < 0 || ny >= height as i32 {
-                    continue;
-                }
-                let nidx = ny as usize * width + nx as usize;
-                let slope = (h - elevation[nidx]) / D8_DISTANCES[d];
-                if slope > best_slope {
-                    best_slope = slope;
-                    best_dir = d as u8;
-                }
-            }
-            flow_dir[idx] = best_dir;
-        }
-    }
-    flow_dir
-}
-
-fn receiver_index(idx: usize, dir: u8, width: usize, height: usize) -> Option<usize> {
-    if dir == NO_FLOW {
-        return None;
-    }
-    let (dx, dy) = D8_OFFSETS[dir as usize];
-    let x = (idx % width) as i32 + dx;
-    let y = (idx / width) as i32 + dy;
-    if y < 0 || y >= height as i32 {
-        return None;
-    }
-    Some(y as usize * width + crate::wrap::wrap_grid_x(x, width) as usize)
-}
-
-fn compute_flow_accumulation(
-    flow_dir: &[u8],
-    elevation: &[f64],
-    width: usize,
-    height: usize,
-) -> Vec<u32> {
-    let total = width * height;
-    let mut acc = vec![1u32; total];
-
-    let mut order: Vec<usize> = (0..total).collect();
-    order.sort_unstable_by(|&a, &b| {
-        elevation[b]
-            .partial_cmp(&elevation[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    for &idx in &order {
-        let dir = flow_dir[idx];
-        if dir == NO_FLOW {
-            continue;
-        }
-        if let Some(recv) = receiver_index(idx, dir, width, height) {
-            acc[recv] += acc[idx];
-        }
-    }
-    acc
-}
-
-fn fill_depressions(
-    elevation: &[f64],
-    width: usize,
-    height: usize,
-    sea_level: f64,
-    _extra: Option<()>,
-) -> Vec<f64> {
-    crate::rivers::fill_depressions(elevation, width, height, sea_level, None)
-}
-
+/// Erode `heightmap`. `is_base_level` cells (the sea) stay fixed and
+/// everything drains to them. `rainfall` is the run-off each cell adds.
 pub fn simulate_erosion(
     heightmap: &[f64],
     rock_hardness: &[f64],
     tectonic_stress: &[f64],
-    continentalness: &[f64],
+    is_base_level: &[bool],
+    rainfall: &[f64],
     width: usize,
     height: usize,
     params: &ErosionParams,
 ) -> ErosionResult {
     let total = width * height;
-    let mut h = heightmap.to_vec();
+    let mut ground = heightmap.to_vec();
     let mut sediment = vec![0.0f64; total];
-
     let erodibility: Vec<f64> = rock_hardness
         .iter()
-        .map(|&r| params.k_base * (1.5 - r))
+        .map(|&hardness| params.erodibility * (1.5 - hardness))
         .collect();
     let uplift: Vec<f64> = tectonic_stress
         .iter()
-        .map(|&s| params.u_base * s * s)
+        .map(|&stress| params.uplift * stress * stress)
         .collect();
+    let dt = params.time_step;
 
-    let mut flow_dir;
-    let mut accumulation;
+    for _ in 0..params.steps {
+        let drainage = solve_drainage(&ground, is_base_level, rainfall, width, height);
 
-    for iter in 0..params.iterations {
-        if iter % 5 == 0 {
-            h = fill_depressions(&h, width, height, params.sea_level, None);
-        }
-
-        flow_dir = compute_d8_flow(&h, width, height);
-        accumulation = compute_flow_accumulation(&flow_dir, &h, width, height);
-
-        let mut sorted: Vec<usize> = (0..total).collect();
-        sorted.sort_by(|&a, &b| h[a].partial_cmp(&h[b]).unwrap_or(std::cmp::Ordering::Equal));
-
-        for &idx in &sorted {
-            if continentalness[idx] < params.sea_level {
+        // From the sea upwards, so each cell's receiver is already lowered.
+        for &cell in &drainage.order {
+            let cell = cell as usize;
+            if is_base_level[cell] {
                 continue;
             }
-
-            let dir = flow_dir[idx];
-            if dir == NO_FLOW {
-                h[idx] += params.dt * uplift[idx];
+            let lifted = ground[cell] + dt * uplift[cell];
+            let receiver = drainage.receivers[cell];
+            if receiver == NO_RECEIVER {
+                ground[cell] = lifted;
                 continue;
             }
-
-            let Some(recv_idx) = receiver_index(idx, dir, width, height) else {
-                h[idx] += params.dt * uplift[idx];
-                continue;
-            };
-
-            let k = erodibility[idx];
-            let a = accumulation[idx] as f64;
-            let f = params.dt * k * a.powf(params.m) / params.dx;
-
-            let h_old = h[idx];
-            let h_recv = h[recv_idx];
-            let h_new = (h_old + params.dt * uplift[idx] + f * h_recv) / (1.0 + f);
-
-            sediment[idx] += (h_old - h_new).max(0.0);
-            h[idx] = h_new;
+            let receiver = receiver as usize;
+            let cutting = erodibility[cell] * dt * drainage.flow[cell].powf(params.flow_exponent)
+                / step_distance(cell, receiver, width);
+            let lowered = (lifted + cutting * ground[receiver]) / (1.0 + cutting);
+            sediment[cell] += (ground[cell] - lowered).max(0.0);
+            ground[cell] = lowered;
         }
 
-        // Thermal erosion every 3 iterations
-        if iter % 3 == 0 {
-            let mut thermal_sorted: Vec<usize> = (0..total)
-                .filter(|&i| continentalness[i] >= params.sea_level)
-                .collect();
-            thermal_sorted
-                .sort_by(|&a, &b| h[b].partial_cmp(&h[a]).unwrap_or(std::cmp::Ordering::Equal));
-
-            for &idx in &thermal_sorted {
-                let x = idx % width;
-                let y = idx / width;
-                for (d, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
-                    let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width);
-                    let ny = y as i32 + dy;
-                    if ny < 0 || ny >= height as i32 {
-                        continue;
-                    }
-                    let nidx = ny as usize * width + nx as usize;
-                    let slope = (h[idx] - h[nidx]) / (D8_DISTANCES[d] * params.dx);
-                    if slope > params.talus_angle {
-                        let transfer = (slope - params.talus_angle)
-                            * D8_DISTANCES[d]
-                            * params.dx
-                            * params.thermal_rate
-                            * 0.5;
-                        h[idx] -= transfer;
-                        h[nidx] += transfer;
-                        sediment[nidx] += transfer;
-                    }
-                }
-            }
-        }
+        ground = crept(&ground, is_base_level, width, height, params.slope_creep);
     }
 
-    for v in h.iter_mut() {
-        *v = v.clamp(-1.0, 1.0);
+    for cell in ground.iter_mut() {
+        *cell = cell.clamp(-1.0, 1.0);
     }
-
-    h = fill_depressions(&h, width, height, params.sea_level, None);
-    flow_dir = compute_d8_flow(&h, width, height);
-    accumulation = compute_flow_accumulation(&flow_dir, &h, width, height);
-
+    let drainage = solve_drainage(&ground, is_base_level, rainfall, width, height);
     ErosionResult {
-        heightmap: h,
-        drainage_area: accumulation,
+        heightmap: drainage.filled.clone(),
+        drainage,
         sediment,
+    }
+}
+
+/// The ground after one step of slope creep: each land cell moves `share` of
+/// the way towards the mean of its four neighbours.
+fn crept(ground: &[f64], is_base_level: &[bool], width: usize, height: usize, share: f64) -> Vec<f64> {
+    (0..width * height)
+        .map(|cell| {
+            if is_base_level[cell] {
+                return ground[cell];
+            }
+            let (x, y) = (cell % width, cell / width);
+            // The map joins east to west; north and south edges repeat.
+            let west = ground[y * width + (x + width - 1) % width];
+            let east = ground[y * width + (x + 1) % width];
+            let north = ground[y.saturating_sub(1) * width + x];
+            let south = ground[(y + 1).min(height - 1) * width + x];
+            ground[cell] + share * ((west + east + north + south) / 4.0 - ground[cell])
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 16 by 9 slope rising eastwards from a sea in column 0, with a
+    /// groove along the middle row steep enough to gather the water.
+    fn grooved_slope() -> (Vec<f64>, Vec<bool>) {
+        let (width, height) = (16, 9);
+        let mut ground = vec![0.0; width * height];
+        let mut sea = vec![false; width * height];
+        for y in 0..height {
+            for x in 0..width {
+                let off_groove = (y as f64 - 4.0).abs() * 0.1;
+                ground[y * width + x] = x as f64 * 0.05 + off_groove;
+                sea[y * width + x] = x == 0;
+            }
+        }
+        (ground, sea)
+    }
+
+    fn erode(steps: u32) -> ErosionResult {
+        let (ground, sea) = grooved_slope();
+        let params = ErosionParams { steps, uplift: 0.0, ..ErosionParams::default() };
+        simulate_erosion(&ground, &[0.5; 144], &[0.0; 144], &sea, &[1.0; 144], 16, 9, &params)
+    }
+
+    #[test]
+    fn a_river_cuts_a_valley_deeper_than_the_ground_beside_it() {
+        let (before, _) = grooved_slope();
+        let after = erode(5).heightmap;
+        // Middle of the slope: in the groove, and three rows off it.
+        let (in_valley, beside) = (4 * 16 + 8, 1 * 16 + 8);
+
+        let cut_in_valley = before[in_valley] - after[in_valley];
+        let cut_beside = before[beside] - after[beside];
+        assert!(cut_in_valley > cut_beside);
+        assert!(after[in_valley] < after[beside]);
+    }
+
+    #[test]
+    fn the_sea_stays_where_it_is_and_the_result_drains_to_it() {
+        let (before, _) = grooved_slope();
+        let result = erode(5);
+
+        for y in 0..9 {
+            assert_eq!(result.heightmap[y * 16], before[y * 16]);
+        }
+        let draining = result.drainage.receivers.iter().filter(|&&r| r != NO_RECEIVER).count();
+        assert_eq!(draining, 144 - 9);
     }
 }

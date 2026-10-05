@@ -11,7 +11,8 @@ use crate::biome_splines::BiomeSplines;
 use crate::derived;
 use crate::erosion_sim::{simulate_erosion, ErosionParams};
 use crate::rivers::{
-    rasterize_courses, rasterize_to_tile, RiverCourse, RiverNetwork, LOD_THRESHOLD_MACRO,
+    rasterize_courses, rasterize_to_tile, sea_bodies, RiverCourse, RiverNetwork,
+    LOD_THRESHOLD_MACRO,
 };
 use crate::strategy::{
     ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
@@ -534,21 +535,39 @@ impl BiomeMap {
             );
         }
 
-        // ── Phase 3: Erosion simulation (macro only) ──────────────────────────
+        // ── Phase 3: Erosion (macro only) ─────────────────────────────────────
+        // Erosion and the rivers share one drainage: water runs to the sea
+        // (not to ponds), fed by run-off that is fullest in the terminus.
+        let mut drainage = None;
+        let drains = |ground: &[f64], map: &BiomeMap| {
+            let is_sea = sea_bodies(&map.continentalness, tile_w, tile_h, SEA_LEVEL);
+            let rainfall: Vec<f64> = (0..tile_w * tile_h)
+                .map(|i| crate::drainage::rainfall(map.light_level[i], map.humidity[i]))
+                .collect();
+            (ground.to_vec(), is_sea, rainfall)
+        };
         if run_erosion {
             let tectonic_stress: Vec<f64> = map.tectonic.iter().map(|&t| 1.0 - t).collect();
+            let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
             let erosion_result = simulate_erosion(
-                &map.heightmap,
+                &ground,
                 &map.rock_hardness,
                 &tectonic_stress,
-                &map.continentalness,
+                &is_sea,
+                &rainfall,
                 tile_w,
                 tile_h,
                 &ErosionParams::default(),
             );
             map.heightmap = erosion_result.heightmap;
-            map.drainage_area = erosion_result.drainage_area;
+            map.drainage_area = erosion_result
+                .drainage
+                .flow
+                .iter()
+                .map(|&flow| flow.round() as u32)
+                .collect();
             map.sediment = erosion_result.sediment;
+            drainage = Some(erosion_result.drainage);
 
             // Recompute temperature with eroded heightmap
             for i in 0..tile_w * tile_h {
@@ -563,9 +582,14 @@ impl BiomeMap {
 
         // ── Phase 4: River network (macro only) ───────────────────────────────
         if run_rivers {
+            // Without erosion there is no drainage yet: solve it on the
+            // ground as it stands.
+            let drainage = drainage.unwrap_or_else(|| {
+                let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
+                crate::drainage::solve_drainage(&ground, &is_sea, &rainfall, tile_w, tile_h)
+            });
             let network = RiverNetwork::generate(
-                &map.heightmap,
-                &map.rock_hardness,
+                &drainage,
                 &map.tectonic,
                 &map.continentalness,
                 &map.light_level,

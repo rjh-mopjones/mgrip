@@ -15,6 +15,7 @@
 //! by a drainage threshold that varies with LOD level.
 
 use crate::biome_map::{WORLD_HEIGHT, WORLD_WIDTH};
+use crate::drainage::{Drainage, NO_RECEIVER};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -190,7 +191,7 @@ fn strahler_world_half_width(strahler_order: u32) -> f64 {
 // thousands of tiny S1-S2 segments that look like noise. Higher values
 // (20+) produce fewer, cleaner channels where real catchment convergence
 // has occurred — actual rivers, not every hillside trickle.
-const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00008;
+const MIN_RIVER_ACCUMULATION_RATIO: f64 = 0.00005;
 const MIN_RIVER_ACCUMULATION_FLOOR: f64 = 20.0;
 
 // ─── River Character ────────────────────────────────────────────────────────
@@ -318,6 +319,30 @@ fn mark_surface_rivers(
     for (index, segment) in segments.iter_mut().enumerate() {
         segment.surface_from = wet_from[index].filter(|_| reaches_sea[index]);
     }
+}
+
+/// The direction (an index into `D8_OFFSETS`) from each cell to the cell it
+/// drains to, or `NO_FLOW`.
+fn flow_directions(drainage: &Drainage, width: usize) -> Vec<u8> {
+    drainage
+        .receivers
+        .iter()
+        .enumerate()
+        .map(|(cell, &receiver)| {
+            if receiver == NO_RECEIVER {
+                return NO_FLOW;
+            }
+            let receiver = receiver as usize;
+            let dy = (receiver / width) as i32 - (cell / width) as i32;
+            // The map joins east to west, so a step can cross the seam.
+            let raw_dx = (receiver % width) as i32 - (cell % width) as i32;
+            let dx = if raw_dx.abs() > 1 { -raw_dx.signum() } else { raw_dx };
+            D8_OFFSETS
+                .iter()
+                .position(|&offset| offset == (dx, dy))
+                .map_or(NO_FLOW, |direction| direction as u8)
+        })
+        .collect()
 }
 
 // ─── River Segment ──────────────────────────────────────────────────────────
@@ -520,9 +545,11 @@ impl RiverNetwork {
     }
 
     /// Generate the global river network from terrain and geological data.
+    /// Build the river network from the drainage that carved the terrain
+    /// (`erosion_sim`), so rivers lie in their valleys. `drainage` must have
+    /// been solved with `sea_bodies` as its base level.
     pub fn generate(
-        heightmap: &[f64],
-        rock_hardness: &[f64],
+        drainage: &Drainage,
         tectonic_stress: &[f64],
         continentalness: &[f64],
         light_level: &[f64],
@@ -550,53 +577,8 @@ impl RiverNetwork {
         let real_continentalness = continentalness;
         let continentalness = &drainage_continentalness[..];
 
-        // Step 0: Condition heightmap for coherent drainage
-        let conditioned = condition_heightmap_for_drainage(
-            heightmap, continentalness, tectonic_stress, width, height, sea_level,
-        );
-
-        // Step 1: Fill depressions (Priority-Flood)
-        let filled = fill_depressions(&conditioned, width, height, sea_level, Some(continentalness));
-
-        // Step 2: Geology-aware D8 flow direction
-        let flow_dir = compute_geology_aware_flow(
-            &filled, rock_hardness, tectonic_stress, width, height, sea_level, Some(continentalness),
-        );
-
-        // Step 3: Flow accumulation
-        let mut accumulation = compute_flow_accumulation(&flow_dir, &filled, width, height);
-
-        // Step 3.5: Climate-weighted accumulation.
-        //
-        // On a tidally locked world, precipitation peaks at the terminus
-        // (moderate light_level ~0.3-0.6) where warm dayside air meets cold
-        // nightside air. Deep dayside (light > 0.8) evaporates all surface
-        // water. Deep nightside (light < 0.1) is frozen solid.
-        //
-        // Scale each cell's accumulated drainage by a "precipitation
-        // effectiveness" factor so that drainage paths through dry/frozen
-        // zones contribute less flow. This naturally reduces river formation
-        // outside the terminus band without hard climate-zone cutoffs.
-        for idx in 0..total {
-            let light = light_level.get(idx).copied().unwrap_or(0.5);
-            let precip_effectiveness = if light < 0.08 {
-                // Deep nightside: frozen, minimal meltwater
-                0.05
-            } else if light < 0.20 {
-                // Outer nightside: some seasonal melt
-                0.15 + (light - 0.08) / 0.12 * 0.35
-            } else if light < 0.70 {
-                // Terminus band: full precipitation
-                1.0
-            } else if light < 0.85 {
-                // Dayside margin: evaporation reduces effectiveness
-                1.0 - (light - 0.70) / 0.15 * 0.7
-            } else {
-                // Deep dayside: nearly all water evaporates
-                0.08
-            };
-            accumulation[idx] = (accumulation[idx] as f64 * precip_effectiveness) as u32;
-        }
+        let flow_dir = flow_directions(drainage, width);
+        let accumulation: Vec<u32> = drainage.flow.iter().map(|&flow| flow.round() as u32).collect();
 
         // Step 4: Build river tree
         let min_accumulation =
@@ -725,6 +707,7 @@ impl RiverNetwork {
             height,
         };
         network.courses = build_river_courses(&network);
+        eprintln!("[rivers] {} courses drawn", network.courses.len());
         network
     }
 
@@ -868,81 +851,6 @@ impl Ord for FloodCell {
     }
 }
 
-pub(crate) fn fill_depressions(
-    elevation: &[f64], width: usize, height: usize, sea_level: f64,
-    continentalness: Option<&[f64]>,
-) -> Vec<f64> {
-    // Base epsilon for Priority Flood fill. Using a UNIFORM epsilon creates
-    // perfectly monotonic gradients on flat plateaus — BFS-equidistant cells
-    // get identical elevations, D8 ties break to the first-checked offset
-    // (north), and large flat regions produce long straight axis-aligned
-    // river chains visible as horizontal/vertical stripes on `rivers.png`.
-    //
-    // Position-hashed per-cell multiplier breaks the symmetry: two adjacent
-    // cells that would otherwise receive the same epsilon now receive
-    // slightly different increments, so D8 sees a real (if tiny) gradient
-    // and picks varied neighbors. The hash is deterministic in world coords
-    // so macro and runtime agree.
-    let base_epsilon = 1e-4;
-    let mut filled = elevation.to_vec();
-    let mut resolved = vec![false; width * height];
-    let mut heap = BinaryHeap::new();
-
-    // ONLY initialise ocean cells as PF seeds so every drained cell flows
-    // toward an actual sea, not the map's top/bottom edge. Previous behaviour
-    // also seeded y=0 and y=height-1 as "boundary sinks", which let inland
-    // drainage escape off-map to the polar edges without ever reaching
-    // water. Rivers can now terminate only where they hit ocean (or drop
-    // into an endorheic basin that PF raises to its spill level).
-    //
-    // For fully land-locked worlds this would leave cells unresolved; but
-    // Margin's macromap has a terminator ocean belt, so every connected
-    // land mass has an ocean path and PF covers the whole continent.
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            let is_ocean = if let Some(cont) = continentalness {
-                cont[idx] <= sea_level
-            } else {
-                elevation[idx] <= sea_level
-            };
-            if is_ocean {
-                heap.push(FloodCell { elevation: elevation[idx], index: idx });
-                resolved[idx] = true;
-            }
-        }
-    }
-
-    while let Some(cell) = heap.pop() {
-        let x = cell.index % width;
-        let y = cell.index / width;
-        for &(dx, dy) in &D8_OFFSETS {
-            let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width);
-            let ny = y as i32 + dy;
-            if ny < 0 || ny >= height as i32 { continue; }
-            let nidx = ny as usize * width + nx as usize;
-            if resolved[nidx] { continue; }
-            resolved[nidx] = true;
-            // Position-hashed per-cell jitter so PF-filled plateaus don't form
-            // uniform monotonic gradients that D8 tie-breaks into straight
-            // axis-aligned runs.
-            let hash = position_jitter(nx as u32, ny as u32);
-            let new_elev = if elevation[nidx] <= filled[cell.index] {
-                filled[cell.index] + base_epsilon * (0.3 + 1.4 * hash)
-            } else {
-                elevation[nidx]
-            };
-            filled[nidx] = new_elev;
-            heap.push(FloodCell { elevation: new_elev, index: nidx });
-        }
-    }
-    filled
-}
-
-/// Deterministic coordinate-hashed jitter in `[0.0, 1.0)`. Breaks spatial
-/// symmetry in priority-flood fill and D8 tie-breaks so flat regions don't
-/// produce axis-aligned river chains. Also used for meander noise seeding
-/// and anywhere else we need "small per-cell variation tied to world coord".
 pub(crate) fn position_jitter(x: u32, y: u32) -> f64 {
     let mut h = (x as u64).wrapping_mul(0x9E3779B97F4A7C15);
     h ^= (y as u64).wrapping_mul(0xBF58476D1CE4E5B9);
@@ -987,151 +895,6 @@ fn unwrap_path_x(path: &[(f64, f64)], world_width: f64) -> Vec<(f64, f64)> {
         out.push((x, curr.1));
     }
     out
-}
-
-// ─── Heightmap Drainage Conditioning ────────────────────────────────────────
-
-fn condition_heightmap_for_drainage(
-    heightmap: &[f64], continentalness: &[f64], tectonic_stress: &[f64],
-    width: usize, height: usize, sea_level: f64,
-) -> Vec<f64> {
-    let total = width * height;
-    let smoothed = box_blur(heightmap, width, height, 48);
-    // Blend factor: how much of the box-blurred heightmap to use for
-    // drainage conditioning. Lower = more local relief preserved = more
-    // varied D8 flow directions = rivers follow terrain features instead
-    // of taking the straightest path downhill. 0.50 (was 0.80) keeps
-    // enough smoothing to prevent noise-driven fragmentation while letting
-    // valleys and ridges guide drainage.
-    let blend = 0.50;
-    let mut conditioned = Vec::with_capacity(total);
-    for idx in 0..total {
-        conditioned.push(heightmap[idx] * (1.0 - blend) + smoothed[idx] * blend);
-    }
-    let beta = 0.05;
-    for idx in 0..total {
-        if continentalness[idx] > sea_level {
-            conditioned[idx] += tectonic_stress[idx] * beta;
-        }
-    }
-    conditioned
-}
-
-pub(crate) fn box_blur(data: &[f64], width: usize, height: usize, radius: usize) -> Vec<f64> {
-    let mut temp = data.to_vec();
-    let mut output = data.to_vec();
-
-    // Horizontal pass
-    for y in 0..height {
-        let mut sum = 0.0;
-        let mut count = 0;
-        for x in 0..=radius.min(width - 1) {
-            sum += data[y * width + x];
-            count += 1;
-        }
-        for x in 0..width {
-            temp[y * width + x] = sum / count as f64;
-            let right = x + radius + 1;
-            if right < width { sum += data[y * width + right]; count += 1; }
-            if x >= radius { sum -= data[y * width + (x - radius)]; count -= 1; }
-        }
-    }
-
-    // Vertical pass
-    for x in 0..width {
-        let mut sum = 0.0;
-        let mut count = 0;
-        for y in 0..=radius.min(height - 1) {
-            sum += temp[y * width + x];
-            count += 1;
-        }
-        for y in 0..height {
-            output[y * width + x] = sum / count as f64;
-            let bottom = y + radius + 1;
-            if bottom < height { sum += temp[bottom * width + x]; count += 1; }
-            if y >= radius { sum -= temp[(y - radius) * width + x]; count -= 1; }
-        }
-    }
-    output
-}
-
-// ─── Geology-Aware D8 Flow Direction ────────────────────────────────────────
-
-fn compute_geology_aware_flow(
-    elevation: &[f64], rock_hardness: &[f64], tectonic_stress: &[f64],
-    width: usize, height: usize, sea_level: f64,
-    continentalness: Option<&[f64]>,
-) -> Vec<u8> {
-    let mut flow_dir = vec![NO_FLOW; width * height];
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            let is_ocean = if let Some(cont) = continentalness {
-                cont[idx] <= sea_level
-            } else {
-                elevation[idx] <= sea_level
-            };
-            if is_ocean { continue; }
-
-            let mut max_slope = 0.0;
-            let mut best_dir = NO_FLOW;
-            // Cell-level jitter so tie-breaks between neighbors of equal slope
-            // vary spatially. Without this the first-checked offset (north)
-            // always wins on flat terrain and D8 emits long axis-aligned
-            // chains.
-            let cell_jitter = position_jitter(x as u32, y as u32);
-            for (dir, &(dx, dy)) in D8_OFFSETS.iter().enumerate() {
-                let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
-                let ny = y as i32 + dy;
-                if ny < 0 || ny >= height as i32 { continue; }
-                let nidx = ny as usize * width + nx;
-                let base_slope = (elevation[idx] - elevation[nidx]) / D8_DISTANCES[dir];
-                let geo_factor = (1.0
-                    - rock_hardness.get(nidx).copied().unwrap_or(0.5) * 0.5
-                    + tectonic_stress.get(nidx).copied().unwrap_or(0.0) * 0.4)
-                    .clamp(0.1, 2.0);
-                // Hash per (cell, direction) so different directions get
-                // different tiny bonuses — selects a varied direction on flat
-                // terrain rather than always the first one tested.
-                let dir_jitter = position_jitter(
-                    x as u32 * 8 + dir as u32,
-                    y as u32,
-                );
-                let tie_break = (cell_jitter + dir_jitter) * 1e-9;
-                let adjusted = base_slope * geo_factor + tie_break;
-                if adjusted > max_slope {
-                    max_slope = adjusted;
-                    best_dir = dir as u8;
-                }
-            }
-            flow_dir[idx] = best_dir;
-        }
-    }
-    flow_dir
-}
-
-// ─── Flow Accumulation ──────────────────────────────────────────────────────
-
-pub(crate) fn compute_flow_accumulation(
-    flow_dir: &[u8], elevation: &[f64], width: usize, height: usize,
-) -> Vec<u32> {
-    let total = width * height;
-    let mut accumulation = vec![1u32; total];
-    let mut sorted: Vec<usize> = (0..total).collect();
-    sorted.sort_by(|&a, &b| elevation[b].partial_cmp(&elevation[a]).unwrap_or(Ordering::Equal));
-    for &idx in &sorted {
-        if flow_dir[idx] == NO_FLOW { continue; }
-        let x = idx % width;
-        let y = idx / width;
-        let (dx, dy) = D8_OFFSETS[flow_dir[idx] as usize];
-        let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
-        let ny = (y as i32 + dy) as usize;
-        if ny < height {
-            let target = ny * width + nx;
-            accumulation[target] = accumulation[target].saturating_add(accumulation[idx]);
-        }
-    }
-    accumulation
 }
 
 /// Below sea level by more than this, ground is open water however the coast
@@ -1205,7 +968,7 @@ const POND_RAISED_ABOVE_SEA: f64 = 0.001;
 /// For every cell, whether it lies in a body of water: a connected stretch
 /// of at least `SEA_BODY_MIN_CELLS` cells below sea level. The map joins east
 /// to west.
-fn sea_bodies(continentalness: &[f64], width: usize, height: usize, sea_level: f64) -> Vec<bool> {
+pub fn sea_bodies(continentalness: &[f64], width: usize, height: usize, sea_level: f64) -> Vec<bool> {
     let below_sea = |cell: usize| continentalness[cell] <= sea_level;
     let mut in_body = vec![false; width * height];
     let mut seen = vec![false; width * height];
@@ -2029,28 +1792,6 @@ fn build_spatial_index(segments: &[RiverSegment]) -> HashMap<RiverChunkCoord, Ve
         ids.dedup();
     }
     index
-}
-
-// ─── Legacy API (generate_river_network) ────────────────────────────────────
-
-/// Legacy entry point — generates a RiverNetwork using the full pipeline.
-pub fn generate_river_network(
-    heightmap: &[f64], width: usize, height: usize,
-    light_level: &[f64], humidity: &[f64], temperature: &[f64],
-    _threshold: f64,
-) -> RiverNetwork {
-    // Use zeros for missing geological layers — the conditioning will still work
-    // from the heightmap smoothing alone.
-    let rock_hardness = vec![0.5; width * height];
-    let tectonic_stress = vec![0.0; width * height];
-    let continentalness = heightmap.to_vec(); // approximate: use heightmap as continentalness
-    let sea_level = crate::biome_map::SEA_LEVEL;
-
-    RiverNetwork::generate(
-        heightmap, &rock_hardness, &tectonic_stress, &continentalness,
-        light_level, humidity, temperature,
-        width, height, sea_level,
-    )
 }
 
 /// Legacy flat-grid rasterization.

@@ -51,6 +51,39 @@ pack format too, so loaded and generated data are bit-identical.
 
 The game no longer reads `~/.margins_grip/`.
 
+## Erosion and drainage
+
+Rivers and valleys come from one drainage solve (`mg_noise/src/drainage.rs`),
+so rivers lie in the valleys that were cut for them. Before, erosion carved
+the heightmap with one flow solve and the river network was then built from
+a second solve with different rules, so drawn rivers were not the channels
+the erosion made.
+
+Drainage (priority-flood, then steepest descent; Barnes et al. 2014, Braun
+and Willett 2013):
+
+1. Flood the land upwards from base level, lowest cell first, raising every
+   hollow to the level at which it spills. The order cells are reached in
+   runs from lowest to highest.
+2. Each cell drains to its lowest neighbour on the flooded surface.
+3. Each cell starts with its own run-off, and from the highest cell down
+   passes what it holds to the cell it drains to.
+
+Base level is the sea: bodies of water of at least 12 cells. Run-off is
+fullest in the terminus and scaled by humidity; the night side keeps 5% of
+it (ice) and the deep day side 8% (evaporation).
+
+Erosion (`erosion_sim.rs`) runs 100 steps. Each step lifts the land where
+tectonic stress is high, solves drainage, lowers every cell towards the cell
+it drains to (the stream power law, solved implicitly from the sea upwards so
+large time steps stay stable), and lets slopes creep. It starts from the
+noise heightmap rather than from flat ground, so the relief still agrees
+with the layers the biomes are classified from.
+
+The river network is read from the drainage of the eroded ground. A river
+forms where gathered run-off reaches 26 (0.005% of the world's cells, in
+units of one well-watered terminus cell).
+
 ## River courses
 
 A river is the same river at every scale. Each river segment's final course
@@ -67,14 +100,15 @@ cannot disagree and neighbouring tiles meet exactly.
 How a course is built from a river segment:
 
 1. The segment's path is carried on to the head of the segment it flows
-   into, so rivers are unbroken, then resampled every 0.08 world units.
+   into, so rivers are unbroken, then resampled every 0.05 world units.
 2. **Meander.** Every point is moved by a noise warp of the plane: a broad
    sweep (2 world units) plus a shorter wiggle (0.4). The warp depends only on
    position, so a tributary and the river it joins move together and still
    meet. Amplitudes are small enough that the warp never folds, so rivers do
    not cross themselves, and they stay near the valleys the flow solve found.
-3. **Width.** Half-width runs from 0.08 world units for the smallest
-   headwater to 1.0 for the largest river, by the square root of drainage,
+3. **Width.** Half-width runs from 0.02 world units for the smallest
+   headwater to 0.2 for the largest river (about 20 and 200 blocks across),
+   by the square root of drainage,
    scaled by the river's character (seasonal, frozen and so on). Drainage
    grows along a segment from what flows in at its head to its own total, so
    a river widens downstream and a tributary is never wider than its trunk.
@@ -151,21 +185,23 @@ reports how many border samples differ in block height; it should be zero.
 ## Results on seed 42
 
 - Rivers are dendritic lines that widen downstream, on the map and in tiles.
-- 126 river courses, about 1,040 world units in all. All 15 mouths meet the
-  sea. Before the rules in "Where rivers run": 436 courses and 4,330 world
-  units, most of them on the dry day side.
-- 26 provinces have a major river. Corazon and Furrow, the lore's river
+- 202 river courses, about 1,650 world units in all, every one in the
+  terminus. 25 mouths; the furthest ends 1.4 chunks from the sea as drawn.
+- 29 provinces have a major river. Corazon and Furrow, the lore's river
   states, both have their capital on one.
 - 0 of 512 border samples differ on every chunk border checked.
 - Macro pack: 14.5 MB. World ready in 1.3 s natively and 2.0 s in the browser.
 
 ## Open questions
 
-1. Rivers are sparse: 126 courses on a 1024 by 512 world. Whole systems are
-   dropped if any stretch downstream is too dry or too cold. An alternative
-   is to let such rivers end in a terminal lake, which the invariants
-   currently forbid.
-2. Climate decides only where rivers are drawn, not how much water they
-   carry beyond a coarse weighting by light level.
-3. In the game a river is a biome colour on the ground, not water.
-4. The river code assumes a 1024 by 512 macro grid; other sizes panic.
+1. Erosion starts from noise terrain. Growing the land from uplift alone
+   (as in the Randlebrot prototypes) would give cleaner mountain ranges, but
+   biomes are classified from the noise layers, so terrain and biomes would
+   disagree until classification reads the real elevation.
+2. Hollows are filled level, so there are no lakes other than ground below
+   sea level.
+3. Whole river systems are dropped if any stretch downstream is too dry or
+   too cold. An alternative is to let such rivers end in a terminal lake,
+   which the invariants currently forbid.
+4. In the game a river is a biome colour on the ground, not water.
+5. The river code assumes a 1024 by 512 macro grid; other sizes panic.
