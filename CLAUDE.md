@@ -138,7 +138,9 @@ not solve flow a second time for rivers.
 - Rivers only form where precipitation exceeds evaporation — the terminus band
 - No surface rivers on deep dayside (water evaporates) or deep nightside (frozen solid)
 - No frozen rivers, no desert rivers — only liquid surface water in the habitable terminus
-- Every river must flow into a body of water (the sea) — no rivers ending mid-land
+- Every river ends in a body of water: the sea, a lake, or (decided 2026-10-05,
+  `specs/013`) a terminal lake or salt pan on the day-side margin. No river
+  just stops on dry ground. Terminal lakes are not generated yet
 - Rivers widen downstream as tributaries merge — headwaters thin, mouth wide
 - Rivers cannot be wider than two chunks (2 world units)
 - Rivers follow terrain — they sit in valleys, not painted on flat ground
