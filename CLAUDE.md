@@ -78,6 +78,7 @@ python3 tools/test_fly_swim.py [--windowed]
 | `specs/` | Numbered markdown specs |
 | `tools/` | Python test harnesses for agent bridge |
 | `site/` | Static website generator (`build.ts`), content and assets |
+| `gdextension/crates/mg_web` | Terrain tiles for the site's map, built as WebAssembly |
 
 ## Key ownership boundaries
 
@@ -236,6 +237,14 @@ World map for the site (generated, gitignored, needs a layers artifact):
 ./gdextension/target/release/margins_grip export site-map site/dist/map
 ```
 
+Terrain generator for the map's zoomed-in tiles (plain WebAssembly, stable
+Rust, no emscripten; the site build copies it to `dist/assets/terrain.wasm`):
+
+```sh
+(cd gdextension && cargo build -p mg_web --release --target wasm32-unknown-unknown)
+cd site && bun run build
+```
+
 Writes one PNG per layer in the artifact, `relief.png` (hillshade of the macro
 heightmap), `network.json` (road paths, trade flows, river courses),
 `chunks.bin` (per chunk: light level, zone, biome, province
@@ -249,6 +258,14 @@ selection rewrite the table, not the images. Add a map mode by adding an
 entry to `MAP_MODES`; do not bake a new image for it. Rivers, roads, trade
 and settlements are drawn as vectors from `network.json`, with what shows
 depending on zoom (`MAP_FEATURES`, `SETTLEMENT_STYLES`, `ROAD_STYLES`).
+
+Zoomed in, the map lays sharper terrain tiles over the whole-world image.
+They are rendered in the browser, on demand, by `gdextension/crates/mg_web`
+(the game's generator compiled to WebAssembly) from `world.mgmacro`, the
+macro pack the site map export writes. `mg_noise::generate_map_tile` is the
+one definition of a map tile: `macromap.png` and the browser tiles both use
+it. Rebuild `mg_web` after any terrain generation change, or the map's
+close-up terrain will disagree with its overview.
 
 Lore content:
 

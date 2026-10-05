@@ -25,6 +25,10 @@ import MarkdownIt from "markdown-it";
 const SITE_DIR = import.meta.dir;
 const REPO_DIR = join(SITE_DIR, "..");
 const OUT_DIR = join(SITE_DIR, "dist");
+const TERRAIN_WASM = join(
+	REPO_DIR,
+	"gdextension/target/wasm32-unknown-unknown/release/mg_web.wasm",
+);
 const VAULT_DIR =
 	process.env.MG_VAULT_DIR ??
 	join(homedir(), "Documents/mop-jones-brain/Notes");
@@ -380,6 +384,14 @@ function build(): void {
 	cpSync(join(SITE_DIR, "assets"), join(OUT_DIR, "assets"), {
 		recursive: true,
 	});
+	// The terrain generator for the map's zoomed-in tiles, if it has been built.
+	if (existsSync(TERRAIN_WASM)) {
+		cpSync(TERRAIN_WASM, join(OUT_DIR, "assets", "terrain.wasm"));
+	} else {
+		console.warn(
+			"terrain.wasm not built: the map will not sharpen on zoom. Build it with: cargo build -p mg_web --release --target wasm32-unknown-unknown (in gdextension/)",
+		);
+	}
 
 	const notes = loadNotes();
 	const notesByTitle = new Map(notes.map((note) => [note.title, note]));

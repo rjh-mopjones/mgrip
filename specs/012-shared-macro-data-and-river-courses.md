@@ -116,6 +116,31 @@ On the macro map the river layer's value is the river's size as a share of
 the largest possible river (0 = no river). `TerrainQuery::river_at` returns
 it, and LifeGen reads major rivers from it.
 
+## Map tiles
+
+`mg_noise::generate_map_tile` makes terrain for any rectangle of the world at
+any resolution, anchored to the macro map. `macromap.png` is assembled from
+such tiles, and the website's map renders more of them in the browser as the
+view zooms in (`gdextension/crates/mg_web`, compiled to WebAssembly, reading
+the macro pack).
+
+- Tiles coarser than 12 pixels per world unit use the overview settings
+  `macromap.png` is made with. Sharper tiles use the settings the game
+  generates chunks with, so close up the map shows the ground a player
+  would walk on.
+- Every tile is coloured against one height range, that of the macro map
+  (`NormalizationHints::for_macro_map`), so tiles agree on colour.
+- Browser tiles are shaded with relief lit from the north-west. Relief is
+  exaggerated 30 times at one pixel per world unit and less the sharper the
+  tile. For shading only, tile heights rest on a smooth (cubic B-spline)
+  sampling of the macro heightmap: the bilinear sampling terrain uses is
+  creased along every chunk edge and shades as square facets.
+
+Anchoring takes every base layer, and so every biome, from the macro map.
+Zooming in therefore adds finer height detail and smoother boundaries, not
+new features: there is nothing in the world smaller than a chunk except
+noise.
+
 ## Chunk borders
 
 `anchor_to_macro` uses the same sample positions as `BiomeMap::generate`, so

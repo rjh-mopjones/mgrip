@@ -5,8 +5,9 @@
 // Map data is exported by the Rust CLI (`margins_grip export site-map`) into
 // this page's directory: one
 // PNG per generation layer, chunks.bin with one record per chunk, map.json
-// with the province, faction and settlement tables, and network.json with
-// the roads, trade flows and river courses.
+// with the province, faction and settlement tables, network.json with the
+// roads, trade flows and river courses, and world.mgmacro, the macro pack
+// that sharper terrain is generated from as the view zooms in.
 //
 // Drawing follows the usual campaign-map scheme: one texture holds the
 // province id of every chunk, another holds one colour per province. A map
@@ -15,7 +16,7 @@
 const DEFAULT_SPAWN_CHUNK = { x: 440, y: 220 };
 const TERRAIN_IMAGE = "macromap.png";
 const RELIEF_IMAGE = "relief.png";
-const MAX_ZOOM = 16;
+const MAX_ZOOM = 128;
 const ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_RATE = 0.0015;
 /// A press that moves further than this many pixels is a drag, not a click.
@@ -422,6 +423,9 @@ uniform sampler2D uBase;        // terrain, or a raw layer
 uniform sampler2D uProvinceIds; // one texel per chunk: province id, low byte in r
 uniform sampler2D uProvinces;   // row 0: colour per province; row 1: owning faction
 uniform sampler2D uRelief;      // hillshade: 0.5 is flat ground
+uniform vec2 uBaseOrigin;    // chunk at the base image's top-left corner
+uniform vec2 uBaseSize;      // chunks the base image covers
+uniform float uBaseShaded;   // 1 if the base image already has relief shading
 uniform vec2 uCanvas;        // pixels
 uniform vec2 uWorld;         // chunks
 uniform vec2 uCentre;        // chunk at the middle of the canvas
@@ -489,7 +493,7 @@ void main() {
 		colour = vec4(OFF_MAP, 1.0);
 		return;
 	}
-	vec3 shade = texture(uBase, chunk / uWorld).rgb;
+	vec3 shade = texture(uBase, (chunk - uBaseOrigin) / uBaseSize).rgb;
 
 	int province = provinceAt(chunk);
 	if (province == 0 && uProvinceLayer > 0.0) {
@@ -509,8 +513,10 @@ void main() {
 		float brightness = dot(shade, vec3(0.299, 0.587, 0.114));
 		shade = mix(shade, tint.rgb * mix(0.7, 1.15, brightness), tint.a);
 		// Hillshade over terrain and tint alike.
-		float relief = texture(uRelief, chunk / uWorld).r - 0.5;
-		shade *= 1.0 + relief * RELIEF_STRENGTH;
+		if (uBaseShaded < 0.5) {
+			float relief = texture(uRelief, chunk / uWorld).r - 0.5;
+			shade *= 1.0 + relief * RELIEF_STRENGTH;
+		}
 		if (province == uSelected) {
 			shade = mix(shade, vec3(1.0), 0.28);
 		} else if (province == uHovered) {
@@ -572,7 +578,13 @@ function createRenderer() {
 	}
 	gl.useProgram(program);
 	gl.bindVertexArray(gl.createVertexArray());
-	const uniform = (name) => gl.getUniformLocation(program, name);
+	const uniformLocations = new Map();
+	const uniform = (name) => {
+		if (!uniformLocations.has(name)) {
+			uniformLocations.set(name, gl.getUniformLocation(program, name));
+		}
+		return uniformLocations.get(name);
+	};
 
 	const { meta, chunks } = worldMap;
 	const [wide, high] = [meta.chunks_wide, meta.chunks_high];
@@ -688,7 +700,36 @@ function createRenderer() {
 				table,
 			);
 		},
-		draw({ baseImage, showProvinces, stateBands }) {
+		// A texture for one terrain tile, from its RGBA pixels.
+		tileTexture(pixels, size) {
+			const texture = gl.createTexture();
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, texture);
+			gl.texImage2D(
+				gl.TEXTURE_2D,
+				0,
+				gl.RGBA,
+				size,
+				size,
+				0,
+				gl.RGBA,
+				gl.UNSIGNED_BYTE,
+				pixels,
+			);
+			for (const parameter of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) {
+				gl.texParameteri(gl.TEXTURE_2D, parameter, gl.LINEAR);
+			}
+			for (const parameter of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) {
+				gl.texParameteri(gl.TEXTURE_2D, parameter, gl.CLAMP_TO_EDGE);
+			}
+			return texture;
+		},
+		deleteTexture(texture) {
+			gl.deleteTexture(texture);
+		},
+		// Draws the base image over the whole canvas, then each of `tiles`
+		// ({ texture, x, y, span } in chunks) over its own part of it.
+		draw({ baseImage, showProvinces, stateBands, tiles }) {
 			gl.viewport(0, 0, canvas.width, canvas.height);
 			// Look the texture up first: creating one changes the active unit.
 			const relief = imageTexture(RELIEF_IMAGE);
@@ -705,15 +746,231 @@ function createRenderer() {
 			gl.uniform1f(uniform("uProvinceLayer"), showProvinces ? 1 : 0);
 			gl.uniform1i(uniform("uHovered"), hoveredProvince);
 			gl.uniform1i(uniform("uSelected"), selectedProvince);
+			gl.uniform2f(uniform("uBaseOrigin"), 0, 0);
+			gl.uniform2f(uniform("uBaseSize"), wide, high);
+			gl.uniform1f(uniform("uBaseShaded"), 0);
 			gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+			// Tiles carry their own relief shading. Each is drawn by the same
+			// shader, confined to the part of the canvas it covers. Edges are
+			// rounded to whole pixels so neighbouring tiles meet exactly.
+			const scale = pixelsPerChunk();
+			const column = (x) => Math.round((x - view.x) * scale + canvas.width / 2);
+			const row = (y) => Math.round((y - view.y) * scale + canvas.height / 2);
+			gl.enable(gl.SCISSOR_TEST);
+			gl.uniform1f(uniform("uBaseShaded"), 1);
+			for (const tile of tiles) {
+				const [left, right] = [column(tile.x), column(tile.x + tile.span)];
+				const [top, bottom] = [row(tile.y), row(tile.y + tile.span)];
+				gl.scissor(left, canvas.height - bottom, right - left, bottom - top);
+				gl.bindTexture(gl.TEXTURE_2D, tile.texture);
+				gl.uniform2f(uniform("uBaseOrigin"), tile.x, tile.y);
+				gl.uniform2f(uniform("uBaseSize"), tile.span, tile.span);
+				gl.drawArrays(gl.TRIANGLES, 0, 3);
+			}
+			gl.disable(gl.SCISSOR_TEST);
 		},
 	};
+}
+
+// ─── Terrain detail ──────────────────────────────────────────────────────────
+//
+// Zoomed out, the map shows one image of the whole world. Zoomed in, it lays
+// sharper tiles over it, rendered on demand by the game's terrain generator
+// running in workers (tile-worker.js). Tiles come in levels: a level-0 tile
+// spans 32 chunks and each level halves that, down to one chunk per tile.
+
+const TILE_PIXELS = 256;
+const TILE_LEVEL_0_SPAN_CHUNKS = 32;
+const TILE_MAX_LEVEL = 5;
+/// The whole-world image holds this many pixels per chunk.
+const BASE_IMAGE_PIXELS_PER_CHUNK = 4;
+/// An image may be stretched by this much before a sharper one is wanted.
+const TILE_MAX_STRETCH = 1.5;
+/// A coarser level is rendered first as a quick stand-in for the wanted one.
+const TILE_PREVIEW_LEVELS_UP = 2;
+const TILE_CACHE_SIZE = 320;
+const TILE_WORKER_COUNT = Math.min(
+	4,
+	Math.max(1, (navigator.hardwareConcurrency ?? 4) - 2),
+);
+const TERRAIN_WASM_URL = "/assets/terrain.wasm";
+const MACRO_PACK_FILE = "world.mgmacro";
+
+const terrainTiles = {
+	// key -> { texture, used }
+	cache: new Map(),
+	// Keys being rendered now.
+	pending: new Set(),
+	// Tiles to render next, most wanted first.
+	wanted: [],
+	workers: [],
+	clock: 0,
+};
+
+const tileSpan = (level) => TILE_LEVEL_0_SPAN_CHUNKS / 2 ** level;
+
+// The level whose tiles are sharp enough for the view, or -1 if the
+// whole-world image is.
+function tileLevelForView() {
+	const needed = pixelsPerChunk() / TILE_MAX_STRETCH;
+	if (needed <= BASE_IMAGE_PIXELS_PER_CHUNK) return -1;
+	const level0 = TILE_PIXELS / TILE_LEVEL_0_SPAN_CHUNKS;
+	const level = Math.ceil(Math.log2(needed / level0));
+	return Math.max(0, Math.min(TILE_MAX_LEVEL, level));
+}
+
+// The tiles of a level that are in view. `x` is where the tile is drawn and
+// may lie off the map's ends; `worldX` is the same place on the map.
+function tilesInView(level) {
+	const { chunks_wide: wide, chunks_high: high } = worldMap.meta;
+	const span = tileSpan(level);
+	const halfWidth = canvas.width / pixelsPerChunk() / 2;
+	const halfHeight = canvas.height / pixelsPerChunk() / 2;
+	const columns = wide / span;
+	const firstRow = Math.max(0, Math.floor((view.y - halfHeight) / span));
+	const lastRow = Math.min(
+		high / span - 1,
+		Math.floor((view.y + halfHeight) / span),
+	);
+	const tiles = [];
+	for (let row = firstRow; row <= lastRow; row++) {
+		const firstColumn = Math.floor((view.x - halfWidth) / span);
+		const lastColumn = Math.floor((view.x + halfWidth) / span);
+		for (let column = firstColumn; column <= lastColumn; column++) {
+			const worldColumn = ((column % columns) + columns) % columns;
+			tiles.push({
+				key: `${level}/${worldColumn}/${row}`,
+				x: column * span,
+				worldX: worldColumn * span,
+				y: row * span,
+				span,
+			});
+		}
+	}
+	return tiles;
+}
+
+function setMapStatus(text) {
+	document.getElementById("mapStatus").textContent = text;
+}
+
+// Hand waiting tiles to idle workers.
+function dispatchTiles() {
+	for (const entry of terrainTiles.workers) {
+		if (!entry.ready || entry.busy) continue;
+		const tile = terrainTiles.wanted.find(
+			({ key }) =>
+				!terrainTiles.pending.has(key) && !terrainTiles.cache.has(key),
+		);
+		if (!tile) return;
+		terrainTiles.pending.add(tile.key);
+		entry.busy = true;
+		entry.worker.postMessage({
+			key: tile.key,
+			x: tile.worldX,
+			y: tile.y,
+			span: tile.span,
+			pixels: TILE_PIXELS,
+		});
+	}
+}
+
+// Drop the tiles that have gone longest without being drawn.
+function trimTileCache() {
+	const excess = terrainTiles.cache.size - TILE_CACHE_SIZE;
+	if (excess <= 0) return;
+	const oldestFirst = [...terrainTiles.cache.entries()].sort(
+		(a, b) => a[1].used - b[1].used,
+	);
+	for (const [key, tile] of oldestFirst.slice(0, excess)) {
+		renderer.deleteTexture(tile.texture);
+		terrainTiles.cache.delete(key);
+	}
+}
+
+// Workers start the first time detail is wanted, so a visitor who never
+// zooms in never downloads the generator or the macro pack.
+function startTileWorkers() {
+	if (terrainTiles.workers.length > 0) return;
+	setMapStatus("Loading terrain detail…");
+	for (let index = 0; index < TILE_WORKER_COUNT; index++) {
+		const entry = {
+			worker: new Worker("/assets/tile-worker.js"),
+			ready: false,
+			busy: false,
+		};
+		entry.worker.addEventListener("message", ({ data }) => {
+			if (data.type === "ready") {
+				entry.ready = true;
+				setMapStatus("");
+			} else if (data.type === "failed") {
+				setMapStatus(
+					`Terrain detail is unavailable (${data.reason}). Build it with: cargo build -p mg_web --release --target wasm32-unknown-unknown, then rebuild the site.`,
+				);
+				return;
+			} else {
+				entry.busy = false;
+				terrainTiles.pending.delete(data.key);
+				terrainTiles.cache.set(data.key, {
+					texture: renderer.tileTexture(data.pixels, TILE_PIXELS),
+					used: terrainTiles.clock,
+				});
+				trimTileCache();
+				draw();
+			}
+			dispatchTiles();
+		});
+		entry.worker.postMessage({
+			type: "load",
+			wasmUrl: new URL(TERRAIN_WASM_URL, location.href).href,
+			packUrl: new URL(MACRO_PACK_FILE, location.href).href,
+		});
+		terrainTiles.workers.push(entry);
+	}
+}
+
+// The tiles to draw this frame, coarse first so sharper ones cover them, and
+// a request for those that are missing.
+function terrainTilesForView() {
+	const level = rawLayer ? -1 : tileLevelForView();
+	if (level < 0) {
+		terrainTiles.wanted = [];
+		return [];
+	}
+	startTileWorkers();
+	terrainTiles.clock += 1;
+	const ready = [];
+	const missing = [];
+	const previewLevel = Math.max(0, level - TILE_PREVIEW_LEVELS_UP);
+	for (let drawn = 0; drawn <= level; drawn++) {
+		for (const tile of tilesInView(drawn)) {
+			const cached = terrainTiles.cache.get(tile.key);
+			if (cached) {
+				cached.used = terrainTiles.clock;
+				ready.push({ ...tile, texture: cached.texture });
+			} else if (drawn === level || drawn === previewLevel) {
+				missing.push({ ...tile, level: drawn });
+			}
+		}
+	}
+	// The quick stand-in first, then the wanted level from the middle outwards.
+	const fromCentre = (tile) =>
+		Math.hypot(
+			tile.x + tile.span / 2 - view.x,
+			tile.y + tile.span / 2 - view.y,
+		);
+	terrainTiles.wanted = missing.sort(
+		(a, b) => a.level - b.level || fromCentre(a) - fromCentre(b),
+	);
+	dispatchTiles();
+	return ready;
 }
 
 // ─── Lines, markers and names (2D canvas over the map) ───────────────────────
 //
 // What is drawn depends on how far in the view is: `detail` is CSS pixels per
-// chunk, about 1.5 with the whole world in view and 25 fully zoomed in.
+// chunk, about 1.5 with the whole world in view and 200 fully zoomed in.
 
 const detail = () => pixelsPerChunk() / window.devicePixelRatio;
 
@@ -1053,6 +1310,7 @@ function draw() {
 			baseImage: rawLayer ?? TERRAIN_IMAGE,
 			showProvinces: !rawLayer,
 			stateBands: mapMode.stateBands === true,
+			tiles: terrainTilesForView(),
 		});
 		labelContext.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
 		// A raw layer is shown bare.
