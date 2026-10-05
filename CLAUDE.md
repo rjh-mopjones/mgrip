@@ -120,6 +120,12 @@ Build on these seams. Do not create parallel ownership paths.
 - Temperature derives from light level and altitude, not Earth-like latitude
 - No green vegetation palette anywhere — if it looks Earth-green, it's wrong
 - Dayside liquid water evaporates — not normal Earth rivers or oceans
+- Liquid sea is one unbroken ring round the world: the whole rim can be
+  sailed. `rim_sea.rs` cuts straits to make it so, and
+  `margins_grip export site-map` reports if it is ever broken
+- Where the sea freezes and where it dries out are ragged lines, not arcs
+  (`sea_margin_drift`). Anything that asks whether sea is liquid must pass
+  that drift, or it will disagree with the map
 - Most of the world is land and most of it is hostile, by design. On seed 42:
   89% of chunks are land, 11% liquid sea; by zone, 55% dayside, 22% terminus,
   23% nightside. Do not "fix" this towards Earth-like proportions

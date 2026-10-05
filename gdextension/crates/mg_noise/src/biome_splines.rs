@@ -101,6 +101,10 @@ impl TerrainClass {
     }
 }
 
+/// A drift in light level moves the sea's freezing and drying lines; this
+/// moves the temperature they also depend on by the matching amount.
+const MARGIN_DEGREES_PER_LIGHT: f64 = 200.0;
+
 pub struct BiomeSplines {
     sea_level: f64,
 }
@@ -108,78 +112,6 @@ pub struct BiomeSplines {
 impl BiomeSplines {
     pub fn new(sea_level: f64) -> Self {
         Self { sea_level }
-    }
-
-    pub fn evaluate_dithered_with_light(
-        &self,
-        continentalness: f64,
-        temperature: f64,
-        tectonic: f64,
-        erosion: f64,
-        peaks_valleys: f64,
-        humidity: f64,
-        aridity: f64,
-        rock_hardness: f64,
-        px: usize,
-        py: usize,
-        light_level: f64,
-    ) -> TileType {
-        // Keep some material-driven breakup, but avoid turning every local
-        // rock/hill variation into a biome-scale patch.
-        let rock_perturb = (rock_hardness - 0.5) * 10.0;
-        let pv_perturb = peaks_valleys * 4.0;
-        let combined = rock_perturb * 0.7 + pv_perturb * 0.5;
-
-        let biome_temp = if temperature > 45.0 {
-            temperature
-        } else if temperature > 30.0 {
-            let warming_fade = ((45.0 - temperature) / 15.0).clamp(0.0, 1.0);
-            let safe = if combined > 0.0 {
-                combined * warming_fade
-            } else {
-                combined
-            };
-            temperature + safe
-        } else {
-            temperature + combined
-        };
-
-        let humid_perturb = peaks_valleys * 0.06 + (rock_hardness - 0.5) * 0.04;
-        let biome_humidity = (humidity + humid_perturb).clamp(0.0, 1.0);
-
-        let base = self.evaluate_with_light(
-            continentalness,
-            biome_temp,
-            tectonic,
-            erosion,
-            peaks_valleys,
-            biome_humidity,
-            aridity,
-            rock_hardness,
-            light_level,
-        );
-
-        let hash = (((px.wrapping_mul(374_761_393)) ^ (py.wrapping_mul(668_265_263))) & 0xFFFF)
-            as f64
-            / 65_535.0;
-
-        let alt = self.evaluate_with_light(
-            continentalness + (hash - 0.5) * 0.01,
-            biome_temp + (hash - 0.5) * 2.0,
-            tectonic,
-            erosion,
-            peaks_valleys,
-            (biome_humidity + (hash - 0.5) * 0.03).clamp(0.0, 1.0),
-            aridity,
-            rock_hardness,
-            light_level,
-        );
-
-        if alt != base && hash > 0.72 {
-            alt
-        } else {
-            base
-        }
     }
 
     /// The biome of a cell. `elevation` is the height of its ground (below
@@ -196,9 +128,10 @@ impl BiomeSplines {
         aridity: f64,
         rock_hardness: f64,
         light_level: f64,
+        sea_margin_drift: f64,
     ) -> TileType {
         if elevation < self.sea_level {
-            return self.below_sea_biome(elevation, temperature, tectonic, light_level);
+            return self.below_sea_biome(elevation, temperature, tectonic, light_level, sea_margin_drift);
         }
 
         let adjusted_humidity = self.adjust_humidity(humidity, elevation);
@@ -254,8 +187,9 @@ impl BiomeSplines {
 
     /// The biome of a lake `depth` deep: open water where the sea would be
     /// liquid, ice where it would freeze, a salt flat where it would dry out.
-    pub fn lake_biome(&self, depth: f64, temp: f64, light_level: f64) -> TileType {
-        let as_sea = self.below_sea_biome(self.sea_level - depth, temp, 0.5, light_level);
+    pub fn lake_biome(&self, depth: f64, temp: f64, light_level: f64, margin_drift: f64) -> TileType {
+        let as_sea =
+            self.below_sea_biome(self.sea_level - depth, temp, 0.5, light_level, margin_drift);
         if crate::biome_map::tile_has_fluid_surface(as_sea) {
             TileType::ShallowSea
         } else {
@@ -290,14 +224,36 @@ impl BiomeSplines {
 
     /// Whether ground below sea level holds liquid sea, rather than ice
     /// (night side) or a dried basin (day side).
-    pub fn sea_is_liquid(&self, elevation: f64, temp: f64, tectonic: f64, light_level: f64) -> bool {
-        crate::biome_map::tile_has_fluid_surface(
-            self.below_sea_biome(elevation, temp, tectonic, light_level),
-        )
+    pub fn sea_is_liquid(
+        &self,
+        elevation: f64,
+        temp: f64,
+        tectonic: f64,
+        light_level: f64,
+        margin_drift: f64,
+    ) -> bool {
+        crate::biome_map::tile_has_fluid_surface(self.below_sea_biome(
+            elevation,
+            temp,
+            tectonic,
+            light_level,
+            margin_drift,
+        ))
     }
 
-    fn below_sea_biome(&self, elevation: f64, temp: f64, tectonic: f64, light_level: f64) -> TileType {
+    /// What lies on ground below sea level. `margin_drift` shifts where the
+    /// sea freezes and where it dries out (see `sea_margin_drift`).
+    fn below_sea_biome(
+        &self,
+        elevation: f64,
+        temp: f64,
+        tectonic: f64,
+        light_level: f64,
+        margin_drift: f64,
+    ) -> TileType {
         let depth = self.sea_level - elevation;
+        let light_level = light_level + margin_drift;
+        let temp = temp + margin_drift * MARGIN_DEGREES_PER_LIGHT;
 
         if light_level < 0.18 || temp < -12.0 {
             return if depth > 0.12 || temp < -35.0 {
@@ -473,8 +429,8 @@ mod tests {
     fn below_sea_extremities_do_not_default_to_marine_tiles() {
         let splines = BiomeSplines::new(0.0);
 
-        let nightside = splines.evaluate_with_light(-0.18, -42.0, 0.2, 0.0, 0.0, 0.4, 0.2, 0.5, 0.04);
-        let dayside = splines.evaluate_with_light(-0.08, 58.0, 0.2, 0.0, 0.0, 0.1, 0.9, 0.5, 0.72);
+        let nightside = splines.evaluate_with_light(-0.18, -42.0, 0.2, 0.0, 0.0, 0.4, 0.2, 0.5, 0.04, 0.0);
+        let dayside = splines.evaluate_with_light(-0.08, 58.0, 0.2, 0.0, 0.0, 0.1, 0.9, 0.5, 0.72, 0.0);
 
         assert_eq!(nightside, TileType::White);
         assert_eq!(dayside, TileType::SaltFlat);
@@ -483,7 +439,7 @@ mod tests {
     #[test]
     fn below_sea_terminus_can_still_emit_marine_tiles() {
         let splines = BiomeSplines::new(0.0);
-        let terminus = splines.evaluate_with_light(-0.08, 12.0, 0.4, 0.0, 0.0, 0.5, 0.3, 0.5, 0.34);
+        let terminus = splines.evaluate_with_light(-0.08, 12.0, 0.4, 0.0, 0.0, 0.5, 0.3, 0.5, 0.34, 0.0);
 
         assert!(matches!(
             terminus,

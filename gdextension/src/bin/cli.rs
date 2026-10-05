@@ -1411,8 +1411,11 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         .save(output_dir.join(SITE_MAP_RELIEF_IMAGE))
         .unwrap_or_else(|e| fail(format!("saving {SITE_MAP_RELIEF_IMAGE}: {e}")));
 
-    sea_image(&map)
-        .save(output_dir.join(SITE_MAP_SEA_IMAGE))
+    let sea = sea_image(&map);
+    let is_sea: Vec<bool> = sea.as_raw().iter().map(|&pixel| pixel > 0).collect();
+    let rim_sea_unbroken =
+        mg_noise::rim_sea::sea_rings_the_world(&is_sea, sea.width() as usize, sea.height() as usize);
+    sea.save(output_dir.join(SITE_MAP_SEA_IMAGE))
         .unwrap_or_else(|e| fail(format!("saving {SITE_MAP_SEA_IMAGE}: {e}")));
 
     let names = mg_life::generate_names(
@@ -1602,6 +1605,14 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     .unwrap_or_else(|e| fail(format!("writing {SITE_MAP_MACRO_PACK}: {e}")));
 
     println!(
+        "rim sea: {}",
+        if rim_sea_unbroken {
+            "unbroken, the whole rim can be sailed"
+        } else {
+            "BROKEN, liquid sea does not go all the way round"
+        }
+    );
+    println!(
         "site map exported to {}: {} layer images (terrain {image_w}x{image_h}), chunks.bin {}x{} chunks, {} provinces, {} factions, {} settlements, {} roads, {} trade flows (layers '{tag}', seed {}, civ seed {civ_seed})",
         output_dir.display(),
         layer_files.len(),
@@ -1652,6 +1663,7 @@ fn sea_image(map: &BiomeMap) -> image::GrayImage {
             };
             let temperature = map.sample_field_at(&map.temperature, wx, wy);
             let light = map.sample_field_at(&map.light_level, wx, wy);
+            let drift = mg_noise::biome_map::sea_margin_drift(wx, wy);
             // Below sea level is sea only where it is neither frozen nor
             // dried out; the same goes for a lake.
             let is_sea = ground < mg_noise::SEA_LEVEL
@@ -1660,10 +1672,16 @@ fn sea_image(map: &BiomeMap) -> image::GrayImage {
                     temperature,
                     map.sample_field_at(&map.tectonic, wx, wy),
                     light,
+                    drift,
                 );
             let lake_depth = fine.map_or(0.0, |fine| fine.water_level[cell] as f64 - ground);
             let is_lake = lake_depth > 0.0
-                && mg_noise::tile_has_fluid_surface(splines.lake_biome(lake_depth, temperature, light));
+                && mg_noise::tile_has_fluid_surface(splines.lake_biome(
+                    lake_depth,
+                    temperature,
+                    light,
+                    drift,
+                ));
             if is_sea || is_lake { 255 } else { 0 }
         })
         .collect();

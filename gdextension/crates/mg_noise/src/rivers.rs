@@ -660,7 +660,7 @@ impl RiverNetwork {
             let cont = real_continentalness.get(idx).copied().unwrap_or(0.0);
             if cont < sea_level {
                 let tectonic = tectonic_stress.get(idx).copied().unwrap_or(0.5);
-                splines.sea_is_liquid(cont, temp, tectonic, light)
+                splines.sea_is_liquid(cont, temp, tectonic, light, crate::biome_map::sea_margin_drift(x, y))
             } else {
                 river_water_is_liquid(light, temp)
             }

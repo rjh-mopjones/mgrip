@@ -338,6 +338,28 @@ own.
    from the ice around it.
 5. **To do: wind.** A wind field and a sand budget; salt where water ends.
 
+Two more, asked for on 2026-10-06:
+
+6. **Done: the rim sea.** One unbroken stretch of liquid water all the way
+   round the world, so the whole rim can be sailed (`rim_sea.rs`). Liquid
+   sea lies only in the terminus, and the continents left it as a string of
+   separate seas. Before the land is grown, the cheapest route round the
+   world is found through water that would be liquid (open sea costs 1 a
+   cell, land 40 and more the higher it stands, anywhere the sea would
+   freeze or dry 4000), closed into a ring across the east-west seam, and
+   wherever it crosses land a strait is cut: 2.5 world units to either side,
+   0.07 deep in the middle, shallowing to the shore. It works on
+   continentalness, so the straits are sea to everything after and get
+   coasts like any other. The site map export checks the result and says
+   whether the rim sea is unbroken.
+7. **Done: ragged ice and desert coasts.** Where the sea freezes and where
+   it dries out depend on light, which drew both edges as clean arcs across
+   the world. Those lines now wander by up to 0.06 in light level, about
+   ten world units on the ground, with bends from 45 world units down to 6
+   (`sea_margin_drift`): tongues, bays and outliers. The same drift is used
+   wherever the sea is classified (biomes, tiles, river mouths, lakes, the
+   map's coast), so they agree.
+
 Not yet done under 2: closed basins. A lake that loses all its water still
 routes it towards its rim, not its floor, so it has no true shore; the
 river-stub terminal lakes remain for rivers that dry out.

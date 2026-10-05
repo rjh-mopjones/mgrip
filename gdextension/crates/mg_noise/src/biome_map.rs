@@ -72,6 +72,37 @@ pub fn generate_macro_map(seed: u32) -> BiomeMap {
     )
 }
 
+/// Whether sea would stay liquid at a place is judged for water this deep
+/// (as deep as a strait is cut).
+const RIM_SEA_JUDGED_AT_DEPTH: f64 = 0.07;
+
+/// The sea's freezing and drying lines wander by up to this much light level
+/// either way: about ten world units on the ground.
+const SEA_MARGIN_DRIFT: f64 = 0.06;
+/// The broadest bends in those lines are about this many world units long.
+const SEA_MARGIN_BEND_WU: f64 = 45.0;
+const SEA_MARGIN_OCTAVES: usize = 4;
+
+/// How far the sea's freezing and drying lines are displaced at a world
+/// position, as a change in light level. Where the sea turns to ice or dries
+/// out depends on light, which alone would draw both edges as clean arcs
+/// across the world. Pack ice and a retreating shoreline are ragged: tongues,
+/// bays and outliers. Continuous across the east-west seam.
+pub fn sea_margin_drift(wx: f64, wy: f64) -> f64 {
+    use noise::NoiseFn;
+    static DRIFT: std::sync::OnceLock<OpenSimplex> = std::sync::OnceLock::new();
+    let noise = DRIFT.get_or_init(|| OpenSimplex::new(0x5EA_1CEu32));
+    let (mut sum, mut weight, mut total) = (0.0, 1.0, 0.0);
+    for octave in 0..SEA_MARGIN_OCTAVES {
+        let frequency = 2f64.powi(octave as i32) / SEA_MARGIN_BEND_WU;
+        let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
+        sum += weight * noise.get([cx, cz, cy]);
+        total += weight;
+        weight *= 0.55;
+    }
+    sum / total * SEA_MARGIN_DRIFT * 2.0
+}
+
 /// Light level at a point of the world: 0 in deep night, 1 under the sun.
 /// A function of position and seed alone, so anything can ask for it without
 /// a generated map.
@@ -527,6 +558,40 @@ impl BiomeMap {
             );
         }
 
+        // ── Phase 2.5: The rim sea (macro only) ──────────────────────────────
+        // Join the terminus seas into one that can be sailed right round
+        // the world, before the land is grown, so the straits get coasts
+        // like any other.
+        if run_erosion {
+            let splines = BiomeSplines::new(SEA_LEVEL);
+            let stays_liquid: Vec<bool> = (0..tile_w * tile_h)
+                .map(|i| {
+                    let (wx, wy) = (px_to_wx(i % tile_w), py_to_wy(i / tile_w));
+                    // Judged as shallow sea would be, whatever is there now.
+                    let at_sea = derived::derive_temperature(
+                        map.light_level[i],
+                        SEA_LEVEL,
+                        map.humidity[i],
+                        SEA_LEVEL,
+                    );
+                    splines.sea_is_liquid(
+                        SEA_LEVEL - RIM_SEA_JUDGED_AT_DEPTH,
+                        at_sea,
+                        map.tectonic[i],
+                        map.light_level[i],
+                        sea_margin_drift(wx, wy),
+                    )
+                })
+                .collect();
+            crate::rim_sea::open_rim_sea(
+                &mut map.continentalness,
+                &stays_liquid,
+                tile_w,
+                tile_h,
+                SEA_LEVEL,
+            );
+        }
+
         // ── Phase 3: Erosion (macro only) ─────────────────────────────────────
         // Erosion and the rivers share one drainage: water runs to the sea
         // (not to ponds), fed by run-off that is fullest in the terminus.
@@ -677,6 +742,7 @@ impl BiomeMap {
         let splines = BiomeSplines::new(SEA_LEVEL);
 
         for i in 0..tile_w * tile_h {
+            let drift = sea_margin_drift(px_to_wx(i % tile_w), py_to_wy(i / tile_w));
             let biome = splines.evaluate_with_light(
                 map.heightmap[i],
                 map.temperature[i],
@@ -687,13 +753,19 @@ impl BiomeMap {
                 map.aridity[i],
                 map.rock_hardness[i],
                 map.light_level[i],
+                drift,
             );
             // A hollow holding water is a lake: open water where the sea
             // would be liquid, ice where it would be frozen, a salt flat
             // where it would have dried out.
             let lake_level = macro_water_level.get(i).copied().unwrap_or(f32::NEG_INFINITY) as f64;
             let biome = if map.heightmap[i] >= SEA_LEVEL && map.heightmap[i] < lake_level {
-                splines.lake_biome(lake_level - map.heightmap[i], map.temperature[i], map.light_level[i])
+                splines.lake_biome(
+                    lake_level - map.heightmap[i],
+                    map.temperature[i],
+                    map.light_level[i],
+                    drift,
+                )
             } else {
                 biome
             };
@@ -938,10 +1010,19 @@ impl BiomeMap {
                     .and_then(|fine| fine.lake_level(wx, wy))
                     .filter(|_| macro_hm >= SEA_LEVEL);
                 self.biomes[idx] = if let Some(level) = lake_level {
-                    splines.lake_biome(level - macro_hm, temp, light)
+                    splines.lake_biome(level - macro_hm, temp, light, sea_margin_drift(wx, wy))
                 } else {
                     splines.evaluate_with_light(
-                        macro_hm, temp, tect, eros, peaks, humid, arid, rock, light,
+                        macro_hm,
+                        temp,
+                        tect,
+                        eros,
+                        peaks,
+                        humid,
+                        arid,
+                        rock,
+                        light,
+                        sea_margin_drift(wx, wy),
                     )
                 };
 
