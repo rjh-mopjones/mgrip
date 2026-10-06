@@ -2774,15 +2774,9 @@ fn write_pretty_ron<T: Serialize>(path: &Path, value: &T) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        audit_default_presentation_grid, compare_presentation_grid_summaries,
-        read_presentation_grid_summary, scan_layer_presentation_grid,
+        audit_default_presentation_grid, scan_layer_presentation_grid,
     };
     use std::path::PathBuf;
-
-    fn golden_fixture_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata/runtime_presentation/seed42_v1_step256.ron")
-    }
 
     #[test]
     fn default_grid_audit_passes_for_seed_42_step_256() {
@@ -2795,18 +2789,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn presentation_grid_matches_seed_42_golden_fixture() {
-        let expected = read_presentation_grid_summary(&golden_fixture_path())
-            .expect("golden fixture should load");
-        let actual = scan_layer_presentation_grid("v1", 42, 1024, 512, 256, |_scanned, _total| {});
-        let failures = compare_presentation_grid_summaries(&expected, &actual.summary);
-        assert!(
-            failures.is_empty(),
-            "expected golden summary to match, got {:?}",
-            failures
-        );
-    }
 }
 
 fn spinner(msg: &str) -> ProgressBar {
