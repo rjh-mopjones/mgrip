@@ -133,22 +133,22 @@ pub fn drifted_sand(
             }
         })
         .collect();
-    // The neighbour each cell's wind blows towards.
-    let downwind: Vec<usize> = (0..total)
+    // Sand can only move to one of eight neighbours. Sent always to the
+    // nearest in direction, it would travel in dead-straight streaks along
+    // those eight; so it is shared between the two neighbours either side of
+    // the wind's true direction, more to the nearer.
+    let neighbour = |cell: usize, direction: usize| {
+        let (dx, dy) = D8_OFFSETS[direction % 8];
+        let to_y = ((cell / width) as i32 + dy).clamp(0, height as i32 - 1) as usize;
+        to_y * width + ((cell % width) as i32 + dx).rem_euclid(width as i32) as usize
+    };
+    let downwind: Vec<[(usize, f64); 2]> = (0..total)
         .map(|cell| {
-            let (x, y) = ((cell % width) as i32, (cell / width) as i32);
-            let (dx, dy) = D8_OFFSETS
-                .into_iter()
-                .max_by(|a, b| {
-                    let along = |step: &(i32, i32)| {
-                        (step.0 as f64 * wind.x[cell] + step.1 as f64 * wind.y[cell])
-                            / ((step.0 * step.0 + step.1 * step.1) as f64).sqrt()
-                    };
-                    along(a).total_cmp(&along(b))
-                })
-                .expect("eight directions");
-            let to_y = (y + dy).clamp(0, height as i32 - 1) as usize;
-            to_y * width + (x + dx).rem_euclid(width as i32) as usize
+            // `D8_OFFSETS` runs clockwise from north, an eighth of a turn apart.
+            let turn = wind.x[cell].atan2(-wind.y[cell]).rem_euclid(std::f64::consts::TAU)
+                / (std::f64::consts::TAU / 8.0);
+            let (before, share) = (turn.floor() as usize, turn - turn.floor());
+            [(neighbour(cell, before), 1.0 - share), (neighbour(cell, before + 1), share)]
         })
         .collect();
 
@@ -159,9 +159,11 @@ pub fn drifted_sand(
             let loose = sand[cell] + given_up[cell];
             let carried = loose * SAND_CARRIED * wind.speed(cell).min(1.0);
             next[cell] += loose - carried;
-            // Sand blown onto water sinks; it is gone.
-            if !is_water[downwind[cell]] {
-                next[downwind[cell]] += carried;
+            for (to, share) in downwind[cell] {
+                // Sand blown onto water sinks; it is gone.
+                if !is_water[to] {
+                    next[to] += carried * share;
+                }
             }
         }
         for cell in 0..total {

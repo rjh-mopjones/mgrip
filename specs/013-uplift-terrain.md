@@ -363,7 +363,11 @@ own.
      neighbouring chunks agree, and they fade out on grids too coarse to
      draw them, which would otherwise show false stripes.
 
-   Seed 42: sand sea is 4.9% of the world.
+   - Sand can move only to one of eight neighbours. It is shared between
+     the two either side of the wind's true direction; sent to the nearest
+     alone, it travelled in dead-straight spokes across flat ground.
+
+   Seed 42: sand sea is 5.8% of the world.
 
    Not done: salt as its own deposit. Dried seas and lakes that would dry
    out are already salt flat by the sea's own rule; nothing new is laid
