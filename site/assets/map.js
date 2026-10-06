@@ -409,9 +409,9 @@ function renderLegend() {
 // The view is the chunk at the middle of the canvas and a zoom. Flat, the map
 // is laid out as a sheet that repeats east to west. As a globe, the sheet is
 // wrapped round a sphere, x round it and y from the night pole to the day
-// pole, seen face-on from the chunk at the middle. (The world is really a
-// cylinder: light is distance from the bottom centre of the sheet, so the
-// day pole is a seam where full day meets the terminus.)
+// pole, seen face-on from the chunk at the middle. The world is generated
+// on that sphere (spec 014), so the sheet is its equirectangular map and
+// the poles are poles.
 
 // Canvas pixels per chunk at the current zoom; on the globe, at its middle.
 function pixelsPerChunk() {

@@ -7,6 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+mg_core = { workspace = true }
 mg_noise = { workspace = true }
 mg_artifacts = { workspace = true }
 

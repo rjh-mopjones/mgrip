@@ -633,6 +633,7 @@ name = "mg_web"
 version = "0.1.0"
 dependencies = [
  "mg_artifacts",
+ "mg_core",
  "mg_noise",
 ]
 

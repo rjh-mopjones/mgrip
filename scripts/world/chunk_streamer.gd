@@ -20,6 +20,8 @@ const FOCUS_DIRECTION_MIN_SPEED := 4.0
 const DIRECTION_PRIORITY_WEIGHT := 6.0
 const MAX_CONCURRENT_JOBS := 8
 const MAX_READY_ATTACHES_PER_FRAME := 1
+# Rows of chunks from the north pole to the south (spec 014).
+const WORLD_CHUNKS_HIGH := 512
 const WorldChunkScript = preload("res://scripts/world/world_chunk.gd")
 
 var _terrain_root: Node3D
@@ -292,7 +294,13 @@ func _ordered_desired_chunks(center_chunk: Vector2i, prewarm_center_chunk: Vecto
 			continue
 		seen[far_key] = true
 		ordered.append(chunk_coord)
-	return ordered
+	# The map's top and bottom edges are the poles: there is nothing beyond
+	# them to stream. East and west join, so columns are not bounded.
+	var on_world: Array[Vector2i] = []
+	for chunk_coord in ordered:
+		if chunk_coord.y >= 0 and chunk_coord.y < WORLD_CHUNKS_HIGH:
+			on_world.append(chunk_coord)
+	return on_world
 
 func _desired_chunk_order(center_chunk: Vector2i, radius: int) -> Array[Vector2i]:
 	var coords: Array[Vector2i] = [center_chunk]

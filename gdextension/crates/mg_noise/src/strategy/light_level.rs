@@ -16,6 +16,11 @@ const SOUTH_POLE: Point = [0.0, 0.0, -1.0];
 /// a finer one, each (frequency per world unit, amplitude).
 const WARP_BROAD: (f64, f64) = (0.0015, 0.12);
 const WARP_FINE: (f64, f64) = (0.005, 0.06);
+/// The cosine of the angle from the sun is raised to this power (its sign
+/// kept): below 1 the light changes fastest at the terminator. 0.5 gives,
+/// on seed 42 by area, about half the world day side, a quarter terminus
+/// and a fifth night.
+const TERMINATOR_STEEPNESS: f64 = 0.5;
 
 impl LightLevelStrategy {
     pub fn new(seed: u32) -> Self {
@@ -54,12 +59,18 @@ impl NoiseStrategy for LightLevelStrategy {
         let warp = self.warp(x, y, WARP_BROAD.0, 150.0) * WARP_BROAD.1
             + self.warp(x, y, WARP_FINE.0, 200.0) * WARP_FINE.1;
         let warped_y = (y + warp * sphere.height()).clamp(0.0, sphere.height());
-        let dist = sphere.angle(sphere.point_at(x, warped_y), SOUTH_POLE) / std::f64::consts::PI;
+        let from_sun = sphere.angle(sphere.point_at(x, warped_y), SOUTH_POLE);
 
-        // Cosine falloff with extra darkening past dist=0.5
-        let far_dist = ((dist - 0.5) / 0.5).max(0.0);
-        let darkening = 1.0 + 1.5 * far_dist * far_dist;
-        let base_light = (dist * std::f64::consts::FRAC_PI_2).cos().powf(darkening);
+        // Full under the sun, half at the terminator (the equator), none at
+        // the anti-stellar point, symmetric about the terminator and steep
+        // across it, so the terminus (the zones between light 0.2 and 0.6)
+        // is a narrow band round the equator and the night a hemisphere.
+        // (The flat model's curve had 0.71 at the terminator, which put the
+        // terminus well north of it on the sphere; a plain cosine spread it
+        // over 40% of the world.)
+        let towards_sun = from_sun.cos();
+        let base_light =
+            0.5 + 0.5 * towards_sun.signum() * towards_sun.abs().powf(TERMINATOR_STEEPNESS);
 
         let scatter = self.scatter_noise(x, y);
         (base_light + scatter).clamp(0.0, 1.0)
@@ -128,8 +139,8 @@ mod tests {
         assert!(mean_at(450.0) > mean_at(300.0));
         assert!(mean_at(300.0) > mean_at(150.0));
         assert!(mean_at(150.0) > mean_at(30.0));
-        // The terminus is a band round the equator.
+        // The terminus is a band round the equator: half light there.
         let equator = mean_at(256.0);
-        assert!(equator > 0.55 && equator < 0.8, "equator {equator}");
+        assert!(equator > 0.4 && equator < 0.6, "equator {equator}");
     }
 }

@@ -25,9 +25,11 @@ cell per chunk).
   by site appeal (river mouths, confluences, shores); roads are routed one
   at a time over shared ground and record their river crossings. See
   `specs/013`, "Stage 6 as built", before changing any of it
-- Every stage takes an `mg_life::Grid` (resolution + whether the grid is a
-  ring). Measure distances and step between columns through it, never with
-  raw `x` arithmetic, so the east-west seam is handled in one place
+- Every stage takes an `mg_life::Grid` (the sphere, or a flat patch in
+  tests). Measure distances, step to neighbours and weigh areas through it,
+  never with raw `x`/`y` arithmetic, so the seam, the poles and the
+  narrowing of cells towards them are handled in one place. Areas are in
+  equatorial cells
 - Orders and nomads are not represented
 - Calibration is open; read the spec's open questions before relying on the
   numbers
@@ -123,8 +125,10 @@ Build on these seams. Do not create parallel ownership paths.
 ## World invariants
 
 - Margin is tidally locked — permanent day side and night side
-- The map wraps east to west, not north to south. Its left and right edges
-  are neighbours
+- The map wraps east to west: its left and right edges are neighbours. A
+  step past its top or bottom edge comes down the far side of that pole,
+  half a world away. The generator does that; the game never streams past
+  a pole
 - Margin is a sphere (`specs/014`, `mg_core::sphere`): the sub-stellar point
   is its south pole, the anti-stellar point its north. Light is the angle
   from the sub-stellar point, warped by noise, so the terminus is a ragged
@@ -146,11 +150,10 @@ Build on these seams. Do not create parallel ownership paths.
 - Where the sea freezes and where it dries out are ragged lines, not arcs
   (`sea_margin_drift`). Anything that asks whether sea is liquid must pass
   that drift, or it will disagree with the map
-- Most of the world is land and most of it is hostile, by design. On seed 42
-  before spec 014: 89% of chunks were land, 11% liquid sea; by zone, 55%
-  dayside, 22% terminus, 23% nightside. Those are cell counts on the old
-  flat light; they are re-measured by area when spec 014 lands. Do not
-  "fix" this towards Earth-like proportions
+- Most of the world is land and most of it is hostile, by design. On seed 42,
+  by area: 89% land, 11% liquid water; 50% dayside, 28% terminus, 22%
+  nightside (`export site-map` prints these). Do not "fix" this towards
+  Earth-like proportions
 
 ## River invariants
 
@@ -221,7 +224,7 @@ in the sandbox; change a default there first, then copy it into the code.
 The macro map also carries its land on a finer grid, four cells per chunk
 (`BiomeMap::fine_heights`, in the macro pack too). Rivers are read from the
 drainage of that grid, and anchored tiles and chunks take their ground from
-it. Generating the macro map takes about 35 seconds and 2 GB.
+it. Generating the macro map takes about a minute and 2 GB.
 `margins_grip inspect relief <seed> <png>` writes a hillshade of it.
 
 `/sandbox/` is the erosion sandbox for `specs/013`: the landscape step
@@ -327,8 +330,8 @@ depending on zoom (`MAP_FEATURES`, `SETTLEMENT_STYLES`, `ROAD_STYLES`).
 The map can also be shown as a globe (`view.globe`, `?view=globe`): the same
 shader with a sphere in `chunkAtPixel`, and every overlay placed through
 `toScreen`, which says when a point is round the back. Keep both projections
-in that one place. The world is a cylinder, so on the globe the day pole is
-a seam where full day meets the terminus; that is accepted, not a bug.
+in that one place. The world is generated on the sphere (`specs/014`), so
+the globe is the planet and the poles are poles.
 
 Zoomed in, the map lays sharper terrain tiles over the whole-world image.
 They are rendered in the browser, on demand, by `gdextension/crates/mg_web`

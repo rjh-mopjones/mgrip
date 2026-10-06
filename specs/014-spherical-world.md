@@ -1,6 +1,6 @@
 # Spec 014 - A Spherical World
 
-**Status:** In progress. Stages 0 (the geometry module), 1 (noise on the sphere), 2 (light from the sphere), 3 (area, distance and neighbours), 4 (tectonics on the sphere) and 5 (LifeGen on the sphere) done. Stage 6 not started.
+**Status:** Implemented, stages 0 to 6. Open questions remain below.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (shared macro data), Spec 013 (uplift terrain)
 **Supersedes:** the cylinder (`wrap.rs`), the light formula in `light_level.rs`, the "terminus is an arc" invariant, `mg_life::Grid`
@@ -142,11 +142,22 @@ in the flat model's lattice unit (204 world units), so its falloffs hold.
 
 ### Light
 
-`light_level.rs`: `sun = angle(point, south pole)`, `dist = sun / π`, and
-the same curve as today from there (`cos(dist · π/2)` raised to the
-darkening power, plus scatter). The anti-stellar point reaches `dist = 1`
-exactly. The warps displace the point on the sphere before the angle is
+`light_level.rs`: `sun = angle(point, south pole)`, and light is
+`(1 + cos(sun)) / 2`: full under the sun, half at the terminator (the
+equator), none at the anti-stellar point, symmetric about the terminator.
+The warps displace the point along its meridian before the angle is
 measured, so the terminus stays ragged. The zone tables are unchanged.
+
+The flat model's curve (`cos(dist · π/2)` with extra darkening) was kept at
+first, but it gives 0.71 at the terminator, and on the sphere that put the
+terminus zones between 25° and 58° north and left the night side an 8%
+polar cap. Every other system is calibrated in light units (zones, rivers,
+run-off, the sea's freezing and drying), so moving the curve moves them
+all together. As built, the cosine of the angle from the sun is raised to
+0.5 with its sign kept, so the light changes fastest at the terminator:
+a plain cosine spread the terminus over 41% of the world. Seed 42 by
+area, before and after: land 89% and 89%, liquid water 11% and 11%, day
+55% and 50%, terminus 22% and 28%, night 23% and 22%.
 
 `wind.rs` `dune_height` measures its own Euclidean distance from the sun;
 it reads light or `angle` instead. Temperature, run-off, ice and the rim
@@ -312,7 +323,10 @@ macro pass within 60 s.
   latitude, on a sliver of ground. An equal-area grid (icosahedral or
   HEALPix) with the flat map projected from it would be more honest and far
   more work, because chunks would no longer be cells. Recommendation: stay
-  lat-lon, revisit only if the poles ever matter to play.
+  lat-lon, revisit only if the poles ever matter to play. Seen in
+  `inspect relief`'s polar view after stage 6: the north pole is a coherent
+  ice landscape; the south pole keeps a small pinwheel in its last rows,
+  where cells are slivers and the drainage solve cannot route through them.
 - **How ragged the terminus is.** With light a function of latitude, the
   warps alone make the band ragged. Their amplitude is a slider in the
   sandbox before it is a constant.

@@ -937,13 +937,63 @@ fn run_inspect_relief(seed: u32, output: &Path) {
         eprintln!("error: saving {}: {error}", output.display());
         std::process::exit(1);
     }
+    // The poles seen from above, where the map's stretching cannot be judged.
+    let stem = output
+        .file_stem()
+        .map_or("relief".into(), |s| s.to_string_lossy().into_owned());
+    let poles_path = output.with_file_name(format!("{stem}-poles.png"));
+    if let Err(error) = polar_views(&image, POLAR_VIEW_DIAMETER).save(&poles_path) {
+        eprintln!("error: saving {}: {error}", poles_path.display());
+        std::process::exit(1);
+    }
     println!(
-        "relief of seed {seed} written to {}: {}x{}, {:.1}s",
+        "relief of seed {seed} written to {}: {}x{}, and the poles to {}, {:.1}s",
         output.display(),
         image.width(),
         image.height(),
+        poles_path.display(),
         started.elapsed().as_secs_f64()
     );
+}
+
+const POLAR_VIEW_DIAMETER: u32 = 1024;
+
+/// The relief seen from straight above each pole, north then south, as two
+/// discs `diameter` pixels across: the land there as it is on the globe,
+/// not stretched across the top and bottom of the map.
+fn polar_views(relief: &image::GrayImage, diameter: u32) -> image::GrayImage {
+    use std::f64::consts::{PI, TAU};
+    let (width, height) = (relief.width(), relief.height());
+    let radius = diameter as f64 / 2.0;
+    let mut views = image::GrayImage::from_pixel(diameter * 2, diameter, image::Luma([192u8]));
+    for (which, south) in [(0u32, false), (1u32, true)] {
+        for py in 0..diameter {
+            for px in 0..diameter {
+                let (u, v) = (
+                    (px as f64 + 0.5 - radius) / radius,
+                    (py as f64 + 0.5 - radius) / radius,
+                );
+                let from_pole = (u * u + v * v).sqrt();
+                if from_pole > 1.0 {
+                    continue;
+                }
+                // Orthographic from above a pole: a point's distance from the
+                // middle is the sine of its angle from that pole.
+                let from_pole = from_pole.asin();
+                let longitude = v.atan2(u).rem_euclid(TAU);
+                let row = if south {
+                    (PI - from_pole) / PI
+                } else {
+                    from_pole / PI
+                } * height as f64;
+                let column = longitude / TAU * width as f64;
+                let pixel =
+                    relief.get_pixel((column as u32).min(width - 1), (row as u32).min(height - 1));
+                views.put_pixel(which * diameter + px, py, *pixel);
+            }
+        }
+    }
+    views
 }
 
 // ─── inspect chunk-seam ──────────────────────────────────────────────────────
@@ -1835,6 +1885,36 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     )
     .unwrap_or_else(|e| fail(format!("writing {SITE_MAP_MACRO_PACK}: {e}")));
 
+    // Land, water and the zones as shares of the world's area, so that the
+    // slivers of cells towards the poles count for the ground they cover.
+    let grid = mg_core::Sphere::MARGIN.grid(map.width, map.height);
+    let (mut area, mut water, mut day, mut terminus, mut night) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for y in 0..map.height {
+        let share = grid.area_share(y);
+        for x in 0..map.width {
+            area += share;
+            if mg_noise::biome_map::tile_has_fluid_surface(map.biomes[y * map.width + x]) {
+                water += share;
+            }
+            let zone = planet_zone_at(&map, x, y);
+            if zone.is_dayside() {
+                day += share;
+            } else if zone.is_terminus() {
+                terminus += share;
+            } else if zone.is_nightside() {
+                night += share;
+            }
+        }
+    }
+    let percent = |part: f64| (part / area * 100.0).round();
+    println!(
+        "by area: {}% land, {}% liquid water; {}% dayside, {}% terminus, {}% nightside",
+        percent(area - water),
+        percent(water),
+        percent(day),
+        percent(terminus),
+        percent(night)
+    );
     println!(
         "rim sea: {}",
         if rim_sea_unbroken {
@@ -1945,19 +2025,22 @@ fn relief_image(map: &BiomeMap, province_ids: &[u16]) -> image::GrayImage {
         None => map.heightmap[y * width + x],
     };
     // How steeply the ground rises towards the north-west.
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
     let rise: Vec<f64> = (0..width * height)
         .map(|cell| {
-            let (x, y) = (cell % width, cell / width);
+            let (x, y) = grid.cell(cell);
             if province_ids[(y / scale) * map.width + x / scale] == 0 {
                 return 0.0;
             }
-            // The map joins east to west; north and south edges are clamped.
-            let east = height_at((x + 1) % width, y);
-            let west = height_at((x + width - 1) % width, y);
-            let south = height_at(x, (y + 1).min(height - 1));
-            let north = height_at(x, y.saturating_sub(1));
-            // A slope that rises to the south-east faces north-west.
-            (east - west) + (south - north)
+            // The map joins east to west and over the poles.
+            let beside = |dx: i32, dy: i32| {
+                let (nx, ny) = grid.neighbour(x, y, dx, dy);
+                height_at(nx, ny)
+            };
+            // A slope that rises to the south-east faces north-west. An
+            // east-west step is shorter towards the poles.
+            let across = grid.latitude(y).cos().max(0.05);
+            (beside(1, 0) - beside(-1, 0)) / across + (beside(0, 1) - beside(0, -1))
         })
         .collect();
 

@@ -115,15 +115,27 @@ impl World {
                 let shade = if mg_noise::biome_map::tile_has_fluid_surface(tile.biomes[cell]) {
                     1.0
                 } else {
-                    let slope_x = (height(column + 1, row) - height(column - 1, row)) * slope_scale;
+                    // An east-west step is shorter towards the poles.
+                    let across = mg_core::Sphere::MARGIN
+                        .lonlat_at(0.0, tile_y + row as f64 * step)
+                        .1
+                        .cos()
+                        .max(0.05);
+                    let slope_x =
+                        (height(column + 1, row) - height(column - 1, row)) * slope_scale / across;
                     let slope_y = (height(column, row + 1) - height(column, row - 1)) * slope_scale;
                     let normal_length = (slope_x * slope_x + slope_y * slope_y + 1.0).sqrt();
                     let lit = (-slope_x * LIGHT[0] - slope_y * LIGHT[1] + LIGHT[2])
                         / (normal_length * light_length);
-                    (lit / (LIGHT[2] / light_length)).clamp(RELIEF_SHADE_RANGE.0, RELIEF_SHADE_RANGE.1)
+                    (lit / (LIGHT[2] / light_length))
+                        .clamp(RELIEF_SHADE_RANGE.0, RELIEF_SHADE_RANGE.1)
                 };
                 let pixel = &rendered[cell * 4..cell * 4 + 4];
-                rgba.extend(pixel[..3].iter().map(|&channel| (channel as f64 * shade).min(255.0) as u8));
+                rgba.extend(
+                    pixel[..3]
+                        .iter()
+                        .map(|&channel| (channel as f64 * shade).min(255.0) as u8),
+                );
                 rgba.push(255);
             }
         }
