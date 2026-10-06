@@ -41,10 +41,7 @@ pub struct AnalysisGrids {
 
 /// Compute all stage 1 grids. `grid` describes the resolution and shape of the
 /// grid behind `terrain` (1.0 for the macro map: one cell per chunk).
-pub fn compute_analysis_grids(
-    terrain: &dyn TerrainQuery,
-    grid: Grid,
-) -> AnalysisGrids {
+pub fn compute_analysis_grids(terrain: &dyn TerrainQuery, grid: Grid) -> AnalysisGrids {
     let river_distance = compute_river_distance_field(terrain, grid);
     let habitability = compute_habitability(terrain, &river_distance, grid);
     AnalysisGrids {
@@ -61,12 +58,7 @@ pub fn compute_analysis_grids(
 
 /// Slope as Randlebrot's formulas expect it: height change per reference cell.
 /// A coarser grid spans more ground per cell, so its raw slope is larger.
-fn reference_slope(
-    terrain: &dyn TerrainQuery,
-    x: usize,
-    y: usize,
-    grid: Grid,
-) -> f64 {
+fn reference_slope(terrain: &dyn TerrainQuery, x: usize, y: usize, grid: Grid) -> f64 {
     terrain.slope_at(x, y) * grid.cells_per_world_unit / REFERENCE_CELLS_PER_WORLD_UNIT
 }
 
@@ -93,14 +85,9 @@ pub fn compute_river_distance_field(terrain: &dyn TerrainQuery, grid: Grid) -> V
         let current_dist = dist[y * w + x];
         let offsets: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
         for &(dx, dy) in &offsets {
-            let ny = y as i32 + dy;
-            let Some(nux) = grid.step_x(x, dx, w) else {
+            let Some((nux, nuy)) = grid.step(x, y, dx, dy, w, h) else {
                 continue;
             };
-            if ny < 0 || ny >= h as i32 {
-                continue;
-            }
-            let nuy = ny as usize;
             let ni = nuy * w + nux;
             let new_dist = current_dist + 1.0;
             if new_dist < dist[ni] {
@@ -124,14 +111,10 @@ pub fn compute_river_distance_field(terrain: &dyn TerrainQuery, grid: Grid) -> V
                 (1, 1, 1.414),
             ];
             for &(dx, dy, cost) in &neighbours {
-                let ny = y as i32 + dy;
-                let Some(nx) = grid.step_x(x, dx, w) else {
+                let Some((nx, ny)) = grid.step(x, y, dx, dy, w, h) else {
                     continue;
                 };
-                if ny < 0 || ny >= h as i32 {
-                    continue;
-                }
-                let candidate = snapshot[ny as usize * w + nx] + cost;
+                let candidate = snapshot[ny * w + nx] + cost;
                 if candidate < row[x] {
                     row[x] = candidate;
                 }
@@ -234,8 +217,7 @@ pub fn compute_navigation_cost(
             }
 
             let biome_ease = biome_traversability(terrain.biome_at(x, y)) as f64;
-            let slope_penalty =
-                (reference_slope(terrain, x, y, grid) * 3.0).min(0.7);
+            let slope_penalty = (reference_slope(terrain, x, y, grid) * 3.0).min(0.7);
             let elevation = terrain.heightmap_at(x, y);
             let elevation_penalty = if elevation > 0.7 {
                 (elevation - 0.7) * 2.0
@@ -270,30 +252,42 @@ const RIVERSIDE_APPEAL: f32 = 0.1;
 
 /// Where people build: on a river, most of all where two rivers meet or a
 /// river meets the sea, and along a shore.
-pub fn compute_site_appeal(terrain: &dyn TerrainQuery, habitability: &[f32], grid: Grid) -> Vec<f32> {
+pub fn compute_site_appeal(
+    terrain: &dyn TerrainQuery,
+    habitability: &[f32],
+    grid: Grid,
+) -> Vec<f32> {
     let (width, height) = (terrain.width(), terrain.height());
-    let is_water = |x: i32, y: i32| -> bool {
-        if y < 0 || y >= height as i32 {
-            return false;
-        }
-        grid.step_x(0, x, width).is_some_and(|x| terrain.is_ocean(x as usize, y as usize))
+    let is_water = |x: usize, y: usize, dx: i32, dy: i32| -> bool {
+        grid.step(x, y, dx, dy, width, height)
+            .is_some_and(|(nx, ny)| terrain.is_ocean(nx, ny))
     };
-    let is_river = |x: i32, y: i32| -> bool {
-        if y < 0 || y >= height as i32 {
-            return false;
-        }
-        grid.step_x(0, x, width).is_some_and(|x| terrain.is_river(x as usize, y as usize))
+    let is_river = |x: usize, y: usize, dx: i32, dy: i32| -> bool {
+        grid.step(x, y, dx, dy, width, height)
+            .is_some_and(|(nx, ny)| terrain.is_river(nx, ny))
     };
     (0..width * height)
         .map(|cell| {
-            let (x, y) = ((cell % width) as i32, (cell / width) as i32);
+            let (x, y) = (cell % width, cell / width);
             if habitability[cell] <= 0.0 {
                 return 0.0;
             }
-            let neighbours = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)];
-            let water_beside = neighbours.iter().any(|&(dx, dy)| is_water(x + dx, y + dy));
-            let rivers_beside = neighbours.iter().filter(|&&(dx, dy)| is_river(x + dx, y + dy)).count();
-            let on_river = is_river(x, y);
+            let neighbours = [
+                (1, 0),
+                (1, 1),
+                (0, 1),
+                (-1, 1),
+                (-1, 0),
+                (-1, -1),
+                (0, -1),
+                (1, -1),
+            ];
+            let water_beside = neighbours.iter().any(|&(dx, dy)| is_water(x, y, dx, dy));
+            let rivers_beside = neighbours
+                .iter()
+                .filter(|&&(dx, dy)| is_river(x, y, dx, dy))
+                .count();
+            let on_river = is_river(x, y, 0, 0);
             let bonus = if on_river && water_beside {
                 RIVER_MOUTH_APPEAL
             } else if on_river && rivers_beside >= 3 {
@@ -325,15 +319,29 @@ pub fn compute_basins(terrain: &dyn TerrainQuery, grid: Grid) -> Vec<u32> {
             }
             let here = terrain.heightmap_at(x, y);
             let mut lowest = (cell as u32, here);
-            for (dx, dy) in [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)] {
-                let ny = y as i32 + dy;
-                let Some(nx) = grid.step_x(x, dx, width) else { continue };
-                if ny < 0 || ny >= height as i32 {
+            for (dx, dy) in [
+                (1, 0),
+                (1, 1),
+                (0, 1),
+                (-1, 1),
+                (-1, 0),
+                (-1, -1),
+                (0, -1),
+                (1, -1),
+            ] {
+                let Some((nx, ny)) = grid.step(x, y, dx, dy, width, height) else {
                     continue;
-                }
-                let (nx, ny) = (nx as usize, ny as usize);
-                let there = if terrain.is_ocean(nx, ny) { f64::NEG_INFINITY } else { terrain.heightmap_at(nx, ny) };
-                let distance = if dx != 0 && dy != 0 { std::f64::consts::SQRT_2 } else { 1.0 };
+                };
+                let there = if terrain.is_ocean(nx, ny) {
+                    f64::NEG_INFINITY
+                } else {
+                    terrain.heightmap_at(nx, ny)
+                };
+                let distance = if dx != 0 && dy != 0 {
+                    std::f64::consts::SQRT_2
+                } else {
+                    1.0
+                };
                 let fall = (here - there) / distance;
                 if fall > here - lowest.1 && there < lowest.1 {
                     lowest = ((ny * width + nx) as u32, there);
@@ -496,8 +504,14 @@ mod tests {
     fn river_bonus_reach_is_the_same_distance_on_a_finer_grid() {
         // 1.5 world units is the water bonus radius: 1 cell away is inside it
         // at 1 cell per world unit, 11 cells away is inside it at 8.
-        let coarse = compute_analysis_grids(&MockTerrain::with_river_along_row(40, 40, 20), Grid::flat(1.0));
-        let fine = compute_analysis_grids(&MockTerrain::with_river_along_row(40, 40, 20), Grid::flat(8.0));
+        let coarse = compute_analysis_grids(
+            &MockTerrain::with_river_along_row(40, 40, 20),
+            Grid::flat(1.0),
+        );
+        let fine = compute_analysis_grids(
+            &MockTerrain::with_river_along_row(40, 40, 20),
+            Grid::flat(8.0),
+        );
         let baseline = coarse.habitability[2 * 40 + 20];
 
         assert!(coarse.habitability[19 * 40 + 20] > baseline);

@@ -1,6 +1,6 @@
 # Spec 014 - A Spherical World
 
-**Status:** In progress. Stages 0 (the geometry module), 1 (noise on the sphere), 2 (light from the sphere), 3 (area, distance and neighbours) and 4 (tectonics on the sphere) done. Stages 5 and 6 not started.
+**Status:** In progress. Stages 0 (the geometry module), 1 (noise on the sphere), 2 (light from the sphere), 3 (area, distance and neighbours), 4 (tectonics on the sphere) and 5 (LifeGen on the sphere) done. Stage 6 not started.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (shared macro data), Spec 013 (uplift terrain)
 **Supersedes:** the cylinder (`wrap.rs`), the light formula in `light_level.rs`, the "terminus is an arc" invariant, `mg_life::Grid`
@@ -229,6 +229,18 @@ seed-42 figures in CLAUDE.md (89% land, 55/22/23 by zone) are cell counts
 and will change twice over: once because they become area-weighted, once
 because the terminus moves to the equator. They are re-measured, by area,
 and CLAUDE.md is updated.
+
+As built: `mg_life::Grid` stays, as the one place LifeGen measures
+through, but it is now either the sphere or a flat patch (for the stage
+tests, whose worlds are a few dozen cells and not spheres). Steps to a
+neighbour, distances and a row's area share all go through it. Areas are
+kept in equatorial cells (`area_cells`, and `area_chunks` in `map.json`):
+what a count of cells would be if every cell were the size of one at the
+equator. That keeps every threshold and the map's labels as they were.
+The road search still runs on the flat, unwrapped grid: roads live in
+the terminus, within about 30° of the equator, where a cell is within
+15% of square, and a search that crossed a pole would never be wanted.
+Only its link choice and lengths are great circles.
 
 ### `TerrainQuery`
 

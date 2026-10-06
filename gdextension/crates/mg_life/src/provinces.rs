@@ -54,6 +54,8 @@ pub struct Province {
     pub biome: TileType,
     /// Mean habitability over the province.
     pub habitability: f32,
+    /// Area in equatorial cells: what a count of its cells would be if they
+    /// were all the size of one at the equator.
     pub area_cells: u32,
     pub is_coastal: bool,
     /// Contains a major river.
@@ -92,16 +94,15 @@ pub fn generate_provinces(
         grid,
         civ_seed.wrapping_add(PROVINCE_SEED_OFFSET),
     );
-    let (mut province_ids, adjacency) =
-        tessellate_provinces(terrain, &seeds, &analysis.navigation_cost, &analysis.basins, grid);
-    attach_unreached_land(terrain, &mut province_ids, grid);
-    let provinces = bake_province_attributes(
+    let (mut province_ids, adjacency) = tessellate_provinces(
         terrain,
-        analysis,
-        &province_ids,
         &seeds,
+        &analysis.navigation_cost,
+        &analysis.basins,
         grid,
     );
+    attach_unreached_land(terrain, &mut province_ids, grid);
+    let provinces = bake_province_attributes(terrain, analysis, &province_ids, &seeds, grid);
     ProvinceMap {
         width: terrain.width(),
         height: terrain.height(),
@@ -150,7 +151,9 @@ fn seed_provinces(
         }
         let x = rng.gen_range(0..width);
         let y = rng.gen_range(0..height);
-        if terrain.is_ocean(x, y) {
+        // Darts land evenly over the ground, so a row's chance is its cells'
+        // share of an equatorial cell's area: the poles are not over-seeded.
+        if rng.gen::<f64>() > grid.area_share(y) || terrain.is_ocean(x, y) {
             continue;
         }
         let radius = seed_radius_cells(habitability[y * width + x], grid);
@@ -170,11 +173,9 @@ fn seed_provinces(
                     return false;
                 }
                 let (sx, sy) = seeds[existing];
-                let existing_radius =
-                    seed_radius_cells(habitability[sy * width + sx], grid);
+                let existing_radius = seed_radius_cells(habitability[sy * width + sx], grid);
                 let min_distance = radius.max(existing_radius);
-                let (dx, dy) = (grid.dx(sx, x), y as f64 - sy as f64);
-                dx * dx + dy * dy < min_distance * min_distance
+                grid.distance((sx, sy), (x, y)) < min_distance
             })
         });
         if too_close {
@@ -225,14 +226,9 @@ fn tessellate_provinces(
         province_ids[cell] = province_id;
 
         for &(dx, dy) in &NEIGHBOURS_4 {
-            let ny = y as i32 + dy;
-            let Some(nx) = grid.step_x(x, dx, width) else {
+            let Some((nx, ny)) = grid.step(x, y, dx, dy, width, height) else {
                 continue;
             };
-            if ny < 0 || ny >= height as i32 {
-                continue;
-            }
-            let (nx, ny) = (nx as usize, ny as usize);
             let neighbour = ny * width + nx;
 
             let neighbour_id = province_ids[neighbour];
@@ -248,7 +244,11 @@ fn tessellate_provinces(
             }
 
             let ease = navigation_cost[neighbour].max(MIN_NAVIGATION_EASE);
-            let watershed = if basins[neighbour] != basins[cell] { WATERSHED_CROSSING_COST } else { 1.0 };
+            let watershed = if basins[neighbour] != basins[cell] {
+                WATERSHED_CROSSING_COST
+            } else {
+                1.0
+            };
             let step_cost = (1000.0 * watershed / ease) as u32;
             frontier.push((Reverse(cost + step_cost), neighbour as u32, province_id));
         }
@@ -274,14 +274,10 @@ fn attach_unreached_land(terrain: &dyn TerrainQuery, province_ids: &mut [u16], g
     while let Some(cell) = frontier.pop_front() {
         let (x, y) = (cell % width, cell / width);
         for &(dx, dy) in &NEIGHBOURS_4 {
-            let ny = y as i32 + dy;
-            let Some(nx) = grid.step_x(x, dx, width) else {
+            let Some((nx, ny)) = grid.step(x, y, dx, dy, width, height) else {
                 continue;
             };
-            if ny < 0 || ny >= height as i32 {
-                continue;
-            }
-            let neighbour = ny as usize * width + nx;
+            let neighbour = ny * width + nx;
             if nearest[neighbour] == 0 {
                 nearest[neighbour] = nearest[cell];
                 frontier.push_back(neighbour);
@@ -306,7 +302,9 @@ fn bake_province_attributes(
 ) -> Vec<Province> {
     #[derive(Default, Clone)]
     struct Totals {
-        area: u32,
+        /// In equatorial cells: a cell counts by its area, so cells towards
+        /// the poles count for less.
+        area: f64,
         habitability: f64,
         elevation: f64,
         terrain_cost: f64,
@@ -328,7 +326,7 @@ fn bake_province_attributes(
         let province = &mut totals[(province_id - 1) as usize];
         let (x, y) = (cell % width, cell / width);
 
-        province.area += 1;
+        province.area += grid.area_share(y);
         province.habitability += analysis.habitability[cell] as f64;
         province.elevation += terrain.heightmap_at(x, y);
         province.terrain_cost += (1.0 - analysis.navigation_cost[cell]) as f64;
@@ -348,12 +346,8 @@ fn bake_province_attributes(
         if !province.is_coastal {
             province.is_coastal = (-coast_radius..=coast_radius).any(|dy| {
                 (-coast_radius..=coast_radius).any(|dx| {
-                    let ny = y as i32 + dy;
-                    ny >= 0
-                        && (ny as usize) < height
-                        && grid
-                            .step_x(x, dx, width)
-                            .is_some_and(|nx| terrain.is_ocean(nx, ny as usize))
+                    grid.step(x, y, dx, dy, width, height)
+                        .is_some_and(|(nx, ny)| terrain.is_ocean(nx, ny))
                 })
             });
         }
@@ -368,9 +362,14 @@ fn bake_province_attributes(
         .zip(seeds)
         .enumerate()
         .map(|(index, (province, &site))| {
+            let cells = province
+                .biome_counts
+                .iter()
+                .map(|(_, count)| *count)
+                .sum::<u32>();
             let mean = |sum: f64| {
-                if province.area > 0 {
-                    (sum / province.area as f64) as f32
+                if cells > 0 {
+                    (sum / cells as f64) as f32
                 } else {
                     0.0
                 }
@@ -388,7 +387,7 @@ fn bake_province_attributes(
                 site,
                 biome,
                 habitability: mean(province.habitability),
-                area_cells: province.area,
+                area_cells: province.area.round() as u32,
                 is_coastal: province.is_coastal,
                 is_river_junction: province.is_river_junction,
                 elevation_mean: mean(province.elevation),

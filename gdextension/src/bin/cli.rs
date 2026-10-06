@@ -275,7 +275,9 @@ fn main() {
                 layers_tag,
                 civ_seed,
             } => run_export_site_map(Path::new(&output_dir), layers_tag.as_deref(), civ_seed),
-            ExportKind::MacroPack { seed, output } => run_export_macro_pack(seed, Path::new(&output)),
+            ExportKind::MacroPack { seed, output } => {
+                run_export_macro_pack(seed, Path::new(&output))
+            }
             ExportKind::CivPack {
                 output,
                 layers_tag,
@@ -909,7 +911,8 @@ fn run_export_macro_pack(seed: u32, output: &Path) {
         fs::create_dir_all(directory)
             .unwrap_or_else(|e| fail(format!("creating {}: {e}", directory.display())));
     }
-    fs::write(output, &bytes).unwrap_or_else(|e| fail(format!("writing {}: {e}", output.display())));
+    fs::write(output, &bytes)
+        .unwrap_or_else(|e| fail(format!("writing {}: {e}", output.display())));
     println!(
         "macro pack for seed {seed} written to {}: {:.1} MB, {:.1}s",
         output.display(),
@@ -993,29 +996,37 @@ fn run_inspect_chunk_seam(seed: u32, chunk_x: u32, chunk_y: u32) {
     let report = |label: &str, steps: Vec<f64>| {
         let mismatched = steps.iter().filter(|&&step| step != 0.0).count();
         let blocking = steps.iter().filter(|&&step| step.abs() >= 2.0).count();
-        let largest = steps.iter().fold(0.0f64, |largest, step| largest.max(step.abs()));
+        let largest = steps
+            .iter()
+            .fold(0.0f64, |largest, step| largest.max(step.abs()));
         println!(
             "{label}: {mismatched} of {} border samples differ, {blocking} by 2 blocks or more, largest step {largest} blocks",
             steps.len()
         );
     };
-    println!("chunk ({chunk_x}, {chunk_y}), seed {seed}, {w}x{h} samples, anchored to the macro map");
+    println!(
+        "chunk ({chunk_x}, {chunk_y}), seed {seed}, {w}x{h} samples, anchored to the macro map"
+    );
     report(
         "east border ",
-        (0..h).map(|row| blocks(&east, 0, row) - blocks(&here, w - 1, row)).collect(),
+        (0..h)
+            .map(|row| blocks(&east, 0, row) - blocks(&here, w - 1, row))
+            .collect(),
     );
     report(
         "south border",
-        (0..w).map(|column| blocks(&south, column, 0) - blocks(&here, column, h - 1)).collect(),
+        (0..w)
+            .map(|column| blocks(&south, column, 0) - blocks(&here, column, h - 1))
+            .collect(),
     );
 }
 
 // ─── LifeGen inputs ──────────────────────────────────────────────────────────
 
-/// The macro map covers the whole world, one cell per chunk, and the world is
-/// a cylinder: its east and west edges are neighbours.
+/// The macro map covers the whole world, one cell per chunk, laid over the
+/// sphere (spec 014).
 fn macro_grid(map: &BiomeMap) -> mg_life::Grid {
-    mg_life::Grid::ring(map.width as f64 / map.world_width, map.width)
+    mg_life::Grid::sphere(map.width as f64 / map.world_width, map.width, map.height)
 }
 
 /// The named states from the lore, compiled in from `data/lifegen_states.ron`.
@@ -1070,7 +1081,10 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         ("resource_richness", &map.resource_richness),
         ("rivers", &map.rivers),
     ];
-    let header: Vec<String> = STATS_PERCENTILES.iter().map(|p| format!("{:>9}", format!("p{p}"))).collect();
+    let header: Vec<String> = STATS_PERCENTILES
+        .iter()
+        .map(|p| format!("{:>9}", format!("p{p}")))
+        .collect();
     println!("{:<18}{}", "land cells only", header.join(""));
     for (name, values) in layers {
         let mut land_values: Vec<f64> = values
@@ -1084,7 +1098,10 @@ fn run_inspect_layer_stats(layers_tag: &str) {
             .iter()
             .map(|&p| {
                 let index = (land_values.len().saturating_sub(1)) * p / 100;
-                format!("{:>9.3}", land_values.get(index).copied().unwrap_or(f64::NAN))
+                format!(
+                    "{:>9.3}",
+                    land_values.get(index).copied().unwrap_or(f64::NAN)
+                )
             })
             .collect();
         println!("{name:<18}{}", row.join(""));
@@ -1112,11 +1129,19 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         println!("{:<18}{}", format!("lifegen {name}"), row.join(""));
     }
 
-    let province_map =
-        mg_life::generate_provinces(&map, &analysis, grid, 1);
-    let mut areas: Vec<u32> = province_map.provinces.iter().map(|p| p.area_cells).collect();
+    let province_map = mg_life::generate_provinces(&map, &analysis, grid, 1);
+    let mut areas: Vec<u32> = province_map
+        .provinces
+        .iter()
+        .map(|p| p.area_cells)
+        .collect();
     areas.sort_unstable();
-    let area_at = |p: usize| areas.get((areas.len().saturating_sub(1)) * p / 100).copied().unwrap_or(0);
+    let area_at = |p: usize| {
+        areas
+            .get((areas.len().saturating_sub(1)) * p / 100)
+            .copied()
+            .unwrap_or(0)
+    };
     println!(
         "provinces (civ seed 1): {} total, {} empty, area in chunks p5 {} / median {} / p95 {} / max {}, {} coastal, {} with a major river",
         areas.len(),
@@ -1135,8 +1160,11 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         .filter(|(&id, &land)| land && id == 0)
         .count();
     println!("land cells without a province: {unassigned_land}");
-    let mut province_habitability: Vec<f32> =
-        province_map.provinces.iter().map(|p| p.habitability).collect();
+    let mut province_habitability: Vec<f32> = province_map
+        .provinces
+        .iter()
+        .map(|p| p.habitability)
+        .collect();
     province_habitability.sort_by(|a, b| a.total_cmp(b));
     let habitability_at = |p: usize| {
         province_habitability
@@ -1155,12 +1183,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         habitability_at(100),
     );
 
-    let faction_map = mg_life::generate_factions(
-        &province_map,
-        &authored_states(),
-        grid,
-        1,
-    );
+    let faction_map = mg_life::generate_factions(&province_map, &authored_states(), grid, 1);
     let count_state = |wanted: fn(&mg_life::PoliticalState) -> bool| {
         let provinces: Vec<&mg_life::Province> = province_map
             .provinces
@@ -1172,10 +1195,17 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         let area: u32 = provinces.iter().map(|province| province.area_cells).sum();
         (provinces.len(), area as f64 / land_cells as f64 * 100.0)
     };
-    let (claimed, claimed_area) = count_state(|s| matches!(s, mg_life::PoliticalState::Claimed { .. }));
-    let (unclaimed, unclaimed_area) = count_state(|s| matches!(s, mg_life::PoliticalState::Unclaimed));
-    let (uninhabited, uninhabited_area) = count_state(|s| matches!(s, mg_life::PoliticalState::Uninhabited));
-    let mut sizes: Vec<u32> = faction_map.factions.iter().map(|f| f.province_count).collect();
+    let (claimed, claimed_area) =
+        count_state(|s| matches!(s, mg_life::PoliticalState::Claimed { .. }));
+    let (unclaimed, unclaimed_area) =
+        count_state(|s| matches!(s, mg_life::PoliticalState::Unclaimed));
+    let (uninhabited, uninhabited_area) =
+        count_state(|s| matches!(s, mg_life::PoliticalState::Uninhabited));
+    let mut sizes: Vec<u32> = faction_map
+        .factions
+        .iter()
+        .map(|f| f.province_count)
+        .collect();
     sizes.sort_unstable();
     println!(
         "factions (civ seed 1): {} total, provinces each min {} / median {} / max {}",
@@ -1191,7 +1221,11 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         "{:<22}{:>9}{:>7}{:>8}{:>7}{:>7}  {}",
         "authored state", "provinces", "light", "habit.", "coast", "river", "capital chunk"
     );
-    for faction in faction_map.factions.iter().filter(|faction| faction.name.is_some()) {
+    for faction in faction_map
+        .factions
+        .iter()
+        .filter(|faction| faction.name.is_some())
+    {
         let capital = &province_map.provinces[(faction.capital_province - 1) as usize];
         println!(
             "{:<22}{:>9}{:>7.2}{:>8.2}{:>7}{:>7}  {}, {}",
@@ -1200,21 +1234,23 @@ fn run_inspect_layer_stats(layers_tag: &str) {
             capital.light_level,
             capital.habitability,
             if capital.is_coastal { "yes" } else { "-" },
-            if capital.is_river_junction { "yes" } else { "-" },
+            if capital.is_river_junction {
+                "yes"
+            } else {
+                "-"
+            },
             capital.site.0,
             capital.site.1,
         );
     }
     if !faction_map.unplaced_states.is_empty() {
-        println!("unplaced states: {}", faction_map.unplaced_states.join(", "));
+        println!(
+            "unplaced states: {}",
+            faction_map.unplaced_states.join(", ")
+        );
     }
 
-    let settlements = mg_life::place_settlements(
-        &province_map,
-        &faction_map,
-        &analysis,
-        grid,
-    );
+    let settlements = mg_life::place_settlements(&province_map, &faction_map, &analysis, grid);
     let by_size: Vec<String> = mg_life::SizeClass::ALL
         .iter()
         .map(|size| {
@@ -1222,7 +1258,11 @@ fn run_inspect_layer_stats(layers_tag: &str) {
             format!("{size:?} {count}")
         })
         .collect();
-    println!("settlements: {} total ({})", settlements.len(), by_size.join(", "));
+    println!(
+        "settlements: {} total ({})",
+        settlements.len(),
+        by_size.join(", ")
+    );
 
     let roads = mg_life::build_roads(
         &settlements,
@@ -1235,7 +1275,8 @@ fn run_inspect_layer_stats(layers_tag: &str) {
     let by_kind: Vec<String> = mg_life::RoadKind::ALL
         .iter()
         .map(|kind| {
-            let of_kind: Vec<&mg_life::Road> = roads.iter().filter(|road| road.kind == *kind).collect();
+            let of_kind: Vec<&mg_life::Road> =
+                roads.iter().filter(|road| road.kind == *kind).collect();
             let length: f64 = of_kind
                 .iter()
                 .flat_map(|road| road.path.windows(2))
@@ -1269,11 +1310,17 @@ fn run_inspect_layer_stats(layers_tag: &str) {
             entry.1 += 1;
         }
     }
-    println!("{:<22}{:>9}{:>26}", "biome", "cells", "below sea level (cont.)");
+    println!(
+        "{:<22}{:>9}{:>26}",
+        "biome", "cells", "below sea level (cont.)"
+    );
     let mut sorted: Vec<_> = biome_counts.into_iter().collect();
     sorted.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
     for (name, (cells, below_sea)) in sorted {
-        println!("{name:<22}{cells:>9}{:>25.0}%", below_sea as f64 / cells as f64 * 100.0);
+        println!(
+            "{name:<22}{cells:>9}{:>25.0}%",
+            below_sea as f64 / cells as f64 * 100.0
+        );
     }
 }
 
@@ -1288,7 +1335,12 @@ struct Civilisation {
     names: mg_life::Names,
 }
 
-fn run_lifegen(map: &BiomeMap, analysis: &mg_life::AnalysisGrids, grid: mg_life::Grid, civ_seed: u32) -> Civilisation {
+fn run_lifegen(
+    map: &BiomeMap,
+    analysis: &mg_life::AnalysisGrids,
+    grid: mg_life::Grid,
+    civ_seed: u32,
+) -> Civilisation {
     let province_map = mg_life::generate_provinces(map, analysis, grid, civ_seed);
     let faction_map = mg_life::generate_factions(&province_map, &authored_states(), grid, civ_seed);
     let settlements = mg_life::place_settlements(&province_map, &faction_map, analysis, grid);
@@ -1300,12 +1352,30 @@ fn run_lifegen(map: &BiomeMap, analysis: &mg_life::AnalysisGrids, grid: mg_life:
         province_map.height,
         grid,
     );
-    let names = mg_life::generate_names(&province_map, &faction_map, &settlements, &name_parts(), civ_seed);
-    Civilisation { province_map, faction_map, settlements, roads, names }
+    let names = mg_life::generate_names(
+        &province_map,
+        &faction_map,
+        &settlements,
+        &name_parts(),
+        civ_seed,
+    );
+    Civilisation {
+        province_map,
+        faction_map,
+        settlements,
+        roads,
+        names,
+    }
 }
 
 fn civ_pack(seed: u32, civ_seed: u32, civ: &Civilisation) -> mg_artifacts::CivPack {
-    let Civilisation { province_map, faction_map, settlements, roads, names } = civ;
+    let Civilisation {
+        province_map,
+        faction_map,
+        settlements,
+        roads,
+        names,
+    } = civ;
     mg_artifacts::CivPack {
         seed,
         civ_seed,
@@ -1350,8 +1420,16 @@ fn civ_pack(seed: u32, civ_seed: u32, civ: &Civilisation) -> mg_artifacts::CivPa
             .iter()
             .map(|road| mg_artifacts::CivRoad {
                 kind: format!("{:?}", road.kind),
-                path: road.path.iter().map(|&(x, y)| (x as u16, y as u16)).collect(),
-                crossings: road.crossings.iter().map(|&(x, y)| (x as u16, y as u16)).collect(),
+                path: road
+                    .path
+                    .iter()
+                    .map(|&(x, y)| (x as u16, y as u16))
+                    .collect(),
+                crossings: road
+                    .crossings
+                    .iter()
+                    .map(|&(x, y)| (x as u16, y as u16))
+                    .collect(),
             })
             .collect(),
     }
@@ -1385,7 +1463,8 @@ fn run_export_civ_pack(output: &Path, layers_tag: Option<&str>, civ_seed: u32) {
         fs::create_dir_all(directory)
             .unwrap_or_else(|e| fail(format!("creating {}: {e}", directory.display())));
     }
-    fs::write(output, &bytes).unwrap_or_else(|e| fail(format!("writing {}: {e}", output.display())));
+    fs::write(output, &bytes)
+        .unwrap_or_else(|e| fail(format!("writing {}: {e}", output.display())));
     println!(
         "civ pack for seed {} (civ seed {civ_seed}) written to {}: {} provinces, {} states, {} settlements, {} roads, {:.1} MB, {:.1}s (layers '{tag}')",
         manifest.seed,
@@ -1519,11 +1598,17 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     let lifegen_layers = [
         ("lifegen_habitability.png", &analysis.habitability),
         ("lifegen_navigation_cost.png", &analysis.navigation_cost),
-        ("lifegen_resource_desirability.png", &analysis.resource_desirability),
+        (
+            "lifegen_resource_desirability.png",
+            &analysis.resource_desirability,
+        ),
     ];
     let mut layer_files = manifest.layer_images.clone();
     for (file_name, scores) in lifegen_layers {
-        let pixels: Vec<u8> = scores.iter().flat_map(|&score| score_to_rgba(score)).collect();
+        let pixels: Vec<u8> = scores
+            .iter()
+            .flat_map(|&score| score_to_rgba(score))
+            .collect();
         RgbaImage::from_raw(analysis.width as u32, analysis.height as u32, pixels)
             .expect("score grid matches its dimensions")
             .save(output_dir.join(file_name))
@@ -1534,8 +1619,13 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     // LifeGen stages 2 to 6 (spec 011). Provinces and factions go out as data
     // (the map page colours them itself), and so do settlements, roads and
     // trade (it draws them as lines and markers).
-    let Civilisation { province_map, faction_map, settlements, roads, names } =
-        run_lifegen(&map, &analysis, grid, civ_seed);
+    let Civilisation {
+        province_map,
+        faction_map,
+        settlements,
+        roads,
+        names,
+    } = run_lifegen(&map, &analysis, grid, civ_seed);
     let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
 
     relief_image(&map, &province_map.province_ids)
@@ -1544,8 +1634,11 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
 
     let sea = sea_image(&map);
     let is_sea: Vec<bool> = sea.as_raw().iter().map(|&pixel| pixel > 0).collect();
-    let rim_sea_unbroken =
-        mg_noise::rim_sea::sea_rings_the_world(&is_sea, sea.width() as usize, sea.height() as usize);
+    let rim_sea_unbroken = mg_noise::rim_sea::sea_rings_the_world(
+        &is_sea,
+        sea.width() as usize,
+        sea.height() as usize,
+    );
     sea.save(output_dir.join(SITE_MAP_SEA_IMAGE))
         .unwrap_or_else(|e| fail(format!("saving {SITE_MAP_SEA_IMAGE}: {e}")));
 
@@ -1632,7 +1725,13 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
                 .entry(biome as u8)
                 .or_insert_with(|| format!("{biome:?}"));
             let [province_low, province_high] = province_map.province_ids[idx].to_le_bytes();
-            chunks.extend_from_slice(&[light, zone as u8, biome as u8, province_low, province_high]);
+            chunks.extend_from_slice(&[
+                light,
+                zone as u8,
+                biome as u8,
+                province_low,
+                province_high,
+            ]);
         }
     }
     fs::write(output_dir.join("chunks.bin"), &chunks)
@@ -1649,7 +1748,9 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         "biomes": biome_names,
         "civ_seed": civ_seed,
         // East and west edges are neighbours.
-        "wraps_x": grid.wrap_width.is_some(),
+        "wraps_x": grid.is_sphere(),
+        "projection": "equirectangular",
+        "sun": "south pole",
         // Indexed by province id - 1.
         "provinces": province_map
             .provinces
@@ -1786,7 +1887,10 @@ fn sea_image(map: &BiomeMap) -> image::GrayImage {
     let splines = mg_noise::BiomeSplines::new(mg_noise::SEA_LEVEL);
     let pixels = (0..width * height)
         .map(|cell| {
-            let (wx, wy) = ((cell % width) as f64 / scale as f64, (cell / width) as f64 / scale as f64);
+            let (wx, wy) = (
+                (cell % width) as f64 / scale as f64,
+                (cell / width) as f64 / scale as f64,
+            );
             let ground = match fine {
                 Some(fine) => fine.heights[cell] as f64,
                 None => map.heightmap[cell],
@@ -1812,7 +1916,11 @@ fn sea_image(map: &BiomeMap) -> image::GrayImage {
                     light,
                     drift,
                 ));
-            if is_sea || is_lake { 255 } else { 0 }
+            if is_sea || is_lake {
+                255
+            } else {
+                0
+            }
         })
         .collect();
     image::GrayImage::from_raw(width as u32, height as u32, pixels)
@@ -2227,8 +2335,7 @@ fn run_compare_scale(
                     if macro_river_mask[dy * img_w + dx] {
                         cell_macro_river_present = true;
                     }
-                    runtime_river_rgba[dst..dst + 4]
-                        .copy_from_slice(&river_debug_rgba(river_max));
+                    runtime_river_rgba[dst..dst + 4].copy_from_slice(&river_debug_rgba(river_max));
                 }
             }
             if let Some(cell) = cells.last_mut().and_then(|value| value.as_object_mut()) {
@@ -2773,9 +2880,7 @@ fn write_pretty_ron<T: Serialize>(path: &Path, value: &T) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        audit_default_presentation_grid, scan_layer_presentation_grid,
-    };
+    use super::{audit_default_presentation_grid, scan_layer_presentation_grid};
     use std::path::PathBuf;
 
     #[test]
@@ -2788,7 +2893,6 @@ mod tests {
             failures
         );
     }
-
 }
 
 fn spinner(msg: &str) -> ProgressBar {

@@ -105,13 +105,21 @@ pub fn build_roads(
     let mut ease: Vec<f32> = navigation_cost
         .iter()
         .enumerate()
-        .map(|(cell, &ease)| if is_river(cell) { ease / RIVER_CROSSING_COST } else { ease })
+        .map(|(cell, &ease)| {
+            if is_river(cell) {
+                ease / RIVER_CROSSING_COST
+            } else {
+                ease
+            }
+        })
         .collect();
 
     let mut roads = Vec::with_capacity(links.len());
     for (a, b, kind) in links {
         let (from, to) = (&settlements[a], &settlements[b]);
-        if grid.distance(from.position, to.position) > MAX_ROAD_LENGTH_WU * grid.cells_per_world_unit {
+        if grid.distance(from.position, to.position)
+            > MAX_ROAD_LENGTH_WU * grid.cells_per_world_unit
+        {
             continue;
         }
         let start = (from.position.0 as i64, from.position.1 as i64);
@@ -138,7 +146,10 @@ pub fn build_roads(
             from_settlement: from.id,
             to_settlement: to.id,
             kind,
-            path: simplify_path(&path, tolerance).iter().map(on_grid).collect(),
+            path: simplify_path(&path, tolerance)
+                .iter()
+                .map(on_grid)
+                .collect(),
             cost,
             crossings,
         });
@@ -362,7 +373,7 @@ impl SearchBounds {
         let (grid_width, grid_height) = (grid_width as i64, grid_height as i64);
         let mut min_x = a.0.min(b.0) - padding;
         let mut max_x = a.0.max(b.0) + padding;
-        if grid.wrap_width.is_none() {
+        if !grid.is_sphere() {
             min_x = min_x.max(0);
             max_x = max_x.min(grid_width - 1);
         } else if max_x - min_x + 1 > grid_width {
@@ -532,10 +543,7 @@ fn distance_to_line(point: Unwrapped, a: Unwrapped, b: Unwrapped) -> f64 {
 mod tests {
     use super::*;
 
-    const FLAT: Grid = Grid {
-        cells_per_world_unit: 1.0,
-        wrap_width: None,
-    };
+    const FLAT: Grid = Grid::flat(1.0);
 
     fn settlement(id: u32, position: (usize, usize), size_class: SizeClass) -> Settlement {
         Settlement {
@@ -568,7 +576,14 @@ mod tests {
             settlement(1, (2, 5), SizeClass::Village),
             settlement(2, (17, 5), SizeClass::Village),
         ];
-        let roads = build_roads(&settlements, &vec![1.0; 20 * 10], &vec![f32::MAX; 20 * 10], 20, 10, FLAT);
+        let roads = build_roads(
+            &settlements,
+            &vec![1.0; 20 * 10],
+            &vec![f32::MAX; 20 * 10],
+            20,
+            10,
+            FLAT,
+        );
 
         assert_eq!(roads.len(), 1);
         assert_eq!(roads[0].path.first(), Some(&(2, 5)));
@@ -585,8 +600,22 @@ mod tests {
         ];
         let open_ground = vec![1.0; 100 * 10];
 
-        let flat = build_roads(&settlements, &open_ground, &vec![f32::MAX; 100 * 10], 100, 10, FLAT);
-        let ring = build_roads(&settlements, &open_ground, &vec![f32::MAX; 100 * 10], 100, 10, Grid::ring(1.0, 100));
+        let flat = build_roads(
+            &settlements,
+            &open_ground,
+            &vec![f32::MAX; 100 * 10],
+            100,
+            10,
+            FLAT,
+        );
+        let ring = build_roads(
+            &settlements,
+            &open_ground,
+            &vec![f32::MAX; 100 * 10],
+            100,
+            10,
+            Grid::sphere(1.0, 100, 10),
+        );
 
         assert!((flat[0].cost - 95.0).abs() < 0.01);
         assert!((ring[0].cost - 5.0).abs() < 0.01);
@@ -604,7 +633,15 @@ mod tests {
         ];
         let cells = grid_with_wall(100, 10, 0, None);
 
-        assert!(build_roads(&settlements, &cells, &vec![f32::MAX; 100 * 10], 100, 10, Grid::ring(1.0, 100)).is_empty());
+        assert!(build_roads(
+            &settlements,
+            &cells,
+            &vec![f32::MAX; 100 * 10],
+            100,
+            10,
+            Grid::sphere(1.0, 100, 10)
+        )
+        .is_empty());
     }
 
     #[test]
@@ -629,7 +666,9 @@ mod tests {
         ];
         let cells = grid_with_wall(20, 10, 10, None);
 
-        assert!(build_roads(&settlements, &cells, &vec![f32::MAX; 20 * 10], 20, 10, FLAT).is_empty());
+        assert!(
+            build_roads(&settlements, &cells, &vec![f32::MAX; 20 * 10], 20, 10, FLAT).is_empty()
+        );
     }
 
     #[test]
@@ -643,7 +682,14 @@ mod tests {
                 )
             })
             .collect();
-        let roads = build_roads(&settlements, &vec![1.0; 40 * 20], &vec![f32::MAX; 40 * 20], 40, 20, FLAT);
+        let roads = build_roads(
+            &settlements,
+            &vec![1.0; 40 * 20],
+            &vec![f32::MAX; 40 * 20],
+            40,
+            20,
+            FLAT,
+        );
 
         let mut reached = BTreeSet::from([1u32]);
         loop {
@@ -688,7 +734,8 @@ mod tests {
 
     #[test]
     fn on_a_ring_highway_waypoints_are_found_across_the_seam() {
-        // Capitals 40 apart across the seam of a 200-wide ring, a town between them.
+        // Capitals 40 apart across the seam of a 200-wide world, on its
+        // equator, a town between them.
         let settlements = [
             settlement(1, (180, 10), SizeClass::Metropolis),
             settlement(2, (20, 10), SizeClass::Metropolis),
@@ -697,7 +744,7 @@ mod tests {
         ];
 
         assert_eq!(
-            highway_waypoints(0, 1, &settlements, Grid::ring(1.0, 200)),
+            highway_waypoints(0, 1, &settlements, Grid::sphere(1.0, 200, 20)),
             vec![2]
         );
     }
@@ -724,15 +771,29 @@ mod tests {
             .map(|cell: usize| (cell / width).abs_diff(5) as f32)
             .collect();
 
-        let roads = build_roads(&settlements, &vec![1.0; width * height], &river_distance, width, height, FLAT);
+        let roads = build_roads(
+            &settlements,
+            &vec![1.0; width * height],
+            &river_distance,
+            width,
+            height,
+            FLAT,
+        );
 
         assert!(!roads.is_empty());
-        let crossings: std::collections::BTreeSet<(usize, usize)> =
-            roads.iter().flat_map(|road| road.crossings.iter().copied()).collect();
+        let crossings: std::collections::BTreeSet<(usize, usize)> = roads
+            .iter()
+            .flat_map(|road| road.crossings.iter().copied())
+            .collect();
         // Both villages reach the town over the river, by one crossing: the
         // second road to cross followed the first.
-        assert!(roads.iter().filter(|road| !road.crossings.is_empty()).count() >= 1);
+        assert!(
+            roads
+                .iter()
+                .filter(|road| !road.crossings.is_empty())
+                .count()
+                >= 1
+        );
         assert_eq!(crossings.len(), 1, "{crossings:?}");
     }
-
 }

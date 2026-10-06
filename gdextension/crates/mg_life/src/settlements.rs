@@ -125,7 +125,8 @@ pub fn place_settlements(
 /// How many settlements a province gets: three, more if it is very habitable,
 /// one if it is tiny.
 fn settlement_count(province: &Province, grid: Grid) -> usize {
-    let area_wu2 = province.area_cells as f64 / (grid.cells_per_world_unit * grid.cells_per_world_unit);
+    let area_wu2 =
+        province.area_cells as f64 / (grid.cells_per_world_unit * grid.cells_per_world_unit);
     if area_wu2 < TINY_PROVINCE_AREA_WU2 {
         1
     } else if province.habitability > 0.7 {
@@ -153,10 +154,9 @@ fn best_sites(
             break;
         }
         let (x, y) = (cell % width, cell / width);
-        let too_close = sites.iter().any(|&(sx, sy)| {
-            let (dx, dy) = (grid.dx(sx, x), y as f64 - sy as f64);
-            dx * dx + dy * dy < min_spacing_cells * min_spacing_cells
-        });
+        let too_close = sites
+            .iter()
+            .any(|&site| grid.distance(site, (x, y)) < min_spacing_cells);
         if !too_close {
             sites.push((x, y));
         }
@@ -256,15 +256,30 @@ mod tests {
 
         let mut on_major_river = province(0.67, 500);
         on_major_river.is_river_junction = true;
-        assert_eq!(main_settlement_size(&on_major_river, false), SizeClass::City);
+        assert_eq!(
+            main_settlement_size(&on_major_river, false),
+            SizeClass::City
+        );
     }
 
     #[test]
     fn other_settlements_are_smaller_than_the_main_one() {
-        assert_eq!(secondary_settlement_size(SizeClass::Metropolis), SizeClass::Village);
-        assert_eq!(secondary_settlement_size(SizeClass::Town), SizeClass::Village);
-        assert_eq!(secondary_settlement_size(SizeClass::Village), SizeClass::Outpost);
-        assert_eq!(secondary_settlement_size(SizeClass::Outpost), SizeClass::Outpost);
+        assert_eq!(
+            secondary_settlement_size(SizeClass::Metropolis),
+            SizeClass::Village
+        );
+        assert_eq!(
+            secondary_settlement_size(SizeClass::Town),
+            SizeClass::Village
+        );
+        assert_eq!(
+            secondary_settlement_size(SizeClass::Village),
+            SizeClass::Outpost
+        );
+        assert_eq!(
+            secondary_settlement_size(SizeClass::Outpost),
+            SizeClass::Outpost
+        );
     }
 
     #[test]
