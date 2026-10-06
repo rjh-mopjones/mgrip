@@ -20,9 +20,11 @@ use crate::rivers::{D8_DISTANCES, D8_OFFSETS};
 /// A strait is cut this far to either side of the route, in world units.
 const STRAIT_HALF_WIDTH_WU: f64 = 2.5;
 /// How far below sea level the middle of a strait is cut; it shallows to
-/// the shore. Deeper than the shallows a hot sea dries out from (0.08), so
-/// a strait on the day-side margin stays water.
-pub const STRAIT_DEPTH: f64 = 0.1;
+/// the shore. Well below the depths a hot sea dries out from (0.08, and
+/// 0.16 in a hot basin), so the channel stays water a few cells wide even
+/// after the fine land is interpolated from the macro cells, which rounds
+/// a narrow trench shallower.
+pub const STRAIT_DEPTH: f64 = 0.25;
 // What it costs the route to enter a cell, per cell of distance.
 /// Open, liquid sea.
 const SEA_COST: f64 = 1.0;
