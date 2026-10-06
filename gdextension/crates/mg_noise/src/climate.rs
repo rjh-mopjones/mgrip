@@ -4,11 +4,12 @@
 //! the dark side towards the light, and falls as rain: a little everywhere,
 //! most where the air is forced up a slope. Beyond a range the air is dry.
 //! So where it rains is decided by the sea, the wind and the mountains, not
-//! by a noise layer.
+//! by a noise layer. The land is the cubed sphere (spec 015).
 
-use crate::biome_map::{SEA_LEVEL, WORLD_WIDTH};
-use crate::erosion_sim::box_blurred;
-use crate::rivers::D8_OFFSETS;
+use mg_core::CubeGrid;
+
+use crate::biome_map::SEA_LEVEL;
+use crate::erosion_sim::reach_cells;
 use crate::wind::Wind;
 
 /// Moisture a cell of liquid sea gives the air each step, at a warm sea.
@@ -36,7 +37,7 @@ const HOT_AIR_RAIN_SHARE: f64 = 0.25;
 /// moisture up with it each step, into the high return flow this model does
 /// not follow. Full by `HOT_AIR_C`. Without it the wind, which converges on
 /// the sub-stellar point from every side, piles all the moisture it still
-/// carries onto the day pole and rains it out there (spec 014).
+/// carries onto it and rains it out there (spec 014).
 const UPDRAFT_SHARE: f64 = 0.03;
 /// Steps of carrying; moisture travels up to a cell a step. Enough to cross
 /// the widest continent and settle.
@@ -74,54 +75,32 @@ pub struct Land<'a> {
     pub heightmap: &'a [f64],
     pub temperature: &'a [f64],
     pub is_liquid_sea: &'a [bool],
-    pub width: usize,
-    pub height: usize,
+    pub grid: &'a CubeGrid,
 }
 
 /// Rain falling on each cell per step, in units of a warm sea cell's
 /// evaporation, from carrying moisture downwind until it settles.
 pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
-    let (width, height) = (land.width, land.height);
-    let total = width * height;
-    let cells_per_wu = width as f64 / WORLD_WIDTH;
-    let relief = box_blurred(
+    let grid = land.grid;
+    let total = grid.cell_count();
+    let relief = grid.blur(
         &land
             .heightmap
             .iter()
             .map(|&h| h.max(SEA_LEVEL))
             .collect::<Vec<_>>(),
-        width,
-        height,
-        (RELIEF_SCALE_WU * cells_per_wu / 2.0).round().max(1.0) as i32,
+        reach_cells(grid, RELIEF_SCALE_WU),
     );
 
     // Where each cell's air goes: shared between the two neighbours either
     // side of the wind's true direction, as sand is, or it would travel in
     // straight spokes.
-    let grid = mg_core::Sphere::MARGIN.grid(width, height);
-    let neighbour = |cell: usize, direction: usize| {
-        let (dx, dy) = D8_OFFSETS[direction % 8];
-        let (x, y) = grid.cell(cell);
-        grid.index(grid.neighbour(x, y, dx, dy))
-    };
-    // Moisture is an amount over a cell. Carried onto a cell of a different
-    // size it is thicker or thinner by the ratio of the two areas, so a
-    // plume does not pile up as the cells narrow towards a pole.
-    let shares: Vec<f64> = (0..height).map(|y| grid.area_share(y)).collect();
-    let into = |from: usize, to: usize| shares[from / width] / shares[to / width];
     let downwind: Vec<[(usize, f64); 2]> = (0..total)
-        .map(|cell| {
-            let turn = wind.x[cell]
-                .atan2(-wind.y[cell])
-                .rem_euclid(std::f64::consts::TAU)
-                / (std::f64::consts::TAU / 8.0);
-            let (before, share) = (turn.floor() as usize, turn - turn.floor());
-            [
-                (neighbour(cell, before), 1.0 - share),
-                (neighbour(cell, before + 1), share),
-            ]
-        })
+        .map(|cell| grid.downstream(cell, wind.vector[cell]))
         .collect();
+    // Moisture is an amount over a cell. Carried onto a cell of a different
+    // size it is thicker or thinner by the ratio of the two areas.
+    let into = |from: usize, to: usize| grid.area_share(from) / grid.area_share(to);
 
     let source: Vec<f64> = (0..total)
         .map(|cell| {
@@ -155,6 +134,9 @@ pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
             ((land.temperature[cell] - WARM_AIR_C) / (HOT_AIR_C - WARM_AIR_C)).clamp(0.0, 1.0)
         })
         .collect();
+    let neighbours: Vec<Vec<usize>> = (0..total)
+        .map(|cell| grid.neighbours(cell).into_iter().flatten().collect())
+        .collect();
 
     let mut moisture = vec![0.0f64; total];
     let mut rain = vec![0.0f64; total];
@@ -172,16 +154,15 @@ pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
             for (to, share) in downwind[cell] {
                 next[to] += carried * (1.0 - MIXING) * share * into(cell, to);
             }
-            for direction in 0..8 {
-                let to = neighbour(cell, direction);
-                next[to] += carried * MIXING / 8.0 * into(cell, to);
+            let beside = &neighbours[cell];
+            for &to in beside {
+                next[to] += carried * MIXING / beside.len() as f64 * into(cell, to);
             }
         }
         moisture = next;
     }
     // Spread the plumes, and soften the grid of eight directions out of them.
-    let reach = (RAIN_SMOOTHING_WU * cells_per_wu / 2.0).round().max(1.0) as i32;
-    box_blurred(&rain, width, height, reach)
+    grid.blur(&rain, reach_cells(grid, RAIN_SMOOTHING_WU))
 }
 
 /// Humidity, 0 to 1, from rainfall at a place with the given light level,
@@ -199,101 +180,110 @@ mod tests {
     use super::*;
     use crate::wind::surface_wind;
 
-    const WIDE: usize = 32;
-    const HIGH: usize = 24;
+    const N: usize = 16;
 
-    /// Light rising from north to south; liquid sea in rows 6 to 8; a range
-    /// across the land at row 15.
-    fn world(range_height: f64) -> (Vec<f64>, Vec<f64>, Vec<bool>, Vec<f64>) {
-        let light: Vec<f64> = (0..WIDE * HIGH)
-            .map(|cell| (cell / WIDE) as f64 / (HIGH - 1) as f64)
-            .collect();
-        let mut heights = vec![0.1; WIDE * HIGH];
-        let mut sea = vec![false; WIDE * HIGH];
-        for cell in 0..WIDE * HIGH {
-            let row = cell / WIDE;
-            if (6..=8).contains(&row) {
+    /// Light rising from the north pole to the south; a liquid sea in a
+    /// band north of the equator; a range ringing the world south of it.
+    fn world(grid: &CubeGrid, range_height: f64) -> (Vec<f64>, Vec<f64>, Vec<bool>, Vec<f64>) {
+        let total = grid.cell_count();
+        let z = |cell: usize| grid.point(cell)[2];
+        let light: Vec<f64> = (0..total).map(|cell| (1.0 - z(cell)) / 2.0).collect();
+        let mut heights = vec![0.1; total];
+        let mut sea = vec![false; total];
+        for cell in 0..total {
+            if (0.3..0.5).contains(&z(cell)) {
                 heights[cell] = -0.2;
                 sea[cell] = true;
             }
-            if row == 15 {
+            if (-0.35..-0.25).contains(&z(cell)) {
                 heights[cell] = range_height;
             }
         }
-        let temperature = vec![15.0; WIDE * HIGH];
-        (light, heights, sea, temperature)
+        (light, heights, sea, vec![15.0; total])
     }
 
-    #[test]
-    fn over_hot_ground_the_air_rises_and_little_reaches_the_pole() {
-        let (light, heights, sea, mut temperature) = world(0.1);
-        let cool = rainfall(
-            &surface_wind(&light, &heights, WIDE, HIGH),
-            &Land {
-                heightmap: &heights,
-                temperature: &temperature,
-                is_liquid_sea: &sea,
-                width: WIDE,
-                height: HIGH,
-            },
-        );
-        // The land south of the sea is hot.
-        for cell in 9 * WIDE..WIDE * HIGH {
-            temperature[cell] = HOT_AIR_C;
-        }
-        let hot = rainfall(
-            &surface_wind(&light, &heights, WIDE, HIGH),
-            &Land {
-                heightmap: &heights,
-                temperature: &temperature,
-                is_liquid_sea: &sea,
-                width: WIDE,
-                height: HIGH,
-            },
-        );
-        let pole = (HIGH - 1) * WIDE + 16;
-        assert!(
-            hot[pole] < cool[pole] * 0.5,
-            "{} vs {}",
-            hot[pole],
-            cool[pole]
-        );
+    /// The cell of face 0's middle column nearest a height `z` on the axis.
+    fn at_z(grid: &CubeGrid, target: f64) -> usize {
+        (0..N)
+            .map(|v| grid.index(0, N / 2, v))
+            .min_by(|&a, &b| {
+                (grid.point(a)[2] - target)
+                    .abs()
+                    .total_cmp(&(grid.point(b)[2] - target).abs())
+            })
+            .unwrap()
     }
 
-    fn rain_over(range_height: f64) -> Vec<f64> {
-        let (light, heights, sea, temperature) = world(range_height);
-        let wind = surface_wind(&light, &heights, WIDE, HIGH);
+    fn rain_over(grid: &CubeGrid, range_height: f64) -> Vec<f64> {
+        let (light, heights, sea, temperature) = world(grid, range_height);
+        let wind = surface_wind(&light, &heights, grid);
         rainfall(
             &wind,
             &Land {
                 heightmap: &heights,
                 temperature: &temperature,
                 is_liquid_sea: &sea,
-                width: WIDE,
-                height: HIGH,
+                grid,
             },
         )
     }
 
     #[test]
     fn rain_falls_downwind_of_the_sea_and_fades_inland() {
-        let rain = rain_over(0.1);
-        let at = |row: usize| rain[row * WIDE + 16];
-        // Fades over the first rows inland. Further on, the sphere tells:
-        // a wind blowing south everywhere converges on the south pole, and
-        // what it still carries piles up there rather than fading.
-        assert!(at(9) > at(10));
-        assert!(at(10) > at(12));
+        let grid = CubeGrid::margin(N);
+        let rain = rain_over(&grid, 0.1);
+        let at = |z: f64| rain[at_z(&grid, z)];
+        // Just south of the sea, then fading over the first cells inland.
+        assert!(at(0.2) > at(0.05), "{} vs {}", at(0.2), at(0.05));
         // Nothing upwind of the sea.
-        assert!(at(2) < at(9) * 0.1);
+        assert!(at(0.7) < at(0.2) * 0.1, "{} vs {}", at(0.7), at(0.2));
     }
 
     #[test]
     fn a_range_takes_the_rain_and_leaves_a_shadow() {
-        let (flat, ranged) = (rain_over(0.1), rain_over(1.5));
-        let windward = 14 * WIDE + 16;
-        let lee = 17 * WIDE + 16;
+        let grid = CubeGrid::margin(N);
+        let (flat, ranged) = (rain_over(&grid, 0.1), rain_over(&grid, 1.5));
+        let windward = at_z(&grid, -0.2);
+        let lee = at_z(&grid, -0.45);
         assert!(ranged[windward] > flat[windward]);
-        assert!(ranged[lee] < flat[lee] * 0.7);
+        assert!(
+            ranged[lee] < flat[lee] * 0.7,
+            "{} vs {}",
+            ranged[lee],
+            flat[lee]
+        );
+    }
+
+    #[test]
+    fn over_hot_ground_the_air_rises_and_little_reaches_the_pole() {
+        let grid = CubeGrid::margin(N);
+        let (light, heights, sea, mut temperature) = world(&grid, 0.1);
+        let wind = surface_wind(&light, &heights, &grid);
+        let land = |temperature: &[f64]| {
+            rainfall(
+                &wind,
+                &Land {
+                    heightmap: &heights,
+                    temperature,
+                    is_liquid_sea: &sea,
+                    grid: &grid,
+                },
+            )
+        };
+        let cool = land(&temperature);
+        // The land south of the sea is hot.
+        for cell in 0..grid.cell_count() {
+            if grid.point(cell)[2] < 0.3 {
+                temperature[cell] = HOT_AIR_C;
+            }
+        }
+        let hot = land(&temperature);
+        let pole = grid.index(5, N / 2, N / 2);
+        assert!(
+            hot[pole] < cool[pole] * 0.5,
+            "{} vs {}",
+            hot[pole],
+            cool[pole]
+        );
     }
 }

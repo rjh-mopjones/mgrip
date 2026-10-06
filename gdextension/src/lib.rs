@@ -630,26 +630,14 @@ impl MgTerrainGen {
         true
     }
 
-    /// Generate a 512×512 macro-level map (full pipeline: erosion + rivers).
+    /// Generate the macro map (the whole world, one cell per chunk, with the
+    /// grown land and the river network). Takes about half a minute.
     ///
     /// `seed`: world seed (u32)
     /// Returns an `MgBiomeMap` resource.
     #[func]
     pub fn generate_macro(&self, seed: i64) -> Gd<MgBiomeMap> {
-        let map = BiomeMap::generate(
-            seed as u32,
-            0.0,
-            0.0, // origin
-            1024.0,
-            512.0, // world extent
-            512,
-            512,  // pixel resolution
-            0,    // detail_level = Macro
-            true, // run_erosion
-            true, // run_rivers
-            1.0,  // freq_scale — world scale
-        );
-        biome_map_from_arc(Arc::new(map))
+        biome_map_from_arc(Arc::new(generate_macro_map(seed as u32)))
     }
 
     /// Generate a 512×512 meso tile at a given world chunk coordinate.
@@ -669,8 +657,6 @@ impl MgTerrainGen {
             512,
             512,
             1, // detail_level = Meso
-            false,
-            false,
             1.0, // freq_scale — world scale
         );
         biome_map_from_arc(Arc::new(map))
@@ -702,8 +688,6 @@ impl MgTerrainGen {
             resolution.max(2) as usize,
             resolution.max(2) as usize,
             detail_level.max(0) as u32,
-            false,
-            false,
             freq_scale.max(0.1),
         );
         apply_macro_semantics(&mut map, seed as u32, world_x, world_y);
@@ -735,8 +719,6 @@ impl MgTerrainGen {
             res_w.max(2) as usize,
             res_h.max(2) as usize,
             detail_level.max(0) as u32,
-            false,
-            false,
             freq_scale.max(0.1),
         );
         biome_map_from_arc(Arc::new(map))
@@ -952,8 +934,6 @@ impl MgChunkBuildJob {
                 resolution.max(2) as usize,
                 resolution.max(2) as usize,
                 detail_level.max(0) as u32,
-                false,
-                false,
                 freq_scale.max(0.1),
             );
             apply_macro_semantics(&mut map, seed as u32, world_x, world_y);

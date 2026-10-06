@@ -585,8 +585,6 @@ mod tests {
             MICRO_TILE_RESOLUTION,
             MICRO_TILE_RESOLUTION,
             MICRO_DETAIL_LEVEL,
-            false,
-            false,
             MICRO_FREQUENCY_SCALE,
         )
         .build_runtime_chunk_presentation_bundle()
@@ -663,7 +661,7 @@ mod tests {
 
         for &(wx, wy) in REFERENCE_COORDS {
             let macro_map =
-                BiomeMap::generate(TEST_SEED, wx, wy, 1.0, 1.0, 65, 65, 0, false, false, 1.0);
+                BiomeMap::generate(TEST_SEED, wx, wy, 1.0, 1.0, 65, 65, 0, 1.0);
             let micro_map = BiomeMap::generate(
                 TEST_SEED,
                 wx,
@@ -673,8 +671,6 @@ mod tests {
                 65,
                 65,
                 0,
-                false,
-                false,
                 MICRO_FREQUENCY_SCALE,
             );
 
@@ -717,8 +713,6 @@ mod tests {
                 MICRO_TILE_RESOLUTION,
                 MICRO_TILE_RESOLUTION,
                 2,
-                false,
-                false,
                 MICRO_FREQUENCY_SCALE,
             )
             .build_runtime_chunk_presentation_bundle()
@@ -733,8 +727,6 @@ mod tests {
                 65,
                 65,
                 0,
-                false,
-                false,
                 MICRO_FREQUENCY_SCALE,
             )
             .build_runtime_chunk_presentation_bundle()

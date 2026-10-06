@@ -9,12 +9,9 @@ use std::sync::Arc;
 
 use crate::biome_splines::BiomeSplines;
 use crate::derived;
-use crate::landscape::{
-    flatness, flatness_of_slope, grow_landscape, refine_landscape, refined_field, FineHeights,
-    LandscapeInputs, REFINED_CELLS_PER_MACRO_CELL,
-};
+use crate::landscape::{flatness, flatness_of_slope, FineHeights};
 use crate::rivers::{
-    carve_depths, rasterize_courses, rasterize_to_tile, sea_bodies, RiverCourse, RiverNetwork,
+    carve_depths, rasterize_courses, rasterize_to_tile, RiverCourse, RiverNetwork,
     LOD_THRESHOLD_MACRO,
 };
 
@@ -28,9 +25,8 @@ use crate::visualization::NoiseLayer;
 
 pub const SEA_LEVEL: f64 = -0.01;
 
-/// A cell with at least this much sand on it (see `BiomeMap::sand`) is a
-/// sand sea.
-const SAND_SEA_FROM: f64 = 0.45;
+pub use crate::macro_map::{generate_macro_map, SAND_SEA_FROM};
+use crate::macro_map::{SEED_CONTINENTALNESS, SEED_HUMIDITY, SEED_LIGHT_LEVEL, SEED_PEAKS_VALLEYS, SEED_ROCK_HARDNESS, SEED_TECTONIC};
 
 /// Whether a tile is ice lying on water or land.
 pub fn tile_is_ice(tile: TileType) -> bool {
@@ -55,34 +51,10 @@ pub fn tile_has_fluid_surface(tile: TileType) -> bool {
 /// World size in world units (one world unit is one chunk).
 pub const WORLD_WIDTH: f64 = 1024.0;
 pub const WORLD_HEIGHT: f64 = 512.0;
-/// The macro map has one cell per chunk. The D8 river flow solve needs this
-/// resolution: at 2 cells per world unit segments halved and rivers fragmented.
+/// The flat macro map has one cell per chunk. It is read off the cube the
+/// world is generated on (`macro_map.rs`).
 pub const MACRO_MAP_WIDTH: usize = 1024;
 pub const MACRO_MAP_HEIGHT: usize = 512;
-/// Size of the low-resolution terrain sample used to tell whether saved macro
-/// data still matches this generator.
-const MACRO_PROBE_WIDTH: usize = 64;
-const MACRO_PROBE_HEIGHT: usize = 32;
-
-/// The macro world map for `seed`: the whole world at one cell per chunk, with
-/// erosion and the global river network. This is the single definition of the
-/// map that layers artifacts, macro packs and the runtime all use. Takes
-/// several seconds.
-pub fn generate_macro_map(seed: u32) -> BiomeMap {
-    BiomeMap::generate(
-        seed,
-        0.0,
-        0.0,
-        WORLD_WIDTH,
-        WORLD_HEIGHT,
-        MACRO_MAP_WIDTH,
-        MACRO_MAP_HEIGHT,
-        0,
-        true,
-        true,
-        1.0,
-    )
-}
 
 /// The sea's freezing and drying lines wander by up to this much light level
 /// either way: about ten world units on the ground.
@@ -145,8 +117,6 @@ pub fn generate_map_tile(
         samples_x,
         samples_y,
         MAP_TILE_DETAIL_LEVEL,
-        false,
-        false,
         1.0,
     );
     tile.anchor_to_macro(
@@ -162,29 +132,6 @@ pub fn generate_map_tile(
         false,
     );
     tile
-}
-
-/// A coarse heightmap of the whole world, cheap to generate. Saved macro data
-/// stores it; if this build produces a different probe for the same seed, the
-/// generator has changed and the saved data is stale.
-pub fn generate_macro_probe(seed: u32) -> Vec<f32> {
-    BiomeMap::generate(
-        seed,
-        0.0,
-        0.0,
-        WORLD_WIDTH,
-        WORLD_HEIGHT,
-        MACRO_PROBE_WIDTH,
-        MACRO_PROBE_HEIGHT,
-        0,
-        true,
-        false,
-        1.0,
-    )
-    .heightmap
-    .iter()
-    .map(|&height| height as f32)
-    .collect()
 }
 
 /// Ocean mask derived from the macro biome artifact — authoritative ocean/land
@@ -320,13 +267,8 @@ pub fn sample_field_bilinear(
     top * (1.0 - ty) + bot * ty
 }
 
-/// Seed offsets per base layer (additive from world_seed).
-const SEED_CONTINENTALNESS: u32 = 0;
-const SEED_TECTONIC: u32 = 1;
-const SEED_HUMIDITY: u32 = 2;
-const SEED_ROCK_HARDNESS: u32 = 3;
-const SEED_LIGHT_LEVEL: u32 = 4;
-const SEED_PEAKS_VALLEYS: u32 = 7;
+/// Seed offset of the micro detail noise (additive from world_seed); the
+/// base layers' offsets are in `macro_map.rs`.
 const SEED_MICRO_DETAIL: u32 = 50;
 
 #[derive(Serialize, Deserialize)]
@@ -369,7 +311,7 @@ pub struct BiomeMap {
     #[serde(skip)]
     pub river_network: Option<Arc<RiverNetwork>>,
 
-    /// The macro map only: the land's height on a finer grid, which tiles
+    /// The macro map only: the land's height on a finer cube, which tiles
     /// and chunks anchored to this map take their ground from.
     pub fine_heights: Option<FineHeights>,
 
@@ -415,15 +357,17 @@ impl BiomeMap {
         }
     }
 
-    /// Generate a complete BiomeMap for a region.
+    /// Generate a BiomeMap for a region from the noise layers alone: a tile
+    /// of the world with no solve over the world as a whole (no grown land,
+    /// no rivers). Tiles that must agree with the world are anchored to the
+    /// macro map afterwards (`anchor_to_macro`); the macro map itself is
+    /// generated on the cube by `macro_map.rs`.
     ///
     /// - `seed`: world seed
     /// - `origin_x/y`: world-space top-left corner of this tile (true world coords)
     /// - `world_size_x/y`: world-space extent of this tile
     /// - `tile_w/h`: pixel resolution
     /// - `detail_level`: 0=Macro, 1=Meso (unused for micro — freq_scale handles detail)
-    /// - `run_erosion`: run 120-iteration erosion sim (macro only)
-    /// - `run_rivers`: compute global river network (macro only)
     /// - `freq_scale`: multiply noise coordinates by this factor before sampling fBm layers.
     ///   Use 1.0 for macro/meso. For a playable micro level (1×1 world unit, 512×512 blocks)
     ///   use ~100.0 so the noise has full continent-scale variation within the tile.
@@ -437,8 +381,6 @@ impl BiomeMap {
         tile_w: usize,
         tile_h: usize,
         detail_level: u32,
-        run_erosion: bool,
-        run_rivers: bool,
         freq_scale: f64,
     ) -> Self {
         let world_width = 1024.0;
@@ -536,210 +478,6 @@ impl BiomeMap {
             );
         }
 
-        // ── Phase 2.5: The rim sea (macro only) ──────────────────────────────
-        // Join the terminus seas into one that can be sailed right round
-        // the world, before the land is grown, so the straits get coasts
-        // like any other.
-        if run_erosion {
-            let splines = BiomeSplines::new(SEA_LEVEL);
-            let stays_liquid: Vec<bool> = (0..tile_w * tile_h)
-                .map(|i| {
-                    let (wx, wy) = (px_to_wx(i % tile_w), py_to_wy(i / tile_w));
-                    // Judged as a strait would be, whatever is there now, in
-                    // both the driest and the most humid air the climate
-                    // pass may leave over it: humid air reads warmer, and a
-                    // sea must neither freeze in the one nor dry in the other.
-                    let drift = sea_margin_drift(wx, wy);
-                    [0.0, 1.0].into_iter().all(|humidity| {
-                        let at_sea = derived::derive_temperature(
-                            map.light_level[i],
-                            SEA_LEVEL,
-                            humidity,
-                            SEA_LEVEL,
-                        );
-                        splines.sea_is_liquid(
-                            SEA_LEVEL - crate::rim_sea::STRAIT_DEPTH,
-                            at_sea,
-                            map.tectonic[i],
-                            map.light_level[i],
-                            drift,
-                        )
-                    })
-                })
-                .collect();
-            crate::rim_sea::open_rim_sea(
-                &mut map.continentalness,
-                &stays_liquid,
-                tile_w,
-                tile_h,
-                SEA_LEVEL,
-            );
-        }
-
-        // ── Phase 3: Erosion (macro only) ─────────────────────────────────────
-        // Erosion and the rivers share one drainage: water runs to the sea
-        // (not to ponds), fed by run-off that is fullest in the terminus.
-        let mut drainage = None;
-        let mut fine_land = None;
-        // Level of standing water over each macro cell, where there is a lake.
-        let mut macro_water_level: Vec<f32> = Vec::new();
-        let drains = |ground: &[f64], map: &BiomeMap| {
-            let is_sea = sea_bodies(&map.continentalness, tile_w, tile_h, SEA_LEVEL);
-            let rainfall: Vec<f64> = (0..tile_w * tile_h)
-                .map(|i| crate::drainage::rainfall(map.light_level[i], map.humidity[i]))
-                .collect();
-            (ground.to_vec(), is_sea, rainfall)
-        };
-        if run_erosion {
-            // The land is grown from uplift and erosion; the noise heightmap
-            // above only stands in for tiles that are anchored to the macro
-            // map later.
-            let inputs = LandscapeInputs {
-                continentalness: &map.continentalness,
-                peaks_valleys: &map.peaks_valleys,
-                tectonic: &map.tectonic,
-                rock_hardness: &map.rock_hardness,
-                light_level: &map.light_level,
-                humidity: &map.humidity,
-                width: tile_w,
-                height: tile_h,
-            };
-            let landscape = grow_landscape(&inputs);
-            map.heightmap = landscape.heightmap;
-
-            // ── Climate from the land ─────────────────────────────────────
-            // With the mountains grown, the air can be followed over them:
-            // temperature falls with height, and moisture off the liquid sea
-            // is carried by the wind and rained out on windward slopes. The
-            // humidity noise is replaced by that rain, and everything after
-            // (the rivers' run-off, aridity, biomes, LifeGen) reads it.
-            for i in 0..tile_w * tile_h {
-                map.temperature[i] = derived::derive_temperature(
-                    map.light_level[i],
-                    map.heightmap[i],
-                    map.humidity[i],
-                    map.continentalness[i],
-                );
-            }
-            let splines = BiomeSplines::new(SEA_LEVEL);
-            let is_liquid_sea: Vec<bool> = (0..tile_w * tile_h)
-                .map(|i| {
-                    map.heightmap[i] < SEA_LEVEL
-                        && splines.sea_is_liquid(
-                            map.heightmap[i],
-                            map.temperature[i],
-                            map.tectonic[i],
-                            map.light_level[i],
-                            sea_margin_drift(px_to_wx(i % tile_w), py_to_wy(i / tile_w)),
-                        )
-                })
-                .collect();
-            let wind = crate::wind::surface_wind(&map.light_level, &map.heightmap, tile_w, tile_h);
-            let rain = crate::climate::rainfall(
-                &wind,
-                &crate::climate::Land {
-                    heightmap: &map.heightmap,
-                    temperature: &map.temperature,
-                    is_liquid_sea: &is_liquid_sea,
-                    width: tile_w,
-                    height: tile_h,
-                },
-            );
-            map.humidity = (0..tile_w * tile_h)
-                .map(|i| crate::climate::humidity_from_rain(rain[i], map.light_level[i]))
-                .collect();
-
-            // Rivers are read from a finer copy of the land, so they follow
-            // valleys narrower than a macro cell. Its run-off is the rain.
-            if run_rivers {
-                let inputs = LandscapeInputs {
-                    continentalness: &map.continentalness,
-                    peaks_valleys: &map.peaks_valleys,
-                    tectonic: &map.tectonic,
-                    rock_hardness: &map.rock_hardness,
-                    light_level: &map.light_level,
-                    humidity: &map.humidity,
-                    width: tile_w,
-                    height: tile_h,
-                };
-                fine_land = Some(refine_landscape(&inputs, &map.heightmap));
-            }
-            macro_water_level = landscape.water_level;
-            map.drainage_area = landscape
-                .drainage
-                .flow
-                .iter()
-                .map(|&flow| flow.round() as u32)
-                .collect();
-            map.sediment = landscape.sediment;
-            drainage = Some(landscape.drainage);
-
-            // Recompute temperature with the grown land
-            for i in 0..tile_w * tile_h {
-                map.temperature[i] = derived::derive_temperature(
-                    map.light_level[i],
-                    map.heightmap[i],
-                    map.humidity[i],
-                    map.continentalness[i],
-                );
-            }
-        }
-
-        // ── Phase 4: River network (macro only) ───────────────────────────────
-        if run_rivers {
-            let network = if let Some(fine) = fine_land {
-                let scale = REFINED_CELLS_PER_MACRO_CELL;
-                let temperature = refined_field(&map.temperature, tile_w, tile_h, scale);
-                // On the fine grid the ground itself says where the sea is.
-                let network = RiverNetwork::generate(
-                    &fine.drainage,
-                    &fine.tectonic,
-                    &fine.ground,
-                    &fine.light_level,
-                    &fine.humidity,
-                    &temperature,
-                    fine.heights.width,
-                    fine.heights.height,
-                    SEA_LEVEL,
-                );
-                map.fine_heights = Some(fine.heights);
-                network
-            } else {
-                // Without erosion there is no drainage yet: solve it on the
-                // ground as it stands.
-                let drainage = drainage.unwrap_or_else(|| {
-                    let (ground, is_sea, rainfall) = drains(&map.heightmap, &map);
-                    let evaporation: Vec<f64> = map
-                        .light_level
-                        .iter()
-                        .map(|&light| crate::drainage::lake_evaporation(light))
-                        .collect();
-                    crate::drainage::solve_drainage(
-                        &ground,
-                        &is_sea,
-                        &rainfall,
-                        &evaporation,
-                        tile_w,
-                        tile_h,
-                        0,
-                    )
-                });
-                RiverNetwork::generate(
-                    &drainage,
-                    &map.tectonic,
-                    &map.continentalness,
-                    &map.light_level,
-                    &map.humidity,
-                    &map.temperature,
-                    tile_w,
-                    tile_h,
-                    SEA_LEVEL,
-                )
-            };
-            map.rivers = network.to_flow_grid(tile_w, tile_h);
-            map.river_network = Some(Arc::new(network));
-        }
-
         // ── Phase 5: Remaining derived layers ─────────────────────────────────
         // The erosion layer holds how flat the ground is (0 steep, 1 level).
         let flat = flatness(&map.heightmap, tile_w, tile_h, world_size_x / tile_w as f64);
@@ -794,56 +532,11 @@ impl BiomeMap {
                 map.light_level[i],
                 drift,
             );
-            // A hollow holding water is a lake: open water where the sea
-            // would be liquid, ice where it would be frozen, a salt flat
-            // where it would have dried out.
-            let lake_level = macro_water_level
-                .get(i)
-                .copied()
-                .unwrap_or(f32::NEG_INFINITY) as f64;
-            let biome = if map.heightmap[i] >= SEA_LEVEL && map.heightmap[i] < lake_level {
-                splines.lake_biome(
-                    lake_level - map.heightmap[i],
-                    map.temperature[i],
-                    map.light_level[i],
-                    drift,
-                )
-            } else {
-                biome
-            };
             map.biomes[i] = biome;
             map.vegetation_density[i] =
                 derived::derive_vegetation_density(biome, map.water_table[i]);
             map.soil_type[i] =
                 derived::derive_soil_type(biome, map.erosion[i], map.rock_hardness[i]);
-        }
-
-        // The wind gathers sand where it slackens; where the sand lies thick
-        // is a sand sea, whatever lay there before (macro only).
-        if run_erosion {
-            let is_water: Vec<bool> = map
-                .biomes
-                .iter()
-                .map(|&biome| tile_has_fluid_surface(biome) || tile_is_ice(biome))
-                .collect();
-            let wind = crate::wind::surface_wind(&map.light_level, &map.heightmap, tile_w, tile_h);
-            map.sand = crate::wind::drifted_sand(
-                &wind,
-                &map.heightmap,
-                &map.sediment,
-                &map.light_level,
-                &is_water,
-                tile_w,
-                tile_h,
-            );
-            for i in 0..tile_w * tile_h {
-                if map.sand[i] >= SAND_SEA_FROM && !is_water[i] {
-                    map.biomes[i] = TileType::Erg;
-                } else if map.biomes[i] == TileType::Erg {
-                    // Sand seas are where the wind leaves sand, nowhere else.
-                    map.biomes[i] = TileType::Desert;
-                }
-            }
         }
 
         // Apply polar ice cap override
@@ -1398,7 +1091,7 @@ pub fn compute_slope_grid(heightmap: &[f64], width: usize, height: usize) -> Vec
     slope
 }
 
-fn apply_polar_ice_cap(
+pub(crate) fn apply_polar_ice_cap(
     biomes: &mut [TileType],
     light_level: &[f64],
     continentalness: &[f64],
@@ -1442,7 +1135,7 @@ mod tests {
 
     /// A small chunk anchored to `macro_map`, the way the runtime builds one.
     fn anchored_chunk(macro_map: &BiomeMap, x: f64, y: f64) -> BiomeMap {
-        let mut chunk = BiomeMap::generate(SEED, x, y, 1.0, 1.0, 32, 32, 2, false, false, 8.0);
+        let mut chunk = BiomeMap::generate(SEED, x, y, 1.0, 1.0, 32, 32, 2, 8.0);
         chunk.anchor_to_macro(
             macro_map,
             &[],
@@ -1477,9 +1170,7 @@ mod tests {
     #[test]
     fn anchored_chunks_have_identical_heights_along_their_shared_border() {
         // A coarse macro map without the river pass, which assumes the full-size grid.
-        let macro_map = BiomeMap::generate(
-            SEED, 0.0, 0.0, 1024.0, 512.0, 256, 128, 0, false, false, 1.0,
-        );
+        let macro_map = BiomeMap::generate(SEED, 0.0, 0.0, 1024.0, 512.0, 256, 128, 0, 1.0);
         let here = anchored_chunk(&macro_map, 440.0, 220.0);
         let east = anchored_chunk(&macro_map, 441.0, 220.0);
         let south = anchored_chunk(&macro_map, 440.0, 221.0);

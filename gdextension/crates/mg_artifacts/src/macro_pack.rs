@@ -15,13 +15,13 @@
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use mg_core::TileType;
+use mg_core::{CubeGrid, TileType};
 use mg_noise::landscape::FineHeights;
 use mg_noise::{generate_macro_probe, BiomeMap, RiverCourse};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-const MAGIC: &[u8; 6] = b"MGMP05";
+const MAGIC: &[u8; 6] = b"MGMP06";
 /// Largest probe difference still counted as the same generator. Allows for
 /// maths library differences between native and web builds.
 const PROBE_TOLERANCE: f32 = 1.0e-4;
@@ -49,14 +49,13 @@ pub struct MacroPack {
     river_courses: Vec<RiverCourse>,
 }
 
-/// The land's fine-grid heights (`mg_noise::landscape::FineHeights`), each as
-/// a 16-bit step between -1 and 1: about a 160th of a block, in half the
-/// space of a 32-bit float.
+/// The land's fine heights (`mg_noise::landscape::FineHeights`, on the cubed
+/// sphere), each as a 16-bit step between -1 and 1: about a 160th of a
+/// block, in half the space of a 32-bit float.
 #[derive(Serialize, Deserialize)]
 struct PackedHeights {
-    cells_per_wu: u32,
-    width: u32,
-    height: u32,
+    /// Cells a side of each cube face.
+    n: u32,
     steps: Vec<u16>,
     /// Lake surfaces, as `steps`; `NO_LAKE` where there is none.
     water_steps: Vec<u16>,
@@ -75,9 +74,7 @@ fn step_to_height(step: u16) -> f32 {
 impl PackedHeights {
     fn from_heights(heights: &FineHeights) -> Self {
         Self {
-            cells_per_wu: heights.cells_per_wu as u32,
-            width: heights.width as u32,
-            height: heights.height as u32,
+            n: heights.grid.n as u32,
             steps: heights.heights.iter().map(|&height| height_to_step(height)).collect(),
             water_steps: heights
                 .water_level
@@ -89,9 +86,7 @@ impl PackedHeights {
 
     fn to_heights(&self) -> FineHeights {
         FineHeights {
-            cells_per_wu: self.cells_per_wu as usize,
-            width: self.width as usize,
-            height: self.height as usize,
+            grid: CubeGrid::margin(self.n as usize),
             heights: self.steps.iter().map(|&step| step_to_height(step)).collect(),
             water_level: self
                 .water_steps
@@ -209,7 +204,7 @@ mod tests {
 
     /// A small stand-in for the macro map: packing does not care about size.
     fn small_map() -> BiomeMap {
-        BiomeMap::generate(SEED, 0.0, 0.0, 1024.0, 512.0, 64, 32, 0, false, false, 1.0)
+        BiomeMap::generate(SEED, 0.0, 0.0, 1024.0, 512.0, 64, 32, 0, 1.0)
     }
 
     #[test]

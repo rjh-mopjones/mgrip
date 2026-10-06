@@ -3,17 +3,20 @@
 //!
 //! This is spec 013's landscape step run on its own so its parameters can be
 //! chosen by eye before it replaces the generator's terrain. It works on a
-//! coarser grid than the macro map so a step is quick enough to watch.
+//! coarser cube than the macro map so a step is quick enough to watch, and
+//! is drawn as a flat map of the world.
 
+use mg_core::CubeGrid;
 use mg_noise::biome_map::SEA_LEVEL;
 use mg_noise::drainage::{
     desert, iciness, lake_evaporation, rainfall_with, solve_drainage, Drainage, LAKE_MIN_DEPTH,
 };
 use mg_noise::landscape::{starting_ground, UpliftMix, UpliftSources};
+use mg_noise::macro_map::MACRO_CUBE_N;
 use mg_noise::rivers::sea_bodies;
 use mg_noise::{erosion_step, BiomeMap, ErosionParams, Land};
 
-/// The sandbox grid has one cell for this many macro cells each way.
+/// The sandbox cube has one cell for this many macro cells each way.
 const SHRINK: usize = 2;
 /// Blocks of height per unit of heightmap (`VoxelMeshBuilder.HEIGHT_SCALE`).
 const BLOCKS_PER_HEIGHT: f64 = 200.0;
@@ -37,8 +40,13 @@ pub struct Settings {
 }
 
 pub struct Sandbox {
+    grid: CubeGrid,
+    /// The image drawn: a flat map of the world, this many pixels across
+    /// and half as many high.
     pub width: usize,
     pub height: usize,
+    /// The cube cell under each pixel.
+    pixel_cells: Vec<usize>,
     is_sea: Vec<bool>,
     sea_floor: Vec<f64>,
     rock_hardness: Vec<f64>,
@@ -54,41 +62,49 @@ pub struct Sandbox {
 
 impl Sandbox {
     pub fn new(macro_map: &BiomeMap, seed: u32) -> Self {
-        let (width, height) = (macro_map.width / SHRINK, macro_map.height / SHRINK);
-        let shrunk = |field: &[f64]| -> Vec<f64> {
-            (0..width * height)
-                .map(|cell| {
-                    let (x, y) = (cell % width, cell / width);
-                    field[y * SHRINK * macro_map.width + x * SHRINK]
-                })
+        let grid = CubeGrid::margin(MACRO_CUBE_N / SHRINK);
+        let (width, height) = (4 * grid.n, 2 * grid.n);
+        let positions: Vec<(f64, f64)> = (0..grid.cell_count())
+            .map(|cell| grid.world_position(cell))
+            .collect();
+        let sampled = |field: &[f64]| -> Vec<f64> {
+            positions
+                .iter()
+                .map(|&(wx, wy)| macro_map.sample_field_at(field, wx, wy))
                 .collect()
         };
-        let continentalness = shrunk(&macro_map.continentalness);
+        let continentalness = sampled(&macro_map.continentalness);
+        let pixel_cells = (0..width * height)
+            .map(|pixel| {
+                let wx = ((pixel % width) as f64 + 0.5) * macro_map.world_width / width as f64;
+                let wy = ((pixel / width) as f64 + 0.5) * macro_map.world_height / height as f64;
+                grid.cell_of(grid.sphere.point_at(wx, wy))
+            })
+            .collect();
         let mut sandbox = Self {
             width,
             height,
-            is_sea: sea_bodies(&continentalness, width, height, SEA_LEVEL),
+            pixel_cells,
+            is_sea: sea_bodies(&continentalness, &grid, SEA_LEVEL),
             sea_floor: continentalness.clone(),
-            rock_hardness: shrunk(&macro_map.rock_hardness),
+            rock_hardness: sampled(&macro_map.rock_hardness),
             uplift_sources: UpliftSources::new(
                 &continentalness,
-                &shrunk(&macro_map.peaks_valleys),
-                &shrunk(&macro_map.tectonic),
-                width,
-                height,
+                &sampled(&macro_map.peaks_valleys),
+                &sampled(&macro_map.tectonic),
+                &grid,
             ),
             // The macro pack does not carry light level; it follows from position.
-            light_level: (0..width * height)
-                .map(|cell| {
-                    let (x, y) = ((cell % width * SHRINK) as f64, (cell / width * SHRINK) as f64);
-                    mg_noise::biome_map::light_level_at(seed, x, y)
-                })
+            light_level: positions
+                .iter()
+                .map(|&(wx, wy)| mg_noise::biome_map::light_level_at(seed, wx, wy))
                 .collect(),
-            humidity: shrunk(&macro_map.humidity),
+            humidity: sampled(&macro_map.humidity),
             ground: Vec::new(),
             sediment: Vec::new(),
             steps: 0,
             last_change: 0.0,
+            grid,
         };
         sandbox.reset();
         sandbox
@@ -96,15 +112,14 @@ impl Sandbox {
 
     /// Back to flat land just above the sea.
     pub fn reset(&mut self) {
-        let width = self.width;
-        self.ground = starting_ground(&self.sea_floor, &self.is_sea, width);
-        self.sediment = vec![0.0; width * self.height];
+        self.ground = starting_ground(&self.sea_floor, &self.is_sea);
+        self.sediment = vec![0.0; self.grid.cell_count()];
         self.steps = 0;
         self.last_change = 0.0;
     }
 
     fn runoff(&self, settings: &Settings) -> Vec<f64> {
-        (0..self.width * self.height)
+        (0..self.grid.cell_count())
             .map(|cell| {
                 rainfall_with(
                     self.light_level[cell],
@@ -119,9 +134,17 @@ impl Sandbox {
     pub fn step(&mut self, count: u32, settings: &Settings) {
         let rainfall = self.runoff(settings);
         let uplift_share = self.uplift_share(settings);
-        let ice: Vec<f64> = self.light_level.iter().map(|&light| iciness(light)).collect();
+        let ice: Vec<f64> = self
+            .light_level
+            .iter()
+            .map(|&light| iciness(light))
+            .collect();
         let lake_evaporation = self.lake_evaporation();
-        let desert: Vec<f64> = self.light_level.iter().map(|&light| desert(light)).collect();
+        let desert: Vec<f64> = self
+            .light_level
+            .iter()
+            .map(|&light| desert(light))
+            .collect();
         let land = Land {
             is_base_level: &self.is_sea,
             rock_hardness: &self.rock_hardness,
@@ -130,12 +153,17 @@ impl Sandbox {
             ice: &ice,
             lake_evaporation: &lake_evaporation,
             desert: &desert,
-            width: self.width,
-            height: self.height,
+            grid: &self.grid,
         };
         for _ in 0..count {
             let before = self.ground.clone();
-            erosion_step(&mut self.ground, &mut self.sediment, &land, &settings.erosion, self.steps);
+            erosion_step(
+                &mut self.ground,
+                &mut self.sediment,
+                &land,
+                &settings.erosion,
+                self.steps,
+            );
             let land_cells = self.is_sea.iter().filter(|sea| !**sea).count().max(1);
             self.last_change = before
                 .iter()
@@ -148,7 +176,10 @@ impl Sandbox {
     }
 
     fn lake_evaporation(&self) -> Vec<f64> {
-        self.light_level.iter().map(|&light| lake_evaporation(light)).collect()
+        self.light_level
+            .iter()
+            .map(|&light| lake_evaporation(light))
+            .collect()
     }
 
     fn uplift_share(&self, settings: &Settings) -> Vec<f64> {
@@ -175,8 +206,7 @@ impl Sandbox {
             &self.is_sea,
             &self.runoff(settings),
             &self.lake_evaporation(),
-            self.width,
-            self.height,
+            &self.grid,
             self.steps,
         )
     }
@@ -195,21 +225,35 @@ impl Sandbox {
             .fold(0.0, f64::max)
     }
 
-    /// RGBA pixels, one per cell, and the number of river and lake cells.
-    pub fn render(&self, view: View, river_threshold: f64, settings: &Settings) -> (Vec<u8>, u32, u32) {
+    /// RGBA pixels of the flat map, and the number of river and lake cells.
+    pub fn render(
+        &self,
+        view: View,
+        river_threshold: f64,
+        settings: &Settings,
+    ) -> (Vec<u8>, u32, u32) {
         let drainage = self.drainage(settings);
         let peak = self.peak().max(0.01);
         let uplift_share = self.uplift_share(settings);
         let highest_uplift = uplift_share.iter().copied().fold(0.01, f64::max);
+        // Each cell is coloured once, then drawn wherever it shows.
         let (mut rivers, mut lakes) = (0, 0);
-        let mut rgba = Vec::with_capacity(self.width * self.height * 4);
-        for cell in 0..self.width * self.height {
-            let colour = if self.is_sea[cell] {
-                self.sea_colour(cell)
-            } else {
+        let colours: Vec<[f64; 3]> = (0..self.grid.cell_count())
+            .map(|cell| {
+                if self.is_sea[cell] {
+                    return self.sea_colour(cell);
+                }
                 match view {
-                    View::Uplift => blend(FLAT_FIELD, UPLIFT_FIELD, uplift_share[cell] / highest_uplift),
-                    View::Runoff => blend(FLAT_FIELD, RUNOFF_FIELD, (drainage.flow[cell].ln_1p() / 8.0).min(1.0)),
+                    View::Uplift => blend(
+                        FLAT_FIELD,
+                        UPLIFT_FIELD,
+                        uplift_share[cell] / highest_uplift,
+                    ),
+                    View::Runoff => blend(
+                        FLAT_FIELD,
+                        RUNOFF_FIELD,
+                        (drainage.flow[cell].ln_1p() / 8.0).min(1.0),
+                    ),
                     View::Terrain => {
                         // Land cut below the sea is under it: a fjord, or
                         // a river's drowned mouth.
@@ -225,13 +269,21 @@ impl Sandbox {
                             }
                             let land = self.land_colour(cell, peak);
                             // Bigger rivers show more strongly.
-                            let strength = (drainage.flow[cell] / river_threshold).ln().clamp(0.0, 2.0) / 2.0;
-                            if is_river { blend(land, RIVER, 0.55 + 0.45 * strength) } else { land }
+                            let strength =
+                                (drainage.flow[cell] / river_threshold).ln().clamp(0.0, 2.0) / 2.0;
+                            if is_river {
+                                blend(land, RIVER, 0.55 + 0.45 * strength)
+                            } else {
+                                land
+                            }
                         }
                     }
                 }
-            };
-            rgba.extend(colour.map(|channel| channel.clamp(0.0, 255.0) as u8));
+            })
+            .collect();
+        let mut rgba = Vec::with_capacity(self.width * self.height * 4);
+        for &cell in &self.pixel_cells {
+            rgba.extend(colours[cell].map(|channel| channel.clamp(0.0, 255.0) as u8));
             rgba.push(255);
         }
         (rgba, rivers, lakes)
@@ -240,16 +292,23 @@ impl Sandbox {
     /// Land coloured by height, shaded by relief lit from the north-west, and
     /// tinted cool on the night side and warm on the day side.
     fn land_colour(&self, cell: usize, peak: f64) -> [f64; 3] {
-        let (width, height) = (self.width, self.height);
-        let (x, y) = (cell % width, cell / width);
-        let at = |x: usize, y: usize| self.ground[y * width + x];
         let elevation = ((self.ground[cell] - SEA_LEVEL) / peak).clamp(0.0, 1.0);
-        let upper = HEIGHT_COLOURS.iter().position(|(stop, _)| elevation <= *stop).unwrap_or(HEIGHT_COLOURS.len() - 1).max(1);
-        let ((low_stop, low), (high_stop, high)) = (HEIGHT_COLOURS[upper - 1], HEIGHT_COLOURS[upper]);
+        let upper = HEIGHT_COLOURS
+            .iter()
+            .position(|(stop, _)| elevation <= *stop)
+            .unwrap_or(HEIGHT_COLOURS.len() - 1)
+            .max(1);
+        let ((low_stop, low), (high_stop, high)) =
+            (HEIGHT_COLOURS[upper - 1], HEIGHT_COLOURS[upper]);
         let colour = blend(low, high, (elevation - low_stop) / (high_stop - low_stop));
 
-        let rise_east = at((x + 1) % width, y) - at((x + width - 1) % width, y);
-        let rise_south = at(x, (y + 1).min(height - 1)) - at(x, y.saturating_sub(1));
+        // The rise over two cells eastwards and southwards.
+        let gradient = self.grid.gradient(&self.ground, cell);
+        let (east, south) = self.grid.tangents(cell);
+        let across = 2.0 * self.grid.cell_size();
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let rise_east = dot(gradient, east) * across;
+        let rise_south = dot(gradient, south) * across;
         let shade = (1.0 + (rise_east + rise_south) / peak * RELIEF_GAIN).clamp(0.5, 1.4);
 
         let light = self.light_level[cell];
@@ -295,4 +354,3 @@ fn blend(from: [f64; 3], to: [f64; 3], share: f64) -> [f64; 3] {
     let share = share.clamp(0.0, 1.0);
     [0, 1, 2].map(|channel| from[channel] + (to[channel] - from[channel]) * share)
 }
-

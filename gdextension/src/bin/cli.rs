@@ -463,7 +463,7 @@ fn run_generate_layers(seed: u32, tag: &str) {
         .river_network
         .as_ref()
         .map(|arc| arc.as_ref().clone())
-        .unwrap_or_else(|| RiverNetwork::empty(MACRO_MAP_W, MACRO_MAP_H));
+        .unwrap_or_else(|| RiverNetwork::empty());
 
     // ── Step 2: Scan global height range for shared normalization ────────────
     let normalization_hints = NormalizationHints::for_macro_map(&macro_map);
@@ -1957,24 +1957,58 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
 const SITE_MAP_RELIEF_IMAGE: &str = "relief.png";
 const SITE_MAP_SEA_IMAGE: &str = "sea.png";
 
+/// The map's land at its finest: `scale` pixels per chunk, each the height
+/// at that world position, read from the fine cube when the map carries
+/// one and from the flat heightmap otherwise.
+struct FineLand {
+    scale: usize,
+    width: usize,
+    height: usize,
+    heights: Vec<f64>,
+}
+
+impl FineLand {
+    fn of(map: &BiomeMap) -> Self {
+        let fine = map.fine_heights.as_ref();
+        let scale = fine.map_or(1, |_| mg_noise::landscape::REFINED_CELLS_PER_MACRO_CELL);
+        let (width, height) = (map.width * scale, map.height * scale);
+        let heights = (0..width * height)
+            .into_par_iter()
+            .map(|cell| {
+                let (wx, wy) = Self::position(width, scale, cell);
+                match fine {
+                    Some(fine) => fine.sample(wx, wy),
+                    None => map.sample_field_at(&map.heightmap, wx, wy),
+                }
+            })
+            .collect();
+        Self {
+            scale,
+            width,
+            height,
+            heights,
+        }
+    }
+
+    fn position(width: usize, scale: usize, cell: usize) -> (f64, f64) {
+        (
+            (cell % width) as f64 / scale as f64,
+            (cell / width) as f64 / scale as f64,
+        )
+    }
+}
+
 /// Liquid sea and lakes (white) on the finest grid the map's land has. The map page
 /// draws its coast from this: provinces are one cell per chunk, far coarser
 /// than the coast.
 fn sea_image(map: &BiomeMap) -> image::GrayImage {
+    let land = FineLand::of(map);
     let fine = map.fine_heights.as_ref();
-    let scale = fine.map_or(1, |fine| fine.cells_per_wu);
-    let (width, height) = (map.width * scale, map.height * scale);
     let splines = mg_noise::BiomeSplines::new(mg_noise::SEA_LEVEL);
-    let pixels = (0..width * height)
+    let pixels = (0..land.width * land.height)
         .map(|cell| {
-            let (wx, wy) = (
-                (cell % width) as f64 / scale as f64,
-                (cell / width) as f64 / scale as f64,
-            );
-            let ground = match fine {
-                Some(fine) => fine.heights[cell] as f64,
-                None => map.heightmap[cell],
-            };
+            let (wx, wy) = FineLand::position(land.width, land.scale, cell);
+            let ground = land.heights[cell];
             let temperature = map.sample_field_at(&map.temperature, wx, wy);
             let light = map.sample_field_at(&map.light_level, wx, wy);
             let drift = mg_noise::biome_map::sea_margin_drift(wx, wy);
@@ -1988,7 +2022,9 @@ fn sea_image(map: &BiomeMap) -> image::GrayImage {
                     light,
                     drift,
                 );
-            let lake_depth = fine.map_or(0.0, |fine| fine.water_level[cell] as f64 - ground);
+            let lake_depth = fine
+                .and_then(|fine| fine.lake_level(wx, wy))
+                .map_or(0.0, |level| level - ground);
             let is_lake = lake_depth > 0.0
                 && mg_noise::tile_has_fluid_surface(splines.lake_biome(
                     lake_depth,
@@ -2003,7 +2039,7 @@ fn sea_image(map: &BiomeMap) -> image::GrayImage {
             }
         })
         .collect();
-    image::GrayImage::from_raw(width as u32, height as u32, pixels)
+    image::GrayImage::from_raw(land.width as u32, land.height as u32, pixels)
         .expect("sea buffer matches the map size")
 }
 const SITE_MAP_MACRO_PACK: &str = "world.mgmacro";
@@ -2016,14 +2052,10 @@ const RELIEF_FULL_CONTRAST_SHARE: f64 = 0.02;
 /// map-drawing convention (lit from below, hills read as hollows). The sea
 /// (`province_ids` 0) is left flat.
 fn relief_image(map: &BiomeMap, province_ids: &[u16]) -> image::GrayImage {
-    // Shade the finest land there is: the fine grid if the map carries one.
-    let fine = map.fine_heights.as_ref();
-    let scale = fine.map_or(1, |fine| fine.cells_per_wu);
-    let (width, height) = (map.width * scale, map.height * scale);
-    let height_at = |x: usize, y: usize| match fine {
-        Some(fine) => fine.heights[y * width + x] as f64,
-        None => map.heightmap[y * width + x],
-    };
+    // Shade the finest land there is: the fine cube if the map carries one.
+    let land = FineLand::of(map);
+    let (width, height, scale) = (land.width, land.height, land.scale);
+    let height_at = |x: usize, y: usize| land.heights[y * width + x];
     // How steeply the ground rises towards the north-west.
     let grid = mg_core::Sphere::MARGIN.grid(width, height);
     let rise: Vec<f64> = (0..width * height)
@@ -2345,8 +2377,6 @@ fn run_compare_scale(
                 MICRO_RES,
                 MICRO_RES,
                 MICRO_DETAIL_LEVEL,
-                false,
-                false,
                 MICRO_FREQUENCY_SCALE,
             );
             // Use the same macro anchoring path the in-game runtime uses so the
@@ -2928,8 +2958,6 @@ fn generate_runtime_micro_map(seed: u32, world_x: f64, world_y: f64) -> BiomeMap
         MICRO_TILE_RESOLUTION,
         MICRO_TILE_RESOLUTION,
         MICRO_DETAIL_LEVEL,
-        false,
-        false,
         MICRO_FREQUENCY_SCALE,
     )
 }
@@ -2967,8 +2995,11 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn default_grid_audit_passes_for_seed_42_step_256() {
-        let scan = scan_layer_presentation_grid("v1", 42, 1024, 512, 256, |_scanned, _total| {});
+    fn default_grid_audit_passes_for_seed_42_step_128() {
+        // With the sun 45 degrees up from the pole (spec 015) the terminus
+        // is an arc, and none of the eight chunks a step of 256 samples
+        // lies on it; 32 do.
+        let scan = scan_layer_presentation_grid("v1", 42, 1024, 512, 128, |_scanned, _total| {});
         let failures = audit_default_presentation_grid(&scan.summary);
         assert!(
             failures.is_empty(),

@@ -16,6 +16,7 @@
 
 use crate::biome_map::{WORLD_HEIGHT, WORLD_WIDTH};
 use crate::drainage::{Drainage, NO_RECEIVER};
+use mg_core::CubeGrid;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -339,9 +340,7 @@ fn longest_run<T>(items: &[T], test: impl Fn(&T) -> bool) -> (usize, usize) {
 
 /// The direction (an index into `D8_OFFSETS`) from each cell to the cell it
 /// drains to, or `NO_FLOW`.
-fn flow_directions(drainage: &Drainage, width: usize) -> Vec<u8> {
-    let height = drainage.receivers.len() / width;
-    let grid = mg_core::Sphere::MARGIN.grid(width, height);
+fn flow_directions(drainage: &Drainage, grid: &CubeGrid) -> Vec<u8> {
     drainage
         .receivers
         .iter()
@@ -351,11 +350,10 @@ fn flow_directions(drainage: &Drainage, width: usize) -> Vec<u8> {
                 return NO_FLOW;
             }
             // Which of the eight neighbours the receiver is: a step may
-            // cross the seam or a pole, so it is matched by cell, not offset.
-            let (x, y) = grid.cell(cell);
-            grid.neighbours(x, y)
+            // cross a face edge, so it is matched by cell, not offset.
+            grid.neighbours(cell)
                 .iter()
-                .position(|&beside| grid.index(beside) == receiver as usize)
+                .position(|&beside| beside == Some(receiver as usize))
                 .map_or(NO_FLOW, |direction| direction as u8)
         })
         .collect()
@@ -531,16 +529,12 @@ pub struct RiverNetwork {
     /// Every raster of the rivers, at any scale, is drawn from these.
     #[serde(skip)]
     pub courses: Vec<RiverCourse>,
-    pub width: usize,
-    pub height: usize,
 }
 
 impl std::fmt::Debug for RiverNetwork {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RiverNetwork")
             .field("segments", &self.segments.len())
-            .field("width", &self.width)
-            .field("height", &self.height)
             .finish()
     }
 }
@@ -552,8 +546,6 @@ impl Clone for RiverNetwork {
             spatial_index: HashMap::new(),
             chains: Vec::new(),
             courses: Vec::new(),
-            width: self.width,
-            height: self.height,
         };
         cloned.rebuild_spatial_index();
         cloned
@@ -561,14 +553,12 @@ impl Clone for RiverNetwork {
 }
 
 impl RiverNetwork {
-    pub fn empty(width: usize, height: usize) -> Self {
+    pub fn empty() -> Self {
         Self {
             segments: Vec::new(),
             spatial_index: HashMap::new(),
             chains: Vec::new(),
             courses: Vec::new(),
-            width,
-            height,
         }
     }
 
@@ -583,18 +573,17 @@ impl RiverNetwork {
         light_level: &[f64],
         humidity: &[f64],
         temperature: &[f64],
-        width: usize,
-        height: usize,
+        grid: &CubeGrid,
         sea_level: f64,
     ) -> Self {
-        let total = width * height;
+        let total = grid.cell_count();
         let world_width: f64 = 1024.0;
-        let world_height: f64 = 512.0;
+        let sphere = mg_core::Sphere::MARGIN;
 
         // Rivers drain to bodies of water. A pond (a few cells below sea
         // level) is not one: for drainage it counts as land, so a river runs
         // through it and on to the sea instead of ending there.
-        let in_sea_body = sea_bodies(continentalness, width, height, sea_level);
+        let in_sea_body = sea_bodies(continentalness, grid, sea_level);
         let drainage_continentalness: Vec<f64> = continentalness
             .iter()
             .zip(&in_sea_body)
@@ -609,7 +598,7 @@ impl RiverNetwork {
         let real_continentalness = continentalness;
         let continentalness = &drainage_continentalness[..];
 
-        let flow_dir = flow_directions(drainage, width);
+        let flow_dir = flow_directions(drainage, grid);
         let accumulation: Vec<u32> = drainage
             .flow
             .iter()
@@ -617,17 +606,15 @@ impl RiverNetwork {
             .collect();
 
         // Step 4: Build river tree
-        // A share of the world's area, in the equatorial cells flow is
-        // counted in.
-        let world_area = mg_core::Sphere::MARGIN.grid(width, height).cells_of_area();
+        // A share of the world's area, in the mean cells flow is counted in.
+        let world_area = total as f64;
         let min_accumulation =
             (world_area * MIN_RIVER_ACCUMULATION_RATIO).max(MIN_RIVER_ACCUMULATION_FLOOR) as u32;
         let mut segments = build_river_tree(
             &flow_dir,
             &accumulation,
             continentalness,
-            width,
-            height,
+            grid,
             sea_level,
             min_accumulation,
         );
@@ -639,18 +626,15 @@ impl RiverNetwork {
             }
             let mid_idx = seg.path.len() / 2;
             let (mx, my) = seg.path[mid_idx];
-            // Path coords are in WORLD units; convert to macro pixel indices
-            // for the light_level/humidity/temperature array lookup.
-            let px = ((mx / world_width * width as f64) as usize).min(width - 1);
-            let py = ((my / world_height * height as f64) as usize).min(height - 1);
-            let idx = py * width + px;
+            // Path coords are in world units; the cell under them holds the
+            // light, humidity and temperature.
+            let idx = grid.cell_of(sphere.point_at(mx, my));
             let light = light_level.get(idx).copied().unwrap_or(0.5);
             let humid = humidity.get(idx).copied().unwrap_or(0.5);
             let temp = temperature.get(idx).copied().unwrap_or(15.0);
             // More than 54° past the terminator either way a river is forced
             // under the ice or into a dry wadi; a wider band once swallowed
             // the terminus-coast rivers.
-            let sphere = mg_core::Sphere::MARGIN;
             let beyond = sphere.angle(sphere.point_at(mx, my), crate::strategy::sun())
                 - std::f64::consts::FRAC_PI_2;
             seg.character = if beyond.abs() >= SURFACE_RIVER_ANGLE {
@@ -682,13 +666,7 @@ impl RiverNetwork {
         // Step 6.5: Keep surface rivers to where liquid water can run, and
         // only where it reaches the sea.
         let splines = crate::biome_splines::BiomeSplines::new(sea_level);
-        let cell_at = |x: f64, y: f64| {
-            let px = (x / world_width * width as f64)
-                .floor()
-                .rem_euclid(width as f64) as usize;
-            let py = ((y / world_height * height as f64) as usize).min(height - 1);
-            py * width + px
-        };
+        let cell_at = |x: f64, y: f64| grid.cell_of(sphere.point_at(x, y));
         let is_wet = |x: f64, y: f64| {
             let idx = cell_at(x, y);
             let light = light_level.get(idx).copied().unwrap_or(0.5);
@@ -762,9 +740,7 @@ impl RiverNetwork {
                 .iter()
                 .filter(|c| {
                     if let Some(&(lx, ly)) = c.path.last() {
-                        let px = ((lx / 1024.0 * width as f64) as usize).min(width - 1);
-                        let py = ((ly / 512.0 * height as f64) as usize).min(height - 1);
-                        continentalness.get(py * width + px).copied().unwrap_or(0.0) <= sea_level
+                        continentalness.get(cell_at(lx, ly)).copied().unwrap_or(0.0) <= sea_level
                     } else {
                         false
                     }
@@ -781,8 +757,6 @@ impl RiverNetwork {
             spatial_index,
             chains,
             courses: Vec::new(),
-            width,
-            height,
         };
         network.courses = build_river_courses(&network);
         eprintln!("[rivers] {} courses drawn", network.courses.len());
@@ -884,7 +858,10 @@ impl RiverNetwork {
     /// possible river (0.0 = no river, 1.0 = two world units wide). Drawn from
     /// the same courses as every other scale; on a coarse grid a river
     /// narrower than a cell still marks the cells it runs through.
-    pub fn to_flow_grid(&self, width: usize, height: usize) -> Vec<f64> {
+    /// The rivers as a value per cell of a flat map of the whole world: the
+    /// size of the river there as a share of the largest, 0 where there is
+    /// none.
+    pub fn to_flow_raster(&self, width: usize, height: usize) -> Vec<f64> {
         paint_courses(
             &self.courses,
             (0.0, 0.0),
@@ -892,6 +869,20 @@ impl RiverNetwork {
             (width, height),
             |_coverage, half_width| (half_width / COURSE_MAX_HALF_WIDTH_WU).clamp(0.01, 1.0),
         )
+    }
+
+    /// As `to_flow_raster`, per cell of `grid`: painted on the flat map at
+    /// one cell per chunk and read off it.
+    pub fn to_flow_grid(&self, grid: &CubeGrid) -> Vec<f64> {
+        let (width, height) = (WORLD_WIDTH as usize, WORLD_HEIGHT as usize);
+        let painted = self.to_flow_raster(width, height);
+        (0..grid.cell_count())
+            .map(|cell| {
+                let (wx, wy) = grid.world_position(cell);
+                let (x, y) = ((wx as usize).min(width - 1), (wy as usize).min(height - 1));
+                painted[y * width + x]
+            })
+            .collect()
     }
 
     pub fn segment_count(&self) -> usize {
@@ -1001,12 +992,10 @@ const MOUTH_MAX_CELLS_INTO_SEA: usize = 8;
 fn path_to_open_water(
     start: usize,
     continentalness: &[f64],
-    width: usize,
-    height: usize,
+    grid: &CubeGrid,
     sea_level: f64,
 ) -> Vec<usize> {
     let depth = |cell: usize| sea_level - continentalness.get(cell).copied().unwrap_or(0.0);
-    let grid = mg_core::Sphere::MARGIN.grid(width, height);
     let mut came_from: HashMap<usize, usize> = HashMap::new();
     let path_to = |cell: usize, came_from: &HashMap<usize, usize>| {
         let mut path = Vec::new();
@@ -1030,9 +1019,7 @@ fn path_to_open_water(
         if steps == MOUTH_MAX_CELLS_INTO_SEA {
             continue;
         }
-        let (x, y) = grid.cell(cell);
-        for beside in grid.neighbours(x, y) {
-            let neighbour = grid.index(beside);
+        for neighbour in grid.neighbours(cell).into_iter().flatten() {
             if neighbour != start && depth(neighbour) >= 0.0 && !came_from.contains_key(&neighbour)
             {
                 came_from.insert(neighbour, cell);
@@ -1051,36 +1038,26 @@ const SEA_BODY_MIN_AREA_WU2: f64 = 12.0;
 const POND_RAISED_ABOVE_SEA: f64 = 0.001;
 
 /// For every cell, whether it lies in a body of water: a connected stretch
-/// of at least `SEA_BODY_MIN_AREA_WU2` below sea level, on a grid `width`
-/// cells across the world. The map joins east to west.
-pub fn sea_bodies(
-    continentalness: &[f64],
-    width: usize,
-    height: usize,
-    sea_level: f64,
-) -> Vec<bool> {
-    let cells_per_wu = width as f64 / WORLD_WIDTH;
+/// of at least `SEA_BODY_MIN_AREA_WU2` below sea level.
+pub fn sea_bodies(continentalness: &[f64], grid: &CubeGrid, sea_level: f64) -> Vec<bool> {
+    let cells_per_wu = grid.cells_per_world_unit();
     let min_area = SEA_BODY_MIN_AREA_WU2 * cells_per_wu * cells_per_wu;
-    stretches_below_sea(continentalness, width, height, sea_level, min_area)
+    stretches_below_sea(continentalness, grid, sea_level, min_area)
 }
 
 /// For every cell, whether it lies in a connected stretch below sea level
-/// of at least `min_area` equatorial cells. The grid lies on the sphere, so
-/// a stretch runs round the seam and over the poles, and cells towards the
-/// poles count for less.
+/// of at least `min_area` mean cells. A stretch runs across face edges.
 fn stretches_below_sea(
     continentalness: &[f64],
-    width: usize,
-    height: usize,
+    grid: &CubeGrid,
     sea_level: f64,
     min_area: f64,
 ) -> Vec<bool> {
-    let grid = mg_core::Sphere::MARGIN.grid(width, height);
-    let shares: Vec<f64> = (0..height).map(|y| grid.area_share(y)).collect();
+    let total = grid.cell_count();
     let below_sea = |cell: usize| continentalness[cell] <= sea_level;
-    let mut in_body = vec![false; width * height];
-    let mut seen = vec![false; width * height];
-    for first in 0..width * height {
+    let mut in_body = vec![false; total];
+    let mut seen = vec![false; total];
+    for first in 0..total {
         if seen[first] || !below_sea(first) {
             continue;
         }
@@ -1091,16 +1068,14 @@ fn stretches_below_sea(
         while next < stretch.len() {
             let cell = stretch[next];
             next += 1;
-            let (x, y) = grid.cell(cell);
-            for beside in grid.neighbours(x, y) {
-                let neighbour = grid.index(beside);
+            for neighbour in grid.neighbours(cell).into_iter().flatten() {
                 if !seen[neighbour] && below_sea(neighbour) {
                     seen[neighbour] = true;
                     stretch.push(neighbour);
                 }
             }
         }
-        let area: f64 = stretch.iter().map(|&cell| shares[cell / width]).sum();
+        let area: f64 = stretch.iter().map(|&cell| grid.area_share(cell)).sum();
         if area >= min_area {
             for cell in stretch {
                 in_body[cell] = true;
@@ -1116,22 +1091,16 @@ fn build_river_tree(
     flow_dir: &[u8],
     accumulation: &[u32],
     continentalness: &[f64],
-    width: usize,
-    height: usize,
+    grid: &CubeGrid,
     sea_level: f64,
     min_accumulation: u32,
 ) -> Vec<RiverSegment> {
-    let total = width * height;
-    let grid = mg_core::Sphere::MARGIN.grid(width, height);
-    // Convert pixel indices to world coordinates. At 1:1 macro (1024×512)
-    // this is an identity transform. At 2:1 (2048×1024) it scales by 0.5.
-    // Without this, path coordinates are in macro pixel space and the
-    // runtime rasterizer (which works in world coords) draws nothing because
-    // every path point is 2× too far from the chunk.
-    let world_width: f64 = 1024.0;
-    let world_height: f64 = 512.0;
-    let px_to_wx = world_width / width as f64;
-    let px_to_wy = world_height / height as f64;
+    let total = grid.cell_count();
+    let sphere = grid.sphere;
+    // Paths are kept in world coordinates: a cell's centre as a world
+    // position, which the rasterisers work in.
+    let to_world = |cell: usize| grid.world_position(cell);
+    let cell_of = |&(wx, wy): &(f64, f64)| grid.cell_of(sphere.point_at(wx, wy));
     let is_river: Vec<bool> = accumulation
         .iter()
         .map(|&a| a >= min_accumulation)
@@ -1143,11 +1112,11 @@ fn build_river_tree(
         if !is_river[idx] || flow_dir[idx] == NO_FLOW {
             continue;
         }
-        let (x, y) = grid.cell(idx);
         let (dx, dy) = D8_OFFSETS[flow_dir[idx] as usize];
-        let nidx = grid.index(grid.neighbour(x, y, dx, dy));
-        if is_river[nidx] {
-            inflow_count[nidx] += 1;
+        if let Some(nidx) = grid.neighbour(idx, dx, dy) {
+            if is_river[nidx] {
+                inflow_count[nidx] += 1;
+            }
         }
     }
 
@@ -1183,10 +1152,7 @@ fn build_river_tree(
                 break;
             }
 
-            path.push((
-                (current % width) as f64 * px_to_wx,
-                (current / width) as f64 * px_to_wy,
-            ));
+            path.push(to_world(current));
 
             if continentalness.get(current).copied().unwrap_or(0.0) < sea_level {
                 break;
@@ -1195,9 +1161,11 @@ fn build_river_tree(
                 break;
             }
 
-            let (x, y) = grid.cell(current);
             let (dx, dy) = D8_OFFSETS[flow_dir[current] as usize];
-            current = grid.index(grid.neighbour(x, y, dx, dy));
+            match grid.neighbour(current, dx, dy) {
+                Some(next) => current = next,
+                None => break,
+            }
         }
 
         if path.len() < 2 {
@@ -1205,10 +1173,6 @@ fn build_river_tree(
         }
 
         let seg_id = segments.len();
-        // Path points are in world units; back to cells.
-        let cell_of = |&(wx, wy): &(f64, f64)| {
-            (wy / px_to_wy).round() as usize * width + (wx / px_to_wx).round() as usize
-        };
         let last_idx = cell_of(path.last().unwrap());
         let drainage = accumulation.get(last_idx).copied().unwrap_or(0);
 
@@ -1241,33 +1205,26 @@ fn build_river_tree(
     // segment's path so chains run unbroken to ocean.
     for i in 0..segments.len() {
         let last = *segments[i].path.last().unwrap();
-        let mut cur_idx =
-            (last.1 / px_to_wy).round() as usize * width + (last.0 / px_to_wx).round() as usize;
-        cur_idx = cur_idx.min(width * height - 1);
+        let mut cur_idx = cell_of(&last);
         let mut bridge_path: Vec<(f64, f64)> = Vec::new();
-        let to_world = |cell: usize| {
-            (
-                (cell % width) as f64 * px_to_wx,
-                (cell / width) as f64 * px_to_wy,
-            )
-        };
 
         // A segment that already ends below sea level is at the sea: carry
         // it on to open water and look no further downstream.
         let ends_at_sea = continentalness.get(cur_idx).copied().unwrap_or(0.0) <= sea_level;
         if ends_at_sea {
-            let onward = path_to_open_water(cur_idx, continentalness, width, height, sea_level);
+            let onward = path_to_open_water(cur_idx, continentalness, grid, sea_level);
             bridge_path.extend(onward.into_iter().map(to_world));
         }
-        let downstream_steps = if ends_at_sea { 0 } else { width.max(height) };
+        let downstream_steps = if ends_at_sea { 0 } else { 4 * grid.n };
 
         for _ in 0..downstream_steps {
             if flow_dir[cur_idx] == NO_FLOW {
                 break;
             }
-            let (x, y) = grid.cell(cur_idx);
             let (dx, dy) = D8_OFFSETS[flow_dir[cur_idx] as usize];
-            let next = grid.index(grid.neighbour(x, y, dx, dy));
+            let Some(next) = grid.neighbour(cur_idx, dx, dy) else {
+                break;
+            };
 
             if let Some(ds) = segment_id_at[next] {
                 if ds != i {
@@ -1278,7 +1235,7 @@ fn build_river_tree(
             // At the sea, carry the river on to open water.
             if continentalness.get(next).copied().unwrap_or(0.0) <= sea_level {
                 bridge_path.push(to_world(next));
-                let onward = path_to_open_water(next, continentalness, width, height, sea_level);
+                let onward = path_to_open_water(next, continentalness, grid, sea_level);
                 bridge_path.extend(onward.into_iter().map(to_world));
                 break;
             }
@@ -2137,16 +2094,6 @@ fn build_spatial_index(segments: &[RiverSegment]) -> HashMap<RiverChunkCoord, Ve
     index
 }
 
-/// Legacy flat-grid rasterization.
-pub fn rasterize_from_network_flat(
-    network: &RiverNetwork,
-    width: usize,
-    height: usize,
-    _threshold: f64,
-) -> Vec<f64> {
-    network.to_flow_grid(width, height)
-}
-
 #[cfg(test)]
 mod course_tests {
     use super::*;
@@ -2175,7 +2122,7 @@ mod course_tests {
 
     /// Two tributaries joining at (500, 250) into a trunk running south.
     fn forked_network() -> RiverNetwork {
-        let mut network = RiverNetwork::empty(1024, 512);
+        let mut network = RiverNetwork::empty();
         network.segments = vec![
             segment(0, &[(490.0, 240.0), (500.0, 250.0)], 100, Some(2), &[]),
             segment(1, &[(510.0, 240.0), (500.0, 250.0)], 60, Some(2), &[]),
@@ -2204,7 +2151,7 @@ mod course_tests {
 
     #[test]
     fn a_segment_that_stops_short_is_carried_on_to_the_river_it_flows_into() {
-        let mut network = RiverNetwork::empty(1024, 512);
+        let mut network = RiverNetwork::empty();
         network.segments = vec![
             // Ends at (500, 249), one cell before the trunk's head at (500, 250).
             segment(0, &[(490.0, 240.0), (500.0, 249.0)], 100, Some(1), &[]),
@@ -2315,7 +2262,7 @@ mod course_tests {
 
     #[test]
     fn a_lake_is_a_stub_of_a_course_wider_than_its_river() {
-        let mut network = RiverNetwork::empty(1024, 512);
+        let mut network = RiverNetwork::empty();
         network.segments = headwater_and_trunk();
         network.segments[1].ends_in_lake = true;
         network.rebuild_spatial_index();
@@ -2345,57 +2292,63 @@ mod course_tests {
         assert_eq!(segments[1].surface_from, Some(0));
     }
 
-    /// A three-row world with `middle` as its middle row and land above and
-    /// below: on the sphere a one-row world would touch both poles, and
-    /// every cell its far side.
-    fn strip(middle: &[f64]) -> Vec<f64> {
-        let land = vec![0.2; middle.len()];
-        [&land[..], middle, &land[..]].concat()
+    /// A small cube, all land, with `row` laid along the middle row of face
+    /// 0 from its west edge; the cell of that row at `column`.
+    fn row_on_face(row: &[f64]) -> (CubeGrid, Vec<f64>) {
+        let grid = CubeGrid::margin(8);
+        let mut continentalness = vec![0.2; grid.cell_count()];
+        for (column, &value) in row.iter().enumerate() {
+            continentalness[grid.index(0, column, 4)] = value;
+        }
+        (grid, continentalness)
+    }
+
+    fn at(grid: &CubeGrid, column: usize) -> usize {
+        grid.index(0, column, 4)
     }
 
     #[test]
     fn a_mouth_is_carried_through_the_shallows_to_open_water() {
         // Sea level 0: land, then two shallow cells, then open water.
-        let continentalness = strip(&[0.2, -0.01, -0.02, -0.2, -0.3]);
+        let (grid, continentalness) = row_on_face(&[0.2, -0.01, -0.02, -0.2, -0.3]);
         assert_eq!(
-            path_to_open_water(5 + 1, &continentalness, 5, 3, 0.0),
-            vec![5 + 2, 5 + 3]
+            path_to_open_water(at(&grid, 1), &continentalness, &grid, 0.0),
+            vec![at(&grid, 2), at(&grid, 3)]
         );
         // Already in open water: nothing to add.
-        assert!(path_to_open_water(5 + 3, &continentalness, 5, 3, 0.0).is_empty());
+        assert!(path_to_open_water(at(&grid, 3), &continentalness, &grid, 0.0).is_empty());
     }
 
     #[test]
     fn in_a_shallow_sea_a_mouth_is_carried_to_the_deepest_water_in_reach() {
         // Nothing here is deep enough to count as open water.
-        let continentalness = strip(&[0.2, -0.01, -0.03, -0.02, 0.2, 0.2]);
+        let (grid, continentalness) = row_on_face(&[0.2, -0.01, -0.03, -0.02, 0.2, 0.2]);
         assert_eq!(
-            path_to_open_water(6 + 1, &continentalness, 6, 3, 0.0),
-            vec![6 + 2]
+            path_to_open_water(at(&grid, 1), &continentalness, &grid, 0.0),
+            vec![at(&grid, 2)]
         );
     }
 
     #[test]
     fn a_body_of_water_is_a_stretch_of_sea_of_some_size() {
-        // A 20-cell row: one pond cell, land, then a 14-cell lake.
-        let mut row = vec![0.2; 20];
+        // One pond cell, land, then a lake of five cells.
+        let mut row = vec![0.2; 8];
         row[1] = -0.1;
-        for cell in row.iter_mut().skip(4).take(14) {
+        for cell in row.iter_mut().skip(3).take(5) {
             *cell = -0.1;
         }
-        let continentalness = strip(&row);
+        let (grid, continentalness) = row_on_face(&row);
 
-        // The middle row lies on the equator: a full cell each.
-        let in_body = stretches_below_sea(&continentalness, 20, 3, 0.0, 12.0);
+        let in_body = stretches_below_sea(&continentalness, &grid, 0.0, 4.0);
 
-        assert!(!in_body[20 + 1]);
-        assert!(!in_body[20 + 2]);
-        assert!(in_body[20 + 4] && in_body[20 + 17]);
+        assert!(!in_body[at(&grid, 1)]);
+        assert!(!in_body[at(&grid, 2)]);
+        assert!(in_body[at(&grid, 3)] && in_body[at(&grid, 7)]);
     }
 
     #[test]
     fn only_the_surface_part_of_a_segment_becomes_a_course() {
-        let mut network = RiverNetwork::empty(1024, 512);
+        let mut network = RiverNetwork::empty();
         network.segments = headwater_and_trunk();
         network.segments[0].surface_from = None;
         network.segments[1].surface_from = Some(1);
@@ -2457,7 +2410,7 @@ mod course_tests {
 
     #[test]
     fn a_river_system_that_stays_small_is_not_drawn() {
-        let mut network = RiverNetwork::empty(1024, 512);
+        let mut network = RiverNetwork::empty();
         let mut stream = segment(0, &[(100.0, 100.0), (110.0, 100.0)], 30, None, &[]);
         stream.strahler_order = 2;
         network.segments = vec![stream];
@@ -2501,7 +2454,7 @@ mod course_tests {
     #[test]
     fn the_world_grid_records_how_large_each_river_is() {
         let network = forked_network();
-        let grid = network.to_flow_grid(1024, 512);
+        let grid = network.to_flow_raster(1024, 512);
         let largest = grid.iter().cloned().fold(0.0f64, f64::max);
         let smallest_river = grid
             .iter()

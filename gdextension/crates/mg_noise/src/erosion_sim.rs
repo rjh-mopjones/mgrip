@@ -11,13 +11,13 @@
 //!
 //!   h = (h + dt*U + f*h_receiver) / (1 + f),   f = K * dt * flow^m / distance
 //!
-//! The grid is laid over the sphere (spec 014): distances between cells are
-//! the true ones, neighbours join across the poles, and a blur reaches a
-//! distance along the ground rather than a count of cells.
+//! The land is the cubed sphere (spec 015): distances between cells are
+//! the true ones, neighbours run across face edges, and a blur reaches
+//! across them too.
 
-use mg_core::Sphere;
+use mg_core::CubeGrid;
 
-use crate::drainage::{solve_drainage, Drainage, Steps, LAKE_MIN_DEPTH, NO_RECEIVER};
+use crate::drainage::{solve_drainage, Drainage, LAKE_MIN_DEPTH, NO_RECEIVER};
 
 pub struct ErosionParams {
     /// How easily average rock is cut (K). Soft rock erodes faster.
@@ -121,8 +121,21 @@ pub struct Land<'a> {
     pub lake_evaporation: &'a [f64],
     /// How far each cell is desert, from 0 (none) to 1.
     pub desert: &'a [f64],
-    pub width: usize,
-    pub height: usize,
+    pub grid: &'a CubeGrid,
+}
+
+/// Distance between a cell and the one it drains to, in mean cells.
+pub fn step_to(grid: &CubeGrid, from: usize, to: usize) -> f64 {
+    grid.steps(from)
+        .find(|&(cell, _)| cell == to)
+        .map_or_else(|| grid.distance_cells(from, to), |(_, distance)| distance)
+}
+
+/// A reach in world units as a count of mean cells, at least one.
+pub fn reach_cells(grid: &CubeGrid, reach_wu: f64) -> usize {
+    (reach_wu * grid.cells_per_world_unit() / 2.0)
+        .round()
+        .max(1.0) as usize
 }
 
 /// One step of uplift and erosion on `ground`. Adds the rock removed to
@@ -136,7 +149,7 @@ pub fn erosion_step(
     step: u32,
 ) -> Drainage {
     let dt = params.time_step;
-    let steps = Steps::new(land.width, land.height);
+    let grid = land.grid;
     // Under ice it is the ice that flows, down its own surface: smoother than
     // the ground, level across valleys, and able to ride over a sill.
     let ice_thickness = ice_thickness(ground, land);
@@ -157,12 +170,11 @@ pub fn erosion_step(
         land.is_base_level,
         &gathered,
         land.lake_evaporation,
-        land.width,
-        land.height,
+        grid,
         step,
     );
 
-    let cells_per_wu = land.width as f64 / crate::biome_map::WORLD_WIDTH;
+    let cells_per_wu = grid.cells_per_world_unit();
     let flood = params.canyon_flood_area * cells_per_wu * cells_per_wu;
     let full_ice_stream = ICE_STREAM_AREA_WU2 * cells_per_wu * cells_per_wu;
     let sea_level = crate::biome_map::SEA_LEVEL;
@@ -196,8 +208,8 @@ pub fn erosion_step(
             continue;
         }
         let receiver = receiver as usize;
-        // In equatorial cells, so per world unit is this times cells per unit.
-        let distance = steps.distance(cell, receiver);
+        // In mean cells, so per world unit is this times cells per unit.
+        let distance = step_to(grid, cell, receiver);
         if ice_thickness[cell] >= ICE_MIN_THICKNESS {
             // Thick ice digs by how much of it there is and how fast it
             // slides, not towards the height of the ground downstream.
@@ -239,14 +251,8 @@ pub fn erosion_step(
         ground[cell] = lowered;
     }
 
-    widen_valleys(ground, &drainage, land, params, flood, &steps);
-    *ground = crept(
-        ground,
-        land.is_base_level,
-        land.width,
-        land.height,
-        params.slope_creep,
-    );
+    widen_valleys(ground, &drainage, land, params, flood);
+    *ground = crept(ground, land.is_base_level, grid, params.slope_creep);
     drainage
 }
 
@@ -257,9 +263,9 @@ fn ice_thickness(ground: &[f64], land: &Land) -> Vec<f64> {
     if land.ice.iter().all(|&ice| ice <= 0.0) {
         return vec![0.0; ground.len()];
     }
-    let cells_per_wu = land.width as f64 / crate::biome_map::WORLD_WIDTH;
-    let reach = (ICE_SMOOTHING_WU * cells_per_wu / 2.0).round().max(1.0) as i32;
-    let smoothed = box_blurred(ground, land.width, land.height, reach);
+    let smoothed = land
+        .grid
+        .blur(ground, reach_cells(land.grid, ICE_SMOOTHING_WU));
     (0..ground.len())
         .map(|cell| {
             if land.is_base_level[cell] {
@@ -267,40 +273,6 @@ fn ice_thickness(ground: &[f64], land: &Land) -> Vec<f64> {
             } else {
                 (smoothed[cell] - ground[cell]).max(0.0) * land.ice[cell]
             }
-        })
-        .collect()
-}
-
-/// `field` averaged over `reach` equatorial cells each way along the
-/// ground, along rows and then along columns. Along a row the reach spans
-/// more cells where the cells are narrow, towards the poles; along a column
-/// it runs over a pole and down the far side.
-pub fn box_blurred(field: &[f64], width: usize, height: usize, reach: i32) -> Vec<f64> {
-    let grid = Sphere::MARGIN.grid(width, height);
-    // Along each row by running sums, so the wide reach near the poles costs
-    // no more than a narrow one. The row is laid out three times over so a
-    // window of up to half the row can hang off either end of the middle copy.
-    let mut rows = vec![0.0; width * height];
-    let mut running = vec![0.0; 3 * width + 1];
-    for y in 0..height {
-        let row = &field[y * width..(y + 1) * width];
-        for i in 0..3 * width {
-            running[i + 1] = running[i] + row[i % width];
-        }
-        let row_reach = grid.reach_along_row(y, reach) as usize;
-        for x in 0..width {
-            let (start, end) = (x + width - row_reach, x + width + row_reach + 1);
-            rows[y * width + x] = (running[end] - running[start]) / (2 * row_reach + 1) as f64;
-        }
-    }
-    let span = (2 * reach + 1) as f64;
-    (0..width * height)
-        .map(|cell| {
-            let (x, y) = grid.cell(cell);
-            (-reach..=reach)
-                .map(|dy| rows[grid.index(grid.wrap_cell(x as i64, y as i64 + dy as i64))])
-                .sum::<f64>()
-                / span
         })
         .collect()
 }
@@ -317,12 +289,11 @@ fn widen_valleys(
     land: &Land,
     params: &ErosionParams,
     flood: f64,
-    steps: &Steps,
 ) {
     if params.ice_widening <= 0.0 && params.scarp_retreat <= 0.0 {
         return;
     }
-    let cells_per_wu = land.width as f64 / crate::biome_map::WORLD_WIDTH;
+    let cells_per_wu = land.grid.cells_per_world_unit();
     let full_stream = ICE_STREAM_AREA_WU2 * cells_per_wu * cells_per_wu;
     // Highest first, so a trough is widened from its head down.
     for &cell in drainage.order.iter().rev() {
@@ -347,7 +318,7 @@ fn widen_valleys(
                 1.0
             }
         };
-        for (beside, _) in steps.neighbours(cell) {
+        for (beside, _) in land.grid.steps(cell) {
             if !land.is_base_level[beside] && ground[beside] > ground[cell] {
                 ground[beside] -= pull * reaches(beside) * (ground[beside] - ground[cell]);
             }
@@ -356,24 +327,23 @@ fn widen_valleys(
 }
 
 /// The ground after one step of slope creep: each land cell moves `share` of
-/// the way towards the mean of its four neighbours.
-pub fn crept(
-    ground: &[f64],
-    is_base_level: &[bool],
-    width: usize,
-    height: usize,
-    share: f64,
-) -> Vec<f64> {
-    let grid = Sphere::MARGIN.grid(width, height);
-    (0..width * height)
+/// the way towards the mean of its four nearest neighbours.
+pub fn crept(ground: &[f64], is_base_level: &[bool], grid: &CubeGrid, share: f64) -> Vec<f64> {
+    (0..grid.cell_count())
         .map(|cell| {
             if is_base_level[cell] {
                 return ground[cell];
             }
-            let (x, y) = grid.cell(cell);
-            let beside = |dx: i32, dy: i32| ground[grid.index(grid.neighbour(x, y, dx, dy))];
-            let mean = (beside(-1, 0) + beside(1, 0) + beside(0, -1) + beside(0, 1)) / 4.0;
-            ground[cell] + share * (mean - ground[cell])
+            let beside = grid.neighbours(cell);
+            // The four across an edge: north, east, south, west.
+            let (mut sum, mut count) = (0.0, 0.0);
+            for direction in [0, 2, 4, 6] {
+                if let Some(to) = beside[direction] {
+                    sum += ground[to];
+                    count += 1.0;
+                }
+            }
+            ground[cell] + share * (sum / count - ground[cell])
         })
         .collect()
 }
@@ -381,76 +351,96 @@ pub fn crept(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mg_core::CubeGrid;
 
-    /// A 16 by 9 slope rising eastwards from a sea in column 0, with a
-    /// groove along the middle row steep enough to gather the water.
-    fn grooved_slope() -> (Vec<f64>, Vec<bool>) {
-        let (width, height) = (16, 9);
-        let mut ground = vec![0.0; width * height];
-        let mut sea = vec![false; width * height];
-        for y in 0..height {
-            for x in 0..width {
-                let off_groove = (y as f64 - 4.0).abs() * 0.1;
-                ground[y * width + x] = x as f64 * 0.05 + off_groove;
-                sea[y * width + x] = x == 0;
+    const N: usize = 16;
+
+    /// Land rising northwards from a southern sea, with a groove along the
+    /// meridian of longitude 0° (where the sphere's y is 0): a V two cells
+    /// wide each side, its sides steeper than the fall to the sea so the
+    /// water it gathers cannot wander out of it, and flat ground beyond.
+    /// The coast is at sea level: the land stands above it, the sea floor
+    /// below.
+    fn grooved_world(grid: &CubeGrid) -> (Vec<f64>, Vec<bool>) {
+        let mut ground = Vec::with_capacity(grid.cell_count());
+        let mut sea = Vec::with_capacity(grid.cell_count());
+        for cell in 0..grid.cell_count() {
+            let [_, y, z] = grid.point(cell);
+            let off_groove = (y.abs() * 1.5).min(0.3);
+            if z < -0.6 {
+                ground.push(-0.3);
+                sea.push(true);
+            } else {
+                ground.push(z + 0.6 + off_groove);
+                sea.push(false);
             }
         }
         (ground, sea)
     }
 
-    /// The slope after `steps` of erosion with no uplift, and its drainage.
-    fn erode(steps: u32) -> (Vec<f64>, Drainage) {
-        erode_under(steps, 0.0)
+    /// A cell of face 0, `rows` down from its top in `column`. Longitude 0°
+    /// runs between the face's two middle columns.
+    fn on_face_0(grid: &CubeGrid, rows: usize, column: usize) -> usize {
+        grid.index(0, column, rows)
     }
 
-    /// As `erode`, under ice that widens its valleys by `ice_widening`.
-    fn erode_under(steps: u32, ice_widening: f64) -> (Vec<f64>, Drainage) {
-        erode_in(steps, ice_widening, 0.0)
+    /// The groove lies between two columns, and the channel the water cuts
+    /// runs in one or the other: the column it runs in on `row`, by flow.
+    fn channel_column(grid: &CubeGrid, drainage: &Drainage, row: usize) -> usize {
+        [N / 2 - 1, N / 2]
+            .into_iter()
+            .max_by(|&a, &b| {
+                drainage.flow[on_face_0(grid, row, a)]
+                    .total_cmp(&drainage.flow[on_face_0(grid, row, b)])
+            })
+            .unwrap()
     }
 
-    /// As `erode_under`, on land that is `desert` (0 none to 1 all).
-    fn erode_in(steps: u32, ice_widening: f64, desert: f64) -> (Vec<f64>, Drainage) {
-        erode_with(steps, ice_widening, desert, 0.0, 0.0)
+    /// The world after `steps` of erosion with no uplift, and its drainage.
+    fn erode(steps: u32) -> (CubeGrid, Vec<f64>, Drainage) {
+        erode_with(steps, 0.0, 0.0, 0.0, 0.0)
     }
 
-    /// The grooved slope after `steps`, with everything set: how far the
-    /// land is under `ice`, and how hard that ice widens and cuts.
     fn erode_with(
         steps: u32,
         ice_widening: f64,
         desert: f64,
         ice: f64,
         ice_cutting: f64,
-    ) -> (Vec<f64>, Drainage) {
-        let desert = [desert; 144];
-        let ice = [ice; 144];
-        let (mut ground, sea) = grooved_slope();
+    ) -> (CubeGrid, Vec<f64>, Drainage) {
+        let grid = CubeGrid::margin(N);
+        let total = grid.cell_count();
+        let desert = vec![desert; total];
+        let ice = vec![ice; total];
+        let (mut ground, sea) = grooved_world(&grid);
         let params = ErosionParams {
-            erodibility: 0.04,
+            // Gentle enough that a cell is cut by its flow, not all the way
+            // down to the cell it drains to in one step.
+            erodibility: 0.004,
             uplift: 0.0,
             flow_exponent: 0.45,
             time_step: 1.2,
-            slope_creep: 0.04,
+            slope_creep: 0.01,
             uplift_limit: 1.0,
             ice_widening,
             ice_cutting,
-            // On this 16-cell-wide grid, the rain of three cells.
-            canyon_flood_area: 3.0 * (1024.0 / 16.0) * (1024.0 / 16.0),
+            // On this coarse cube, the rain of forty cells: more than any
+            // cell off the channel gathers, far less than the channel.
+            canyon_flood_area: 40.0 * grid.cell_size() * grid.cell_size(),
             canyon_power: 4.0,
             scarp_retreat: 0.0,
         };
         let land = Land {
             is_base_level: &sea,
-            rock_hardness: &[0.5; 144],
-            uplift_share: &[0.0; 144],
-            rainfall: &[1.0; 144],
+            rock_hardness: &vec![0.5; total],
+            uplift_share: &vec![0.0; total],
+            rainfall: &vec![1.0; total],
             ice: &ice,
-            lake_evaporation: &[0.0; 144],
+            lake_evaporation: &vec![0.0; total],
             desert: &desert,
-            width: 16,
-            height: 9,
+            grid: &grid,
         };
-        let mut sediment = vec![0.0; 144];
+        let mut sediment = vec![0.0; total];
         let mut drainage = None;
         for step in 0..steps {
             drainage = Some(erosion_step(
@@ -461,102 +451,118 @@ mod tests {
                 step,
             ));
         }
-        (ground, drainage.expect("at least one step"))
+        (grid.clone(), ground, drainage.expect("at least one step"))
+    }
+
+    /// How much each cell of `row` on face 0 was lowered, by column.
+    fn cuts_along(grid: &CubeGrid, before: &[f64], after: &[f64], row: usize) -> Vec<f64> {
+        (0..N)
+            .map(|column| {
+                let cell = on_face_0(grid, row, column);
+                before[cell] - after[cell]
+            })
+            .collect()
+    }
+
+    /// The groove runs between the face's two middle columns; the channel
+    /// wanders between them from step to step.
+    const GROOVE: std::ops::RangeInclusive<usize> = N / 2 - 2..=N / 2 + 1;
+    /// Level ground well east of the groove, clear of the gutter that the
+    /// flat drains into along the groove's rim.
+    const FLAT: std::ops::RangeInclusive<usize> = N / 2 + 6..=N - 1;
+
+    fn most(cuts: &[f64], columns: std::ops::RangeInclusive<usize>) -> f64 {
+        columns.map(|column| cuts[column]).fold(f64::MIN, f64::max)
+    }
+
+    fn least(cuts: &[f64], columns: std::ops::RangeInclusive<usize>) -> f64 {
+        columns.map(|column| cuts[column]).fold(f64::MAX, f64::min)
     }
 
     #[test]
     fn a_river_cuts_a_valley_deeper_than_the_ground_beside_it() {
-        let (before, _) = grooved_slope();
-        let (after, _) = erode(5);
-        // Middle of the slope: in the groove, and three rows off it.
-        let (in_valley, beside) = (4 * 16 + 8, 1 * 16 + 8);
+        let (grid, after, _) = erode(5);
+        let (before, _) = grooved_world(&grid);
+        let cuts = cuts_along(&grid, &before, &after, 11);
 
-        let cut_in_valley = before[in_valley] - after[in_valley];
-        let cut_beside = before[beside] - after[beside];
-        assert!(cut_in_valley > cut_beside);
-        assert!(after[in_valley] < after[beside]);
+        // The channel is cut far deeper than any cell of the level ground.
+        let (in_valley, beside) = (most(&cuts, GROOVE), least(&cuts, FLAT));
+        assert!(in_valley > 1.5 * beside, "{in_valley} vs {beside}");
     }
 
     #[test]
     fn ice_cuts_a_wider_valley_than_water() {
-        let (by_water, _) = erode_with(5, 0.0, 0.0, 1.0, 0.0);
-        let (by_ice, _) = erode_with(5, 0.5, 0.0, 1.0, 0.0);
-        // One row off the groove, in the middle of the slope: the valley side.
-        let valley_side = 3 * 16 + 8;
+        let (grid, by_water, drainage) = erode_with(5, 0.0, 0.0, 1.0, 0.0);
+        let (_, by_ice, _) = erode_with(5, 0.5, 0.0, 1.0, 0.0);
+        // One column off the channel, low on face 0: the valley side.
+        let valley_side = on_face_0(&grid, 11, channel_column(&grid, &drainage, 11) + 1);
 
         assert!(by_ice[valley_side] < by_water[valley_side]);
     }
 
     #[test]
     fn ice_fills_the_valley_and_digs_where_water_would_have_stopped() {
-        let (ground, sea) = grooved_slope();
+        let grid = CubeGrid::margin(N);
+        let total = grid.cell_count();
+        let (ground, sea) = grooved_world(&grid);
         let land = Land {
             is_base_level: &sea,
-            rock_hardness: &[0.5; 144],
-            uplift_share: &[0.0; 144],
-            rainfall: &[1.0; 144],
-            ice: &[1.0; 144],
-            lake_evaporation: &[0.0; 144],
-            desert: &[0.0; 144],
-            width: 16,
-            height: 9,
+            rock_hardness: &vec![0.5; total],
+            uplift_share: &vec![0.0; total],
+            rainfall: &vec![1.0; total],
+            ice: &vec![1.0; total],
+            lake_evaporation: &vec![0.0; total],
+            desert: &vec![0.0; total],
+            grid: &grid,
         };
         // Ice lies in the groove and not on the high ground beside it.
         let thickness = ice_thickness(&ground, &land);
-        assert!(thickness[4 * 16 + 8] > thickness[16 + 8]);
+        assert!(thickness[on_face_0(&grid, 8, N / 2)] > thickness[on_face_0(&grid, 8, N / 2 + 4)]);
 
         // Where the valley meets the sea, ice digs below sea level; water
         // only cuts down to its outlet.
-        let coast = 4 * 16 + 1;
-        let (by_water, _) = erode_with(40, 0.0, 0.0, 0.0, 0.0);
-        // (Slopes on this 16-cell world are tiny per world unit, so the ice
-        // is given a great deal of cutting power.)
-        let (by_ice, _) = erode_with(40, 0.0, 0.0, 1.0, 2.0);
-        assert!(by_water[coast] >= ground[4 * 16]);
-        assert!(by_ice[coast] < ground[4 * 16]);
+        let coast = (0..total)
+            .filter(|&cell| !sea[cell] && grid.point(cell)[1].abs() < 0.05)
+            .min_by(|&a, &b| ground[a].total_cmp(&ground[b]))
+            .unwrap();
+        let (_, by_water, _) = erode_with(40, 0.0, 0.0, 0.0, 0.0);
+        let (_, by_ice, _) = erode_with(40, 0.0, 0.0, 1.0, 2.0);
+        assert!(by_ice[coast] < by_water[coast]);
         assert!(by_ice[coast] >= FJORD_FLOOR);
     }
 
     #[test]
     fn in_desert_only_the_channel_is_cut() {
-        let (before, _) = grooved_slope();
-        let (after, _) = erode_in(5, 0.0, 1.0);
-        // Low on the slope: in the groove, where the water has gathered, and
-        // three rows off it, where each cell has only its own rain.
-        let (in_channel, beside) = (4 * 16 + 3, 1 * 16 + 3);
+        let (grid, after, _) = erode_with(5, 0.0, 1.0, 0.0, 0.0);
+        let (_, plain, _) = erode(5);
+        let (before, _) = grooved_world(&grid);
+        let desert_cuts = cuts_along(&grid, &before, &after, 11);
+        let plain_cuts = cuts_along(&grid, &before, &plain, 11);
 
-        assert!(before[in_channel] - after[in_channel] > 0.0);
-        // Off the channel nothing is cut; the ground only creeps.
-        let (plain, _) = erode_in(5, 0.0, 0.0);
-        assert!(before[beside] - after[beside] < before[beside] - plain[beside]);
+        // The channel, where the water has gathered, is cut: harder than a
+        // river of the same flow would cut it.
+        assert!(most(&desert_cuts, GROOVE) > most(&plain_cuts, GROOVE));
+        // The level ground, where a cell has little more than its own rain,
+        // is not cut at all; a river would have cut it a little.
+        assert!(most(&desert_cuts, FLAT) < least(&plain_cuts, FLAT));
     }
 
     #[test]
     fn the_sea_stays_where_it_is_and_the_result_drains_to_it() {
-        let (before, _) = grooved_slope();
-        let (after, drainage) = erode(5);
+        let (grid, after, drainage) = erode(5);
+        let (before, sea) = grooved_world(&grid);
 
-        for y in 0..9 {
-            assert_eq!(after[y * 16], before[y * 16]);
+        for cell in 0..grid.cell_count() {
+            if sea[cell] {
+                assert_eq!(after[cell], before[cell]);
+            }
         }
         let draining = drainage
             .receivers
             .iter()
             .filter(|&&r| r != NO_RECEIVER)
             .count();
-        assert_eq!(draining, 144 - 9);
-    }
-
-    #[test]
-    fn a_blur_reaches_over_the_pole_and_round_the_world() {
-        // An 8 by 4 world with one hot cell at (0, 0). Blurred by one cell,
-        // its heat reaches (7, 0) round the seam and (4, 0) over the pole,
-        // but not (4, 2), far away on the other side.
-        let mut field = vec![0.0; 32];
-        field[0] = 8.0;
-        let blurred = box_blurred(&field, 8, 4, 1);
-        assert!(blurred[7] > 0.0);
-        assert!(blurred[4] > 0.0);
-        assert_eq!(blurred[2 * 8 + 4], 0.0);
+        let land = sea.iter().filter(|&&s| !s).count();
+        assert_eq!(draining, land);
     }
 }

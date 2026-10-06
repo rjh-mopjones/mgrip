@@ -5,6 +5,7 @@ pub mod derived;
 pub mod drainage;
 pub mod erosion_sim;
 pub mod landscape;
+pub mod macro_map;
 pub mod rim_sea;
 pub mod rivers;
 pub mod runtime_presentation;
@@ -15,10 +16,10 @@ pub mod visualization;
 pub mod wind;
 
 pub use biome_map::{
-    generate_macro_map, generate_macro_probe, generate_map_tile, sample_field_bilinear,
-    tile_has_fluid_surface, BiomeMap, MacroOceanMask, MACRO_MAP_HEIGHT, MACRO_MAP_WIDTH, SEA_LEVEL,
-    WORLD_HEIGHT, WORLD_WIDTH,
+    generate_map_tile, sample_field_bilinear, tile_has_fluid_surface, BiomeMap, MacroOceanMask,
+    MACRO_MAP_HEIGHT, MACRO_MAP_WIDTH, SEA_LEVEL, WORLD_HEIGHT, WORLD_WIDTH,
 };
+pub use macro_map::{generate_macro_map, generate_macro_probe, MacroMap};
 pub use biome_splines::BiomeSplines;
 pub use derived::{
     derive_aridity, derive_heightmap, derive_micro_heightmap, derive_peaks_valleys,
@@ -27,7 +28,7 @@ pub use derived::{
 };
 pub use erosion_sim::{erosion_step, ErosionParams, Land};
 pub use rivers::{
-    rasterize_courses, rasterize_from_network, rasterize_to_tile, RiverCharacter, RiverConstraint,
+    rasterize_courses, rasterize_to_tile, RiverCharacter, RiverConstraint,
     RiverCourse, RiverNetwork, RiverSegment, LOD_THRESHOLD_MACRO, LOD_THRESHOLD_MESO,
     LOD_THRESHOLD_MICRO,
 };

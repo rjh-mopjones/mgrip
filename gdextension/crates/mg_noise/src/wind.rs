@@ -6,11 +6,15 @@
 //! seas, carries it downwind, and drops it where it slackens. That is where
 //! the sand seas are: not wherever a noise layer says, but in the basins the
 //! wind cannot sweep clean.
+//!
+//! The land is the cubed sphere (spec 015): the wind is a tangent vector at
+//! each cell, and sand goes to whichever neighbours lie downwind.
 
-use crate::biome_map::{SEA_LEVEL, WORLD_WIDTH};
+use mg_core::{cube::Tangent, CubeGrid};
+
+use crate::biome_map::SEA_LEVEL;
 use crate::drainage::desert;
-use crate::erosion_sim::box_blurred;
-use crate::rivers::D8_OFFSETS;
+use crate::erosion_sim::reach_cells;
 
 /// Ground is exposed or sheltered relative to the land about this many
 /// world units around it.
@@ -57,67 +61,48 @@ const DUNE_COARSEST_SAMPLING: f64 = 0.3;
 /// Sand thinner than this lies flat; dunes grow to full height by `SAND_SEA`.
 const DUNES_FROM_SAND: f64 = 0.3;
 
-/// The wind at the surface, one vector per cell: its direction, with its
-/// speed as its length (1 is a steady wind over open ground).
+/// The wind at the surface, one tangent vector per cell: its direction,
+/// with its speed as its length (1 is a steady wind over open ground).
 pub struct Wind {
-    pub x: Vec<f64>,
-    pub y: Vec<f64>,
+    pub vector: Vec<Tangent>,
 }
 
 impl Wind {
     pub fn speed(&self, cell: usize) -> f64 {
-        (self.x[cell] * self.x[cell] + self.y[cell] * self.y[cell]).sqrt()
+        let v = self.vector[cell];
+        (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
     }
 }
 
-/// A field's slope at a cell, per world unit along the ground, east and
-/// south. The grid lies on the sphere: it joins east to west and over the
-/// poles, and a cell narrows towards them. Within the last rows a cell is
-/// a sliver, so the east-west slope there is measured over no less than a
-/// quarter of a cell's height.
-fn slope(field: &[f64], cell: usize, width: usize, height: usize) -> (f64, f64) {
-    let grid = mg_core::Sphere::MARGIN.grid(width, height);
-    let (x, y) = grid.cell(cell);
-    let at = |dx: i32, dy: i32| field[grid.index(grid.neighbour(x, y, dx, dy))];
-    let across = grid.cell_width(y).max(grid.cell_height() / 4.0);
-    (
-        (at(1, 0) - at(-1, 0)) / (2.0 * across),
-        (at(0, 1) - at(0, -1)) / (2.0 * grid.cell_height()),
-    )
+fn length(v: Tangent) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// The surface wind over `heightmap`: from dark towards light, turned aside
 /// by rising ground, fast where the ground stands proud and slack where it
 /// lies low.
-pub fn surface_wind(light_level: &[f64], heightmap: &[f64], width: usize, height: usize) -> Wind {
-    let cells_per_wu = width as f64 / WORLD_WIDTH;
+pub fn surface_wind(light_level: &[f64], heightmap: &[f64], grid: &CubeGrid) -> Wind {
     let ground: Vec<f64> = heightmap.iter().map(|&h| h.max(SEA_LEVEL)).collect();
-    let reach = (SHELTER_SCALE_WU * cells_per_wu / 2.0).round().max(1.0) as i32;
-    let surroundings = box_blurred(&ground, width, height, reach);
+    let surroundings = grid.blur(&ground, reach_cells(grid, SHELTER_SCALE_WU));
 
-    let (mut wind_x, mut wind_y) = (
-        Vec::with_capacity(ground.len()),
-        Vec::with_capacity(ground.len()),
-    );
-    for cell in 0..ground.len() {
-        let (to_light_x, to_light_y) = slope(light_level, cell, width, height);
-        let to_light = (to_light_x * to_light_x + to_light_y * to_light_y)
-            .sqrt()
-            .max(1e-12);
-        // Slopes are per world unit, as the turning is.
-        let (rise_x, rise_y) = slope(&surroundings, cell, width, height);
-        let x = to_light_x / to_light - rise_x * DEFLECTION;
-        let y = to_light_y / to_light - rise_y * DEFLECTION;
-        let length = (x * x + y * y).sqrt().max(1e-12);
-        let speed = (1.0 + (ground[cell] - surroundings[cell]) * EXPOSURE_GAIN)
-            .clamp(SLOWEST_WIND, FASTEST_WIND);
-        wind_x.push(x / length * speed);
-        wind_y.push(y / length * speed);
-    }
-    Wind {
-        x: wind_x,
-        y: wind_y,
-    }
+    let vector = (0..grid.cell_count())
+        .map(|cell| {
+            let to_light = grid.gradient(light_level, cell);
+            let strength = length(to_light).max(1e-12);
+            // Slopes are per world unit, as the turning is.
+            let rise = grid.gradient(&surroundings, cell);
+            let v = [
+                to_light[0] / strength - rise[0] * DEFLECTION,
+                to_light[1] / strength - rise[1] * DEFLECTION,
+                to_light[2] / strength - rise[2] * DEFLECTION,
+            ];
+            let len = length(v).max(1e-12);
+            let speed = (1.0 + (ground[cell] - surroundings[cell]) * EXPOSURE_GAIN)
+                .clamp(SLOWEST_WIND, FASTEST_WIND);
+            [v[0] / len * speed, v[1] / len * speed, v[2] / len * speed]
+        })
+        .collect();
+    Wind { vector }
 }
 
 /// Where the sand ends up, from 0 (bare) to 1 (a sand sea), one value per
@@ -129,10 +114,9 @@ pub fn drifted_sand(
     sediment: &[f64],
     light_level: &[f64],
     is_water: &[bool],
-    width: usize,
-    height: usize,
+    grid: &CubeGrid,
 ) -> Vec<f64> {
-    let total = width * height;
+    let total = grid.cell_count();
     let most_worn = sediment.iter().copied().fold(1e-9, f64::max);
     let dryness: Vec<f64> = light_level.iter().map(|&light| desert(light)).collect();
     let given_up: Vec<f64> = (0..total)
@@ -150,30 +134,12 @@ pub fn drifted_sand(
     // nearest in direction, it would travel in dead-straight streaks along
     // those eight; so it is shared between the two neighbours either side of
     // the wind's true direction, more to the nearer.
-    let grid = mg_core::Sphere::MARGIN.grid(width, height);
-    let neighbour = |cell: usize, direction: usize| {
-        let (dx, dy) = D8_OFFSETS[direction % 8];
-        let (x, y) = grid.cell(cell);
-        grid.index(grid.neighbour(x, y, dx, dy))
-    };
+    let downwind: Vec<[(usize, f64); 2]> = (0..total)
+        .map(|cell| grid.downstream(cell, wind.vector[cell]))
+        .collect();
     // Sand is a depth over a cell. Blown onto a cell of a different size it
     // lies deeper or shallower by the ratio of the two areas.
-    let shares: Vec<f64> = (0..height).map(|y| grid.area_share(y)).collect();
-    let into = |from: usize, to: usize| shares[from / width] / shares[to / width];
-    let downwind: Vec<[(usize, f64); 2]> = (0..total)
-        .map(|cell| {
-            // `D8_OFFSETS` runs clockwise from north, an eighth of a turn apart.
-            let turn = wind.x[cell]
-                .atan2(-wind.y[cell])
-                .rem_euclid(std::f64::consts::TAU)
-                / (std::f64::consts::TAU / 8.0);
-            let (before, share) = (turn.floor() as usize, turn - turn.floor());
-            [
-                (neighbour(cell, before), 1.0 - share),
-                (neighbour(cell, before + 1), share),
-            ]
-        })
-        .collect();
+    let into = |from: usize, to: usize| grid.area_share(from) / grid.area_share(to);
 
     let mut sand = vec![0.0f64; total];
     for _ in 0..DRIFT_STEPS {
@@ -195,7 +161,7 @@ pub fn drifted_sand(
         sand = next;
     }
     // Soften the grid of eight directions out of the result.
-    let settled = box_blurred(&sand, width, height, 1);
+    let settled = grid.blur(&sand, 1);
     (0..total)
         .map(|cell| {
             if is_water[cell] {
@@ -253,71 +219,87 @@ pub fn dune_height(sand: f64, wx: f64, wy: f64, sample_spacing: f64) -> f64 {
 mod tests {
     use super::*;
 
-    const WIDE: usize = 32;
-    const HIGH: usize = 16;
+    const N: usize = 16;
 
-    /// Light rising from north (0) to south (1): all desert in the south.
-    fn light() -> Vec<f64> {
-        (0..WIDE * HIGH)
-            .map(|cell| (cell / WIDE) as f64 / (HIGH - 1) as f64)
+    fn cube() -> CubeGrid {
+        CubeGrid::margin(N)
+    }
+
+    /// Light rising from the north pole (0) to the south pole (1): all
+    /// desert in the south.
+    fn light(grid: &CubeGrid) -> Vec<f64> {
+        (0..grid.cell_count())
+            .map(|cell| (1.0 - grid.point(cell)[2]) / 2.0)
             .collect()
     }
 
     #[test]
     fn the_wind_blows_from_the_dark_side_to_the_light() {
-        let wind = surface_wind(&light(), &vec![0.2; WIDE * HIGH], WIDE, HIGH);
-        let middle = 8 * WIDE + 16;
+        let grid = cube();
+        let wind = surface_wind(&light(&grid), &vec![0.2; grid.cell_count()], &grid);
+        let middle = grid.index(0, N / 2, N / 2);
+        let (east, south) = grid.tangents(middle);
+        let v = wind.vector[middle];
+        let southward = v[0] * south[0] + v[1] * south[1] + v[2] * south[2];
+        let eastward = v[0] * east[0] + v[1] * east[1] + v[2] * east[2];
 
-        assert!(wind.y[middle] > 0.9);
-        assert!(wind.x[middle].abs() < 1e-9);
+        assert!(southward > 0.9 * wind.speed(middle), "{southward}");
+        assert!(eastward.abs() < 0.05, "{eastward}");
     }
 
     #[test]
     fn the_wind_is_slack_in_a_hollow() {
-        let mut ground = vec![0.2; WIDE * HIGH];
-        let hollow = 12 * WIDE + 16;
+        let grid = cube();
+        let mut ground = vec![0.2; grid.cell_count()];
+        let hollow = grid.index(0, N / 2, 10);
         ground[hollow] = 0.05;
-        let wind = surface_wind(&light(), &ground, WIDE, HIGH);
+        let wind = surface_wind(&light(&grid), &ground, &grid);
 
-        assert!(wind.speed(hollow) < wind.speed(12 * WIDE + 4));
+        assert!(wind.speed(hollow) < wind.speed(grid.index(0, 2, 10)));
     }
 
     #[test]
     fn sand_gathers_in_desert_hollows_and_not_in_the_terminus() {
-        let mut ground = vec![0.2; WIDE * HIGH];
-        let hollow = 13 * WIDE + 16;
-        for cell in [hollow - 1, hollow, hollow + 1] {
+        let grid = cube();
+        let total = grid.cell_count();
+        let mut ground = vec![0.2; total];
+        // A hollow on the sunlit south face, across the wind.
+        let hollow = grid.index(5, N / 2, N / 2);
+        for cell in [
+            grid.neighbour(hollow, -1, 0).unwrap(),
+            hollow,
+            grid.neighbour(hollow, 1, 0).unwrap(),
+        ] {
             ground[cell] = 0.02;
         }
-        let wind = surface_wind(&light(), &ground, WIDE, HIGH);
+        let wind = surface_wind(&light(&grid), &ground, &grid);
         let sand = drifted_sand(
             &wind,
             &ground,
-            &vec![0.1; WIDE * HIGH],
-            &light(),
-            &vec![false; WIDE * HIGH],
-            WIDE,
-            HIGH,
+            &vec![0.1; total],
+            &light(&grid),
+            &vec![false; total],
+            &grid,
         );
 
-        // More in the hollow than on open ground beside it.
-        assert!(sand[hollow] > sand[13 * WIDE + 4]);
-        // None in the north, where it is not desert.
-        assert_eq!(sand[2 * WIDE + 16], 0.0);
+        let open_desert = grid.index(5, 2, 2);
+        let terminus = grid.index(0, N / 2, N / 2);
+        assert!(
+            sand[hollow] > sand[open_desert],
+            "{} vs {}",
+            sand[hollow],
+            sand[open_desert]
+        );
+        assert!(sand[terminus] < 0.01, "{}", sand[terminus]);
     }
 
     #[test]
-    fn dunes_stand_only_where_sand_lies_and_run_in_crests() {
-        assert_eq!(dune_height(0.1, 500.0, 400.0, 0.001), 0.0);
-        // Too fine for samples half a world unit apart to draw.
-        assert_eq!(dune_height(1.0, 512.0, 400.0, 0.5), 0.0);
-        let along: Vec<f64> = (0..200)
-            .map(|step| dune_height(1.0, 512.0, 400.0 + step as f64 * 0.01, 0.001))
-            .collect();
-        let (lowest, highest) = along.iter().fold((f64::MAX, f64::MIN), |(low, high), &h| {
-            (low.min(h), high.max(h))
-        });
-        assert!(highest > lowest + 0.005);
-        assert!(highest <= DUNE_HEIGHT);
+    fn dunes_stand_only_on_deep_sand_and_only_when_drawable() {
+        assert_eq!(dune_height(0.1, 500.0, 400.0, 0.01), 0.0);
+        assert_eq!(dune_height(1.0, 500.0, 400.0, 1.0), 0.0);
+        let tallest = (0..200)
+            .map(|i| dune_height(1.0, 500.0 + i as f64 * 0.01, 400.0, 0.01))
+            .fold(0.0, f64::max);
+        assert!(tallest > 0.0 && tallest <= DUNE_HEIGHT);
     }
 }

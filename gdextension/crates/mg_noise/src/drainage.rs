@@ -8,16 +8,16 @@
 //! level, raising any hollow to the level at which it spills, then send each
 //! cell's water to its lowest neighbour on that flooded surface.
 //!
-//! The grid is laid over the sphere (spec 014): neighbours join east to
-//! west and across the poles, slopes are measured over the true distance
-//! between cells, and rain is gathered by area. Distances and flows are in
-//! equatorial cells, the unit a flat grid would have used, so nothing
-//! calibrated on one needs changing.
+//! The land is the cubed sphere (spec 015): a cell's neighbours run across
+//! face edges, slopes are measured over the true distance between cells,
+//! and rain is gathered by area. Distances and flows are in mean cells, the
+//! unit a flat grid would have used, so nothing calibrated on one needs
+//! changing.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use mg_core::{Sphere, SphereGrid};
+use mg_core::CubeGrid;
 
 use crate::rivers::position_jitter;
 
@@ -47,8 +47,7 @@ pub struct Drainage {
     /// comes after the cell it drains to.
     pub order: Vec<u32>,
     /// Rain gathered at each cell: its own and all that drains through it,
-    /// less what evaporated from lakes on the way. In equatorial cells of
-    /// run-off.
+    /// less what evaporated from lakes on the way. In mean cells of run-off.
     pub flow: Vec<f64>,
 }
 
@@ -156,57 +155,6 @@ impl Ord for Flooding {
     }
 }
 
-/// The grid over the sphere, with the distances between neighbours worked
-/// out once per row.
-pub struct Steps {
-    pub grid: SphereGrid,
-    /// By row, then in `D8_OFFSETS` order: in equatorial cells.
-    by_row: Vec<[f64; 8]>,
-}
-
-impl Steps {
-    pub fn new(width: usize, height: usize) -> Self {
-        let grid = Sphere::MARGIN.grid(width, height);
-        let cells_per_wu = grid.cells_per_world_unit();
-        let by_row = grid
-            .row_step_distances()
-            .into_iter()
-            .map(|row| row.map(|wu| wu * cells_per_wu))
-            .collect();
-        Self { grid, by_row }
-    }
-
-    /// The eight neighbours of a cell with the distance to each, in
-    /// equatorial cells.
-    pub fn neighbours(&self, cell: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
-        let (x, y) = self.grid.cell(cell);
-        self.grid
-            .neighbours(x, y)
-            .into_iter()
-            .zip(self.by_row[y])
-            .map(move |(to, distance)| (self.grid.index(to), distance))
-    }
-
-    /// Distance between a cell and one of its eight neighbours, in
-    /// equatorial cells.
-    pub fn distance(&self, from: usize, to: usize) -> f64 {
-        self.neighbours(from)
-            .find(|&(cell, _)| cell == to)
-            .map_or_else(
-                || {
-                    self.grid.distance(self.grid.cell(from), self.grid.cell(to))
-                        * self.grid.cells_per_world_unit()
-                },
-                |(_, distance)| distance,
-            )
-    }
-
-    /// A cell's area as a share of an equatorial cell's.
-    pub fn area_share(&self, cell: usize) -> f64 {
-        self.grid.area_share(cell / self.grid.width)
-    }
-}
-
 /// Water can only run to one of a cell's eight neighbours. Always taking
 /// the steepest makes valleys run dead straight along those eight directions
 /// for as long as the slope allows, and the land comes out looking like a
@@ -223,11 +171,16 @@ fn routing_lot(cell: usize, salt: u32) -> f64 {
     )
 }
 
+/// A number from 0 to 1 fixed for a cell.
+pub fn cell_jitter(cell: usize) -> f64 {
+    position_jitter((cell % 65_536) as u32, (cell / 65_536) as u32)
+}
+
 /// Solve drainage over `ground`. Water runs to `is_base_level` cells (the
 /// sea), which stay as they are. `rainfall` is the run-off each cell adds
-/// per equatorial cell of area, and `evaporation` what a cell of open lake
-/// loses (`lake_evaporation`). Land with no way to base level is left with
-/// no receiver.
+/// per mean cell of area, and `evaporation` what a cell of open lake loses
+/// (`lake_evaporation`). Land with no way to base level is left with no
+/// receiver.
 ///
 /// `salt` picks how the lots fall (see `STEEPNESS_PREFERENCE`): erosion
 /// changes it every step so no one pattern is cut into the land.
@@ -236,12 +189,10 @@ pub fn solve_drainage(
     is_base_level: &[bool],
     rainfall: &[f64],
     evaporation: &[f64],
-    width: usize,
-    height: usize,
+    grid: &CubeGrid,
     salt: u32,
 ) -> Drainage {
-    let steps = Steps::new(width, height);
-    let total = width * height;
+    let total = grid.cell_count();
     let mut filled = ground.to_vec();
     let mut reached = vec![false; total];
     let mut order = Vec::with_capacity(total);
@@ -259,13 +210,12 @@ pub fn solve_drainage(
     while let Some(Flooding { cell, .. }) = waiting.pop() {
         order.push(cell);
         let cell = cell as usize;
-        for (neighbour, _) in steps.neighbours(cell) {
+        for (neighbour, _) in grid.steps(cell) {
             if reached[neighbour] {
                 continue;
             }
             reached[neighbour] = true;
-            let jitter = position_jitter((neighbour % width) as u32, (neighbour / width) as u32);
-            let spill = filled[cell] + FLAT_SLOPE * (0.3 + 1.4 * jitter);
+            let spill = filled[cell] + FLAT_SLOPE * (0.3 + 1.4 * cell_jitter(neighbour));
             filled[neighbour] = ground[neighbour].max(spill);
             waiting.push(Flooding {
                 level: filled[neighbour],
@@ -280,8 +230,8 @@ pub fn solve_drainage(
             if is_base_level[cell] || !reached[cell] {
                 return NO_RECEIVER;
             }
-            let downhill: Vec<(usize, f64)> = steps
-                .neighbours(cell)
+            let downhill: Vec<(usize, f64)> = grid
+                .steps(cell)
                 .map(|(neighbour, distance)| {
                     (neighbour, (filled[cell] - filled[neighbour]) / distance)
                 })
@@ -303,13 +253,13 @@ pub fn solve_drainage(
         .collect();
 
     // Gather rain from the highest cells down. A cell adds its rain by its
-    // area, so the narrow cells towards the poles add less.
+    // area, so a smaller cell adds less.
     let mut flow: Vec<f64> = (0..total)
         .map(|cell| {
             if is_base_level[cell] {
                 0.0
             } else {
-                rainfall[cell] * steps.area_share(cell)
+                rainfall[cell] * grid.area_share(cell)
             }
         })
         .collect();
@@ -318,7 +268,7 @@ pub fn solve_drainage(
         // Water crossing a lake loses some of itself to the air; a lake
         // that loses all of it has no river out.
         if filled[cell] - ground[cell] >= LAKE_MIN_DEPTH {
-            flow[cell] = (flow[cell] - evaporation[cell] * steps.area_share(cell)).max(0.0);
+            flow[cell] = (flow[cell] - evaporation[cell] * grid.area_share(cell)).max(0.0);
         }
         let receiver = receivers[cell];
         if receiver != NO_RECEIVER {
@@ -335,93 +285,155 @@ pub fn solve_drainage(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_world {
+    //! A small cubed-sphere world for the solvers' tests: the sea is the
+    //! southern cap, the land rises northwards with the height of the
+    //! point above the equator.
 
-    /// A 5 by 3 strip with sea in its west column. Row 1 is the one tested;
-    /// rows 0 and 2 are high ground so nothing drains through them.
-    fn strip(row: [f64; 5]) -> (Vec<f64>, Vec<bool>) {
-        let mut ground = vec![9.0; 15];
-        ground[5..10].copy_from_slice(&row);
-        let mut sea = vec![false; 15];
-        for y in 0..3 {
-            sea[y * 5] = true;
-            ground[y * 5] = 0.0;
-        }
+    use mg_core::CubeGrid;
+
+    pub const N: usize = 8;
+
+    pub fn cube() -> CubeGrid {
+        CubeGrid::margin(N)
+    }
+
+    /// Ground rising from the sea in the south to a summit at the north
+    /// pole; sea where the point is below `sea_above` on the z axis.
+    pub fn sloping_world(grid: &CubeGrid) -> (Vec<f64>, Vec<bool>) {
+        let ground: Vec<f64> = (0..grid.cell_count())
+            .map(|cell| grid.point(cell)[2].max(-0.6))
+            .collect();
+        let sea: Vec<bool> = (0..grid.cell_count())
+            .map(|cell| grid.point(cell)[2] < -0.6)
+            .collect();
         (ground, sea)
     }
 
+    /// The cell at the middle of a face.
+    pub fn middle_of(grid: &CubeGrid, face: usize) -> usize {
+        grid.index(face, N / 2, N / 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_world::*;
+    use super::*;
+
     #[test]
     fn water_runs_downhill_to_the_sea_and_gathers_on_the_way() {
-        let (ground, sea) = strip([0.0, 1.0, 2.0, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], &vec![0.0; 15], 5, 3, 0);
+        let grid = cube();
+        let (ground, sea) = sloping_world(&grid);
+        let total = grid.cell_count();
+        let drainage = solve_drainage(
+            &ground,
+            &sea,
+            &vec![1.0; total],
+            &vec![0.0; total],
+            &grid,
+            0,
+        );
 
-        assert_eq!(drainage.receivers[5], NO_RECEIVER);
-        assert_eq!(drainage.receivers[8], 7);
-        assert_eq!(drainage.receivers[7], 6);
-        assert!(drainage.flow[6] > drainage.flow[7] && drainage.flow[7] > drainage.flow[8]);
+        // The sea drains nowhere; everything else drains somewhere lower.
+        for cell in 0..total {
+            if sea[cell] {
+                assert_eq!(drainage.receivers[cell], NO_RECEIVER);
+            } else {
+                let to = drainage.receivers[cell] as usize;
+                assert!(ground[to] <= ground[cell], "cell {cell}");
+            }
+        }
+        // Flow gathers towards the sea: a cell just above the shore carries
+        // more than the summit.
+        let summit = middle_of(&grid, 4);
+        let shore = (0..total)
+            .filter(|&cell| !sea[cell])
+            .min_by(|&a, &b| ground[a].total_cmp(&ground[b]))
+            .unwrap();
+        assert!(drainage.flow[shore] > drainage.flow[summit]);
     }
 
     #[test]
     fn a_hollow_is_filled_until_it_spills_and_water_crosses_it() {
-        // A hollow at x = 2, behind a sill at x = 1.
-        let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], &vec![0.0; 15], 5, 3, 0);
+        let grid = cube();
+        let (mut ground, sea) = sloping_world(&grid);
+        let total = grid.cell_count();
+        // A pit in the middle of a side face, well below everything round it.
+        let pit = middle_of(&grid, 1);
+        ground[pit] -= 1.0;
+        let drainage = solve_drainage(
+            &ground,
+            &sea,
+            &vec![1.0; total],
+            &vec![0.0; total],
+            &grid,
+            0,
+        );
 
-        assert!(drainage.filled[7] > 2.0);
-        assert_eq!(drainage.receivers[7], 6);
-        assert_eq!(drainage.receivers[8], 7);
+        assert!(drainage.filled[pit] > ground[pit] + 0.5);
+        assert_ne!(drainage.receivers[pit], NO_RECEIVER);
+        assert!(drainage.lake_depth(&ground, pit) >= LAKE_MIN_DEPTH);
     }
 
     #[test]
     fn a_lake_gives_up_water_to_the_air() {
-        // A hollow at x = 2, behind a sill at x = 1: a lake one cell big.
-        let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
+        let grid = cube();
+        let (mut ground, sea) = sloping_world(&grid);
+        let total = grid.cell_count();
+        let pit = middle_of(&grid, 1);
+        ground[pit] -= 0.5;
         let flow = |evaporation: f64| {
             solve_drainage(
                 &ground,
                 &sea,
-                &vec![1.0; 15],
-                &vec![evaporation; 15],
-                5,
-                3,
+                &vec![1.0; total],
+                &vec![evaporation; total],
+                &grid,
                 0,
             )
             .flow
         };
-        let (lake, below_lake) = (7, 6);
+        let below = solve_drainage(
+            &ground,
+            &sea,
+            &vec![1.0; total],
+            &vec![0.0; total],
+            &grid,
+            0,
+        )
+        .receivers[pit] as usize;
 
-        assert!(flow(0.5)[below_lake] < flow(0.0)[below_lake]);
+        assert!(flow(0.5)[below] < flow(0.0)[below]);
         // A lake that loses all its water sends none on.
-        assert_eq!(flow(100.0)[lake], 0.0);
+        assert_eq!(flow(100.0)[pit], 0.0);
         assert!(lake_evaporation(0.8) > lake_evaporation(0.4));
         assert_eq!(lake_evaporation(0.05), 0.0);
     }
 
     #[test]
     fn every_cell_comes_after_the_cell_it_drains_to() {
-        let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 15], &vec![0.0; 15], 5, 3, 0);
-        let position = |cell: u32| drainage.order.iter().position(|&c| c == cell).unwrap();
-
-        for cell in 0..15u32 {
-            let receiver = drainage.receivers[cell as usize];
+        let grid = cube();
+        let (ground, sea) = sloping_world(&grid);
+        let total = grid.cell_count();
+        let drainage = solve_drainage(
+            &ground,
+            &sea,
+            &vec![1.0; total],
+            &vec![0.0; total],
+            &grid,
+            0,
+        );
+        let mut position = vec![usize::MAX; total];
+        for (at, &cell) in drainage.order.iter().enumerate() {
+            position[cell as usize] = at;
+        }
+        for cell in 0..total {
+            let receiver = drainage.receivers[cell];
             if receiver != NO_RECEIVER {
-                assert!(position(receiver) < position(cell));
+                assert!(position[receiver as usize] < position[cell]);
             }
         }
-    }
-
-    #[test]
-    fn water_drains_over_a_pole_to_the_sea_beyond_it() {
-        // A 4 by 2 world: the top row touches the north pole. Sea at (0, 0);
-        // the cell across the pole from it, (2, 0), is land with nothing but
-        // the pole between it and the sea.
-        let ground = vec![0.0, 9.0, 1.0, 9.0, 9.0, 9.0, 9.0, 9.0];
-        let sea = vec![true, false, false, false, false, false, false, false];
-        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 8], &vec![0.0; 8], 4, 2, 0);
-
-        assert_eq!(drainage.receivers[2], 0);
     }
 
     #[test]
