@@ -129,13 +129,22 @@ Build on these seams. Do not create parallel ownership paths.
   step past its top or bottom edge comes down the far side of that pole,
   half a world away. The generator does that; the game never streams past
   a pole
-- Margin is a sphere (`specs/014`, `mg_core::sphere`): the sub-stellar point
-  is its south pole, the anti-stellar point its north. Light is the angle
-  from the sub-stellar point, warped by noise, so the terminus is a ragged
-  band round the equator. The flat map is an equirectangular projection:
-  columns are longitude, rows latitude, the top and bottom edges the poles.
-  Everything that measures a distance, an area or a step goes through the
-  sphere module; nothing else knows the projection
+- Margin is a sphere (`specs/014`, `mg_core::sphere`). The sub-stellar
+  point is 45° up from its south pole, at the bottom centre of the map
+  (`specs/015`, `SUN_LATITUDE_DEGREES`); the anti-stellar point is 45° down
+  from the north pole at the top edges. Light is the angle from the
+  sub-stellar point, warped by noise, so the terminator is a great circle
+  and the terminus arcs across the map. The flat map is an equirectangular
+  projection: columns are longitude, rows latitude, the top and bottom
+  edges the poles. Everything that measures a distance, an area or a step
+  goes through the sphere module; nothing else knows the projection
+- The world is generated on a cubed sphere (`specs/015`, `mg_core::cube`):
+  six square faces of 296 cells, no cell a sliver and no pole in any solve.
+  `MacroMap` (`mg_noise/src/macro_map.rs`) holds every layer on the cube
+  and reads them off onto the 1024 by 512 flat map (`BiomeMap`) at the end;
+  everything downstream reads that map. Solvers on macro data take a
+  `&CubeGrid` and never index `y * width + x`. A step at a face edge is a
+  bug: check with `margins_grip inspect cube-seam <seed>`
 - Neighbouring chunks share their border samples: a chunk's last column and
   its neighbour's first column are the same world positions and must have the
   same heights. Check with `margins_grip inspect chunk-seam <seed> <x> <y>`
@@ -221,11 +230,13 @@ layers biomes still read are rock hardness and the tectonic layer.
 Ground below sea level is sea, wherever it came from. All of it has sliders
 in the sandbox; change a default there first, then copy it into the code.
 
-The macro map also carries its land on a finer grid, four cells per chunk
-(`BiomeMap::fine_heights`, in the macro pack too). Rivers are read from the
-drainage of that grid, and anchored tiles and chunks take their ground from
-it. Generating the macro map takes about a minute and 2 GB.
-`margins_grip inspect relief <seed> <png>` writes a hillshade of it.
+The macro map also carries its land on a finer cube, four cells per macro
+cell each way (`FineHeights`, a cube field; `BiomeMap::fine_heights`, in the
+macro pack too). Rivers are read from the drainage of that cube, and
+anchored tiles, chunks and the site's images take their ground from it by
+sampling it at a world position. Generating the macro map takes about a
+minute and a half and 2 GB. `margins_grip inspect relief <seed> <png>`
+writes a hillshade of it, with the poles seen from above beside it.
 
 `/sandbox/` is the erosion sandbox for `specs/013`: the landscape step
 (uplift, drainage, stream power erosion) running on the real coastline in the

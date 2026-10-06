@@ -166,6 +166,13 @@ enum InspectKind {
         /// Chunk Y
         chunk_y: u32,
     },
+    /// Generate the macro map and sample its fine land along every face
+    /// edge of the cube from both sides. The two sides are the same world
+    /// positions, so any difference is a step in the terrain at a face edge
+    CubeSeam {
+        /// World seed
+        seed: u32,
+    },
     /// Generate the macro map and write a hillshade of its land at the
     /// finest grid it has, for judging the shape of the terrain
     Relief {
@@ -299,6 +306,7 @@ fn main() {
                 chunk_x,
                 chunk_y,
             } => run_inspect_chunk_seam(seed, chunk_x, chunk_y),
+            InspectKind::CubeSeam { seed } => run_inspect_cube_seam(seed),
             InspectKind::Relief { seed, output } => run_inspect_relief(seed, &output),
             InspectKind::LayerStats { layers_tag } => run_inspect_layer_stats(&layers_tag),
             InspectKind::LevelPresentation { level_tag } => {
@@ -1068,6 +1076,88 @@ fn run_inspect_chunk_seam(seed: u32, chunk_x: u32, chunk_y: u32) {
         (0..w)
             .map(|column| blocks(&south, column, 0) - blocks(&here, column, h - 1))
             .collect(),
+    );
+}
+
+// ─── inspect cube-seam ───────────────────────────────────────────────────────
+
+/// How far inside a face, as a share of a cell, the land is sampled when
+/// a face edge is approached from that face.
+const CUBE_SEAM_APPROACH: f64 = 1.0e-3;
+
+fn run_inspect_cube_seam(seed: u32) {
+    let map = mg_noise::generate_macro_map(seed);
+    let Some(fine) = map.fine_heights.as_ref() else {
+        eprintln!("error: the macro map carries no fine heights");
+        std::process::exit(1);
+    };
+    let grid = &fine.grid;
+    let heights: Vec<f64> = fine.heights.iter().map(|&height| height as f64).collect();
+    let blocks = |point: mg_core::sphere::Point| {
+        (grid.sample(&heights, point) * SEAM_HEIGHT_SCALE).floor()
+    };
+    let between = |a: mg_core::sphere::Point, b: mg_core::sphere::Point, share: f64| {
+        let mixed = [
+            a[0] + (b[0] - a[0]) * share,
+            a[1] + (b[1] - a[1]) * share,
+            a[2] + (b[2] - a[2]) * share,
+        ];
+        let length = (mixed[0] * mixed[0] + mixed[1] * mixed[1] + mixed[2] * mixed[2]).sqrt();
+        [mixed[0] / length, mixed[1] / length, mixed[2] / length]
+    };
+
+    // Every cell on a face's edge with its neighbour across that edge: the
+    // land is sampled on the edge between them, approached from each side.
+    let n = grid.n;
+    let mut steps: Vec<f64> = Vec::new();
+    let mut per_face = vec![(0usize, 0.0f64); 6];
+    for face in 0..6 {
+        for along in 0..n {
+            for (u, v, dx, dy) in [
+                (along, 0, 0, -1),
+                (along, n - 1, 0, 1),
+                (0, along, -1, 0),
+                (n - 1, along, 1, 0),
+            ] {
+                let here = grid.index(face, u, v);
+                let Some(there) = grid.neighbour(here, dx, dy) else {
+                    continue;
+                };
+                let (a, b) = (grid.point(here), grid.point(there));
+                let from_here = between(a, b, 0.5 - CUBE_SEAM_APPROACH);
+                let from_there = between(a, b, 0.5 + CUBE_SEAM_APPROACH);
+                let step = blocks(from_there) - blocks(from_here);
+                steps.push(step);
+                per_face[face].0 += 1;
+                per_face[face].1 = per_face[face].1.max(step.abs());
+            }
+        }
+    }
+    // For scale: the step between neighbouring cells inside a face.
+    let heights = &heights;
+    let within: f64 = (0..grid.cell_count())
+        .flat_map(|cell| {
+            let (face, _, _) = grid.cell(cell);
+            grid.neighbours(cell)
+                .into_iter()
+                .flatten()
+                .filter(move |&to| grid.cell(to).0 == face)
+                .map(move |to| ((heights[to] - heights[cell]) * SEAM_HEIGHT_SCALE).abs())
+        })
+        .fold(0.0, f64::max);
+
+    let mismatched = steps.iter().filter(|&&step| step != 0.0).count();
+    let blocking = steps.iter().filter(|&&step| step.abs() >= 2.0).count();
+    let largest = steps.iter().fold(0.0f64, |largest, step| largest.max(step.abs()));
+    println!(
+        "fine land of seed {seed} on a cube of {n} cells a side, sampled along its face edges"
+    );
+    for (face, (samples, largest)) in per_face.iter().enumerate() {
+        println!("face {face}: {samples} edge samples, largest step {largest} blocks");
+    }
+    println!(
+        "all edges: {mismatched} of {} edge samples differ, {blocking} by 2 blocks or more, largest step {largest} blocks (cells inside a face step by up to {within:.0} blocks)",
+        steps.len()
     );
 }
 

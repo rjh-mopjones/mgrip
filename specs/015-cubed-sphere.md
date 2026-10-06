@@ -1,6 +1,6 @@
 # Spec 015 - The Cubed Sphere
 
-**Status:** Proposed
+**Status:** Implemented, stages 0 to 5 (2026-10-07). Open: the tilt and the resolution
 **Priority:** High
 **Depends On:** Spec 014 (the sphere: geometry module, light as an angle, areas and great circles)
 **Supersedes:** spec 014's latitude-longitude generation grid, and its sun at the pole
@@ -113,12 +113,19 @@ arc's swing; 90° is spec 014's pole sun and its stripes.
 indexed by `width` and `height`. It splits:
 
 - `MacroMap`: every per-cell layer over the cube's cells, with the cube
-  beside it. `generate_macro_map(seed)` builds this.
+  beside it. `MacroMap::generate(seed)` builds this.
 - `BiomeMap` stays what chunks and map tiles are: a raster of samples in
-  world coordinates, anchored to the macro map by sampling it.
+  world coordinates, anchored to the macro map by sampling it. It is also
+  what the flat macro map is: `MacroMap::to_biome_map` reads every layer
+  off the cube at each raster cell's world position (biomes and plate ids
+  from the nearest cell, the rivers drawn from their courses), and
+  `generate_macro_map(seed)` is the two together. Everything downstream
+  (LifeGen, the exports, anchoring) keeps reading that raster.
 
-The macro pack stores the `MacroMap` (format `MGMP06`), fine heights per
-face included. `to_biome_map` goes; anchoring and tiles take a `&MacroMap`.
+The land's fine heights do not go through the raster: `FineHeights` is a
+cube field four times finer than the macro cube, sampled at a world
+position wherever it is read. The macro pack (format `MGMP06`) stores the
+flat map's layers as before plus the fine heights on the cube.
 
 ### The macro pass
 
@@ -149,10 +156,12 @@ Stage by stage of spec 013's chain, on the cube:
 ### Everything that reads the macro map
 
 - Anchoring (`anchor_to_macro`), map tiles (`generate_map_tile`,
-  `mg_web::render_tile`), `FineHeights::sample`, lake levels, the ocean
-  mask: sample the cube at the world position's point.
-- The layers artifact, the site-map export and `inspect relief`: images by
-  sampling at each pixel; `chunks.bin` the same, one sample per chunk.
+  `mg_web::render_tile`), lake levels: the ground comes from
+  `FineHeights::sample`, which samples the fine cube at the world
+  position's point; the other layers from the flat map as before.
+- The layers artifact, the site-map export and `inspect relief`: the
+  whole-world images come from the flat map; `relief.png` and `sea.png`
+  sample the fine cube at each pixel.
 - LifeGen keeps running on the 1024 by 512 raster sampled from the cube,
   through its sphere grid (spec 014 stage 5). Its provinces still radiate
   at the poles, which are now ordinary night and day interiors; running
