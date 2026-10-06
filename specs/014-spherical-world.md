@@ -1,6 +1,6 @@
 # Spec 014 - A Spherical World
 
-**Status:** In progress. Stages 0 (the geometry module), 1 (noise on the sphere), 2 (light from the sphere) and 3 (area, distance and neighbours) done. Stages 4 to 6 not started.
+**Status:** In progress. Stages 0 (the geometry module), 1 (noise on the sphere), 2 (light from the sphere), 3 (area, distance and neighbours) and 4 (tectonics on the sphere) done. Stages 5 and 6 not started.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (shared macro data), Spec 013 (uplift terrain)
 **Supersedes:** the cylinder (`wrap.rs`), the light formula in `light_level.rs`, the "terminus is an arc" invariant, `mg_life::Grid`
@@ -132,6 +132,13 @@ plates `a` and `b` is `(ω_a − ω_b) × p`, and the boundary normal is the
 tangent direction towards the other plate's centre. Convergence and shear
 follow from that as now. The flat `PlateRegistry` (centres, nearest tests,
 2D velocities, unused hotspots) goes.
+
+As built: 10 to 13 plates per seed, seeded by rejection at least 0.45
+radians apart, each its own Voronoi cell (the flat model's two levels, a
+lattice of cells grouped into plates, had fewer cells than plates and was
+one level too many). The warps move the sample along the ground by up to
+160 world units before the plates are looked up. Boundary distances are
+in the flat model's lattice unit (204 world units), so its falloffs hold.
 
 ### Light
 

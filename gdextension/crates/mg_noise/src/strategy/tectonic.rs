@@ -1,6 +1,18 @@
-use mg_core::NoiseStrategy;
+//! Tectonic plates on the sphere (spec 014, stage 4).
+//!
+//! The plates are a Voronoi of seeds on the sphere, nearest by angle. Each
+//! plate rotates about its own axis (an Euler pole, which is how plates
+//! move), so the relative motion at a boundary, and whether the two sides
+//! converge, pull apart or slide past, follows from the two rotations.
+//! Stress falls off with the distance from the nearest boundary. The sample
+//! point is first warped along the ground by two octaves of noise, so
+//! boundaries wander, and the boundary distance is roughened by a third.
+//!
+//! Distances are in the lattice unit of the flat model this replaces, so
+//! its falloffs and thresholds hold.
+
+use mg_core::{sphere::Point, NoiseStrategy, Sphere};
 use noise::{NoiseFn, OpenSimplex};
-use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BoundaryType {
@@ -19,153 +31,39 @@ pub struct TectonicSample {
     pub stress: f64,
     pub boundary_type: BoundaryType,
     pub volcanism: f64,
+    /// Along the boundary, as east and south components on the map.
     pub boundary_tangent: (f64, f64),
 }
 
 pub struct Plate {
-    pub center: (f64, f64),
-    pub velocity: (f64, f64),
+    /// Where the plate is seeded: the point every cell nearest it belongs to.
+    pub seed: Point,
+    /// The plate's rotation: its axis scaled by its rate. Its velocity at a
+    /// point `p` is this crossed with `p`.
+    pub rotation: Point,
     pub density: f64,
     pub age: f64,
 }
 
-pub struct Hotspot {
-    pub pos: (f64, f64),
-    pub intensity: f64,
-    pub radius: f64,
-}
-
-pub struct PlateRegistry {
-    pub plates: Vec<Plate>,
-    pub hotspots: Vec<Hotspot>,
-    cell_to_plate: HashMap<(i32, i32), usize>,
-}
-
-impl PlateRegistry {
-    pub fn from_seed(seed: u32, plate_scale: f64) -> Self {
-        let mut rng_state = seed as u64 ^ 0xDEADBEEF_CAFEBABE;
-        let mut next_f64 = move || -> f64 {
-            rng_state ^= rng_state << 13;
-            rng_state ^= rng_state >> 7;
-            rng_state ^= rng_state << 17;
-            (rng_state & 0xFFFFFFFF) as f64 / 0xFFFFFFFF_u64 as f64
-        };
-
-        let world_width = 1024.0;
-        let world_height = 512.0;
-        let cell_range_x = (world_width * plate_scale).ceil() as i32 + 4;
-        let cell_range_y = (world_height * plate_scale).ceil() as i32 + 4;
-
-        let hash = |ix: i32, iy: i32, s: u32| -> (f64, f64) {
-            let n = (ix.wrapping_mul(374761393) as u32)
-                .wrapping_add((iy.wrapping_mul(668265263)) as u32)
-                .wrapping_add(s);
-            let n1 = n.wrapping_mul(1103515245).wrapping_add(12345);
-            let n2 = n1.wrapping_mul(1103515245).wrapping_add(12345);
-            (
-                (n1 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
-                (n2 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
-            )
-        };
-
-        let mut all_cells: Vec<(i32, i32, f64, f64)> = Vec::new();
-        for iy in -2..cell_range_y + 2 {
-            for ix in -2..cell_range_x + 2 {
-                let (ox, oy) = hash(ix, iy, seed.wrapping_add(2));
-                all_cells.push((ix, iy, ix as f64 + ox, iy as f64 + oy));
-            }
-        }
-
-        let target_count = 25 + (next_f64() * 10.0) as usize;
-        let min_dist_sq = {
-            let d = 1.0 / (target_count as f64).sqrt() * 0.5;
-            d * d
-        };
-
-        let mut plates = Vec::new();
-        let mut selected_centers: Vec<(f64, f64)> = Vec::new();
-
-        let mut indices: Vec<usize> = (0..all_cells.len()).collect();
-        for i in (1..indices.len()).rev() {
-            let j = (next_f64() * (i + 1) as f64) as usize % (i + 1);
-            indices.swap(i, j);
-        }
-
-        for &cell_idx in &indices {
-            if plates.len() >= target_count {
-                break;
-            }
-            let (_ix, _iy, cx, cy) = all_cells[cell_idx];
-            let too_close = selected_centers.iter().any(|&(sx, sy)| {
-                let dx = cx - sx;
-                let dy = cy - sy;
-                dx * dx + dy * dy < min_dist_sq
-            });
-            if too_close {
-                continue;
-            }
-
-            let vel_angle = next_f64() * std::f64::consts::TAU;
-            let vel_mag = next_f64() * 0.8 + 0.2;
-            plates.push(Plate {
-                center: (cx, cy),
-                velocity: (vel_angle.cos() * vel_mag, vel_angle.sin() * vel_mag),
-                density: next_f64(),
-                age: next_f64(),
-            });
-            selected_centers.push((cx, cy));
-        }
-
-        let mut cell_to_plate = HashMap::new();
-        for &(ix, iy, cx, cy) in &all_cells {
-            let mut best_plate = 0usize;
-            let mut best_dist = f64::MAX;
-            for (pi, plate) in plates.iter().enumerate() {
-                let dx = cx - plate.center.0;
-                let dy = cy - plate.center.1;
-                let d = dx * dx + dy * dy;
-                if d < best_dist {
-                    best_dist = d;
-                    best_plate = pi;
-                }
-            }
-            cell_to_plate.insert((ix, iy), best_plate);
-        }
-
-        let hotspot_count = 1 + (next_f64() * 3.0) as usize;
-        let hotspots = (0..hotspot_count)
-            .map(|_| Hotspot {
-                pos: (next_f64() * world_width, next_f64() * world_height),
-                intensity: 0.4 + next_f64() * 0.3,
-                radius: 10.0 + next_f64() * 20.0,
-            })
-            .collect();
-
-        Self {
-            plates,
-            hotspots,
-            cell_to_plate,
-        }
-    }
-
-    fn plate_for_cell(&self, ix: i32, iy: i32) -> usize {
-        if let Some(&idx) = self.cell_to_plate.get(&(ix, iy)) {
-            return idx;
-        }
-        let cx = ix as f64 + 0.5;
-        let cy = iy as f64 + 0.5;
-        self.plates
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                let da = (cx - a.center.0).powi(2) + (cy - a.center.1).powi(2);
-                let db = (cx - b.center.0).powi(2) + (cy - b.center.1).powi(2);
-                da.partial_cmp(&db).unwrap()
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-    }
-}
+/// How many plates the sphere is cut into. The flat model had one Voronoi
+/// cell per `LATTICE_WU` squared, about eight over the sphere's area; a
+/// few more, so that no plate spans a quarter of the world.
+const PLATE_COUNT_LEAST: usize = 10;
+const PLATE_COUNT_SPREAD: usize = 4;
+/// Seeds are at least this far apart, in radians.
+const PLATE_LEAST_SEPARATION: f64 = 0.45;
+/// The flat model's lattice unit, in world units. Boundary distances are
+/// measured in these.
+const LATTICE_WU: f64 = 1.0 / 0.0049;
+/// The warps that move a sample along the ground before the plates are
+/// looked up: (frequency per world unit, reach in world units).
+const WARP_BROAD: (f64, f64) = (0.002, 120.0);
+const WARP_FINE: (f64, f64) = (0.008, 40.0);
+/// The boundary distance is roughened by noise of this frequency and size.
+const BOUNDARY_PERTURB: (f64, f64) = (0.015, 0.15);
+/// Stress inside a plate, away from its edges, from noise.
+const INTERIOR_FREQUENCY: f64 = 1.5 * 0.0049;
+const INTERIOR_STRESS: f64 = 0.25;
 
 pub struct TectonicPlatesStrategy {
     seed: u32,
@@ -175,17 +73,11 @@ pub struct TectonicPlatesStrategy {
     warp2_y: OpenSimplex,
     boundary_perturb: OpenSimplex,
     interior_noise: OpenSimplex,
-    plate_scale: f64,
-    registry: PlateRegistry,
-    world_width: f64,
-    cell_period: i32,
+    pub plates: Vec<Plate>,
 }
 
 impl TectonicPlatesStrategy {
     pub fn new(seed: u32) -> Self {
-        // Slightly denser plate lattice to avoid four giant wrapped sectors
-        // dominating the macro relief and biome read.
-        let plate_scale = 0.0049;
         Self {
             seed,
             warp1_x: OpenSimplex::new(seed.wrapping_add(100)),
@@ -194,75 +86,58 @@ impl TectonicPlatesStrategy {
             warp2_y: OpenSimplex::new(seed.wrapping_add(201)),
             boundary_perturb: OpenSimplex::new(seed.wrapping_add(300)),
             interior_noise: OpenSimplex::new(seed.wrapping_add(400)),
-            plate_scale,
-            registry: PlateRegistry::from_seed(seed, plate_scale),
-            world_width: 0.0,
-            cell_period: 0,
+            plates: seed_plates(seed),
         }
     }
 
-    pub fn new_wrapping(seed: u32, world_width: f64) -> Self {
-        let mut s = Self::new(seed);
-        s.world_width = world_width;
-        s.cell_period = (world_width * s.plate_scale).round() as i32;
-        s
+    /// The sample point moved along the ground by the warps.
+    fn warped(&self, x: f64, y: f64) -> Point {
+        let sphere = Sphere::MARGIN;
+        let point = sphere.point_at(x, y);
+        let sample = |noise: &OpenSimplex, (frequency, reach): (f64, f64), shift: f64| {
+            let [px, py, pz] = sphere.noise_point_at(x, y, frequency);
+            noise.get([px + shift, py + shift, pz]) * reach
+        };
+        let east_wu =
+            sample(&self.warp1_x, WARP_BROAD, 0.0) + sample(&self.warp2_x, WARP_FINE, 0.0);
+        let south_wu =
+            sample(&self.warp1_y, WARP_BROAD, 43.7) + sample(&self.warp2_y, WARP_FINE, 91.2);
+        let (east, south) = tangents(point);
+        let radius = sphere.radius();
+        normalised(add(
+            point,
+            add(
+                scaled(east, east_wu / radius),
+                scaled(south, south_wu / radius),
+            ),
+        ))
     }
 
-    fn wrap_cell_ix(&self, ix: i32) -> i32 {
-        if self.cell_period > 0 {
-            ((ix % self.cell_period) + self.cell_period) % self.cell_period
-        } else {
-            ix
+    /// The nearest plate and the next nearest, with the angle to each.
+    fn nearest_two(&self, point: Point) -> ((usize, f64), (usize, f64)) {
+        let (mut first, mut second) = ((0, f64::MAX), (0, f64::MAX));
+        for (index, plate) in self.plates.iter().enumerate() {
+            let angle = angle_between(point, plate.seed);
+            if angle < first.1 {
+                second = first;
+                first = (index, angle);
+            } else if angle < second.1 {
+                second = (index, angle);
+            }
         }
+        (first, second)
     }
 
-    fn hash(&self, ix: i32, iy: i32) -> (f64, f64) {
-        let ix = self.wrap_cell_ix(ix);
-        let n = (ix.wrapping_mul(374761393) as u32)
-            .wrapping_add((iy.wrapping_mul(668265263)) as u32)
-            .wrapping_add(self.seed);
-        let n1 = n.wrapping_mul(1103515245).wrapping_add(12345);
-        let n2 = n1.wrapping_mul(1103515245).wrapping_add(12345);
-        (
-            (n1 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
-            (n2 & 0x7FFFFFFF) as f64 / 0x7FFFFFFF as f64,
-        )
-    }
-
-    fn plate_id_hash(&self, ix: i32, iy: i32) -> f64 {
-        let ix = self.wrap_cell_ix(ix);
-        let n = (ix.wrapping_mul(127) as u32)
-            .wrapping_add((iy.wrapping_mul(311)) as u32)
-            .wrapping_add(self.seed);
-        let n = n.wrapping_mul(1103515245).wrapping_add(12345);
-        (n & 0xFF) as f64 / 255.0
-    }
-
-    fn warp_coordinates(&self, x: f64, y: f64) -> (f64, f64) {
-        // Sampled on the sphere, so the warp is seamless everywhere.
-        let [cx1, cz1, cy1] = mg_core::Sphere::MARGIN.noise_point_at(x, y, 0.002);
-        let [cx2, cz2, cy2] = mg_core::Sphere::MARGIN.noise_point_at(x, y, 0.008);
-        let (w1x, w1y, w2x, w2y) = (
-            self.warp1_x.get([cx1, cz1, cy1]) * 120.0,
-            self.warp1_y.get([cx1 + 43.7, cz1 + 17.3, cy1]) * 120.0,
-            self.warp2_x.get([cx2, cz2, cy2]) * 40.0,
-            self.warp2_y.get([cx2 + 91.2, cz2 + 55.8, cy2]) * 40.0,
-        );
-        let wx = x + w1x + w2x;
-        let wy = y + w1y + w2y;
-        (wx * self.plate_scale, wy * self.plate_scale)
-    }
-
-    fn classify_boundary(a: &Plate, b: &Plate, normal: (f64, f64)) -> BoundaryType {
-        let rel_vel = (a.velocity.0 - b.velocity.0, a.velocity.1 - b.velocity.1);
-        let dot = rel_vel.0 * normal.0 + rel_vel.1 * normal.1;
-        if dot > 0.1 {
+    fn classify_boundary(a: &Plate, b: &Plate, at: Point, normal: Point) -> BoundaryType {
+        let relative = cross(sub(a.rotation, b.rotation), at);
+        let closing = dot(relative, normal);
+        if closing > 0.1 {
             match (a.density > 0.5, b.density > 0.5) {
                 (true, true) => BoundaryType::Convergent,
                 (false, false) => BoundaryType::OceanicSubduction,
                 _ => BoundaryType::Subduction,
             }
-        } else if dot < -0.1 {
+        } else if closing < -0.1 {
             BoundaryType::Divergent
         } else {
             BoundaryType::Transform
@@ -270,80 +145,29 @@ impl TectonicPlatesStrategy {
     }
 
     pub fn generate_full(&self, x: f64, y: f64) -> TectonicSample {
-        let (mut sx, sy) = self.warp_coordinates(x, y);
+        let sphere = Sphere::MARGIN;
+        let lattice = LATTICE_WU / sphere.radius();
+        let at = self.warped(x, y);
+        let ((nearest, first), (next, second)) = self.nearest_two(at);
+        let plate_id = ((nearest * 7919 + self.seed as usize) % 251) as f64 / 251.0;
 
-        let cp_f = if self.cell_period > 0 {
-            let cp = self.world_width * self.plate_scale;
-            sx = ((sx % cp) + cp) % cp;
-            cp
-        } else {
-            0.0
-        };
-
-        let ix = sx.floor() as i32;
-        let iy = sy.floor() as i32;
-
-        let mut min_dist = f64::MAX;
-        let mut second_dist = f64::MAX;
-        let mut nearest_cell = (0i32, 0i32);
-        let mut second_cell = (0i32, 0i32);
-        for dx in -2..=2 {
-            for dy in -2..=2 {
-                let cell_x = ix + dx;
-                let cell_y = iy + dy;
-                let (ox, oy) = self.hash(cell_x, cell_y);
-                let cx = cell_x as f64 + ox;
-                let cy = cell_y as f64 + oy;
-
-                let mut ddx = sx - cx;
-                if cp_f > 0.0 {
-                    if ddx > cp_f * 0.5 {
-                        ddx -= cp_f;
-                    }
-                    if ddx < -cp_f * 0.5 {
-                        ddx += cp_f;
-                    }
-                }
-                let dist = (ddx.powi(2) + (sy - cy).powi(2)).sqrt();
-
-                if dist < min_dist {
-                    second_dist = min_dist;
-                    second_cell = nearest_cell;
-                    min_dist = dist;
-                    nearest_cell = (cell_x, cell_y);
-                } else if dist < second_dist {
-                    second_dist = dist;
-                    second_cell = (cell_x, cell_y);
-                }
-            }
-        }
-
-        let plate_a_idx = self
-            .registry
-            .plate_for_cell(self.wrap_cell_ix(nearest_cell.0), nearest_cell.1);
-        let plate_b_idx = self
-            .registry
-            .plate_for_cell(self.wrap_cell_ix(second_cell.0), second_cell.1);
-        let plate_id = self.plate_id_hash(nearest_cell.0, nearest_cell.1);
-
-        let f2_minus_f1 = second_dist - min_dist;
         let perturb = self
             .boundary_perturb
-            .get(mg_core::Sphere::MARGIN.noise_point_at(x, y, 0.015))
-            * 0.15;
-        let perturbed_dist = f2_minus_f1 + perturb;
+            .get(sphere.noise_point_at(x, y, BOUNDARY_PERTURB.0))
+            * BOUNDARY_PERTURB.1;
+        let perturbed_dist = (second - first) / lattice + perturb;
 
-        let (boundary_type, boundary_tangent) = if plate_a_idx == plate_b_idx {
+        let (boundary_type, boundary_tangent) = if self.plates.len() < 2 {
             (BoundaryType::None, (1.0, 0.0))
         } else {
-            let pa = &self.registry.plates[plate_a_idx];
-            let pb = &self.registry.plates[plate_b_idx];
-            let ndx = pb.center.0 - pa.center.0;
-            let ndy = pb.center.1 - pa.center.1;
-            let len = (ndx * ndx + ndy * ndy).sqrt().max(0.001);
-            let normal = (ndx / len, ndy / len);
-            let btype = Self::classify_boundary(pa, pb, normal);
-            (btype, (-normal.1, normal.0))
+            let (a, b) = (&self.plates[nearest], &self.plates[next]);
+            // The boundary's normal: along the ground towards the other plate.
+            let towards = sub(b.seed, scaled(at, dot(at, b.seed)));
+            let normal = normalised(towards);
+            let btype = Self::classify_boundary(a, b, at, normal);
+            let tangent = cross(at, normal);
+            let (east, south) = tangents(at);
+            (btype, (dot(tangent, east), dot(tangent, south)))
         };
 
         let (intensity, falloff) = match boundary_type {
@@ -356,15 +180,12 @@ impl TectonicPlatesStrategy {
         };
 
         let boundary_stress = intensity * (-perturbed_dist.abs() * falloff).exp();
-        let interior = self.interior_noise.get([sx * 1.5, sy * 1.5]).abs() * 0.25;
-        let age_damping = 1.0
-            - self
-                .registry
-                .plates
-                .get(plate_a_idx)
-                .map(|p| p.age)
-                .unwrap_or(0.5)
-                * 0.7;
+        let interior = self
+            .interior_noise
+            .get(sphere.noise_point_at(x, y, INTERIOR_FREQUENCY))
+            .abs()
+            * INTERIOR_STRESS;
+        let age_damping = 1.0 - self.plates[nearest].age * 0.7;
         let raw_stress = (boundary_stress + interior * age_damping).clamp(0.0, 1.0);
         // Compress mid-strength tectonic influence so only sharper boundary zones
         // stay dominant in downstream relief and biome classification.
@@ -388,5 +209,144 @@ impl NoiseStrategy for TectonicPlatesStrategy {
 
     fn name(&self) -> &'static str {
         "Tectonic"
+    }
+}
+
+/// The plates for a seed: seeds spread over the sphere, no two closer than
+/// `PLATE_LEAST_SEPARATION`, each with its own rotation, density and age.
+fn seed_plates(seed: u32) -> Vec<Plate> {
+    let mut state = seed as u64 ^ 0xDEADBEEF_CAFEBABE;
+    let mut next = move || -> f64 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state & 0xFFFFFFFF) as f64 / 0xFFFFFFFF_u64 as f64
+    };
+    // A point spread evenly over the sphere: any height, any longitude.
+    let mut random_point = |next: &mut dyn FnMut() -> f64| -> Point {
+        let z = next() * 2.0 - 1.0;
+        let longitude = next() * std::f64::consts::TAU;
+        let flat = (1.0 - z * z).sqrt();
+        [flat * longitude.cos(), flat * longitude.sin(), z]
+    };
+    let count = PLATE_COUNT_LEAST + (next() * PLATE_COUNT_SPREAD as f64) as usize;
+    let mut plates: Vec<Plate> = Vec::with_capacity(count);
+    let mut attempts = 0;
+    while plates.len() < count && attempts < 10_000 {
+        attempts += 1;
+        let candidate = random_point(&mut next);
+        let too_close = plates
+            .iter()
+            .any(|plate| angle_between(candidate, plate.seed) < PLATE_LEAST_SEPARATION);
+        if too_close {
+            continue;
+        }
+        let axis = random_point(&mut next);
+        let rate = next() * 0.8 + 0.2;
+        plates.push(Plate {
+            seed: candidate,
+            rotation: scaled(axis, rate),
+            density: next(),
+            age: next(),
+        });
+    }
+    plates
+}
+
+/// The directions east and south along the ground at a point. At a pole,
+/// where there is no east, the x axis stands in.
+fn tangents(point: Point) -> (Point, Point) {
+    let flat = (point[0] * point[0] + point[1] * point[1]).sqrt();
+    let east = if flat < 1e-9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [-point[1] / flat, point[0] / flat, 0.0]
+    };
+    let north = cross(point, east);
+    (east, scaled(north, -1.0))
+}
+
+fn add(a: Point, b: Point) -> Point {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn sub(a: Point, b: Point) -> Point {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn scaled(a: Point, by: f64) -> Point {
+    [a[0] * by, a[1] * by, a[2] * by]
+}
+
+fn dot(a: Point, b: Point) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: Point, b: Point) -> Point {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalised(a: Point) -> Point {
+    let length = dot(a, a).sqrt();
+    if length < 1e-12 {
+        [0.0, 0.0, 1.0]
+    } else {
+        scaled(a, 1.0 / length)
+    }
+}
+
+fn angle_between(a: Point, b: Point) -> f64 {
+    let c = cross(a, b);
+    dot(c, c).sqrt().atan2(dot(a, b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plates_are_seeded_apart_and_rotate() {
+        let plates = seed_plates(42);
+        assert!(plates.len() >= PLATE_COUNT_LEAST);
+        for (i, a) in plates.iter().enumerate() {
+            for b in &plates[i + 1..] {
+                assert!(angle_between(a.seed, b.seed) >= PLATE_LEAST_SEPARATION);
+            }
+            assert!(dot(a.rotation, a.rotation).sqrt() >= 0.2);
+        }
+    }
+
+    #[test]
+    fn the_field_is_seamless_and_one_at_each_pole() {
+        let tectonic = TectonicPlatesStrategy::new(42);
+        for y in [20.0, 256.0, 480.0] {
+            let east = tectonic.generate_full(1023.999, y);
+            let west = tectonic.generate_full(0.0, y);
+            assert!((east.boundary_distance - west.boundary_distance).abs() < 1e-3);
+            assert_eq!(east.plate_id, west.plate_id);
+        }
+        // Every column meets at the pole, so the pole is one place.
+        let at_pole: Vec<f64> = [0.0, 300.0, 700.0]
+            .iter()
+            .map(|&x| tectonic.generate_full(x, 0.0).stress)
+            .collect();
+        assert!((at_pole[0] - at_pole[1]).abs() < 1e-9 && (at_pole[1] - at_pole[2]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn there_are_boundaries_and_quiet_interiors() {
+        let tectonic = TectonicPlatesStrategy::new(42);
+        let stresses: Vec<f64> = (0..64)
+            .flat_map(|i| (0..32).map(move |j| (i as f64 * 16.0, j as f64 * 16.0)))
+            .map(|(x, y)| tectonic.generate_full(x, y).stress)
+            .collect();
+        let highest = stresses.iter().copied().fold(0.0, f64::max);
+        let lowest = stresses.iter().copied().fold(1.0, f64::min);
+        assert!(highest > 0.5, "highest stress {highest}");
+        assert!(lowest < 0.1, "lowest stress {lowest}");
     }
 }

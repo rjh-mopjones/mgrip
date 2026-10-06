@@ -451,8 +451,7 @@ impl BiomeMap {
         // Tier 2 (detail) layers use scaled coordinates and only wrap at macro scale.
         // Every layer samples its noise on the sphere, at any scale.
         let cont_strat = ContinentalnessStrategy::new(seed.wrapping_add(SEED_CONTINENTALNESS));
-        let tect_strat =
-            TectonicPlatesStrategy::new_wrapping(seed.wrapping_add(SEED_TECTONIC), world_width);
+        let tect_strat = TectonicPlatesStrategy::new(seed.wrapping_add(SEED_TECTONIC));
         let humid_strat = HumidityStrategy::new(seed.wrapping_add(SEED_HUMIDITY));
         let rock_strat = RockHardnessStrategy::new(seed.wrapping_add(SEED_ROCK_HARDNESS));
         let light_strat = LightLevelStrategy::new(seed.wrapping_add(SEED_LIGHT_LEVEL));
