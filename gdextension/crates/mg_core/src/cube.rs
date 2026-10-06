@@ -266,6 +266,12 @@ impl CubeGrid {
     /// A field's value at a point, interpolated in straight lines between
     /// the four cells around it, across face edges.
     pub fn sample(&self, field: &[f64], point: Point) -> f64 {
+        self.sample_by(point, |cell| field[cell])
+    }
+
+    /// As `sample`, reading the field through `value`, so a field held in
+    /// another type (or computed) is sampled without being copied.
+    pub fn sample_by(&self, point: Point, value: impl Fn(usize) -> f64) -> f64 {
         let (face, u, v) = self.locate(point);
         let (u, v) = (u - 0.5, v - 0.5);
         let (u0, v0) = (u.floor(), v.floor());
@@ -280,10 +286,7 @@ impl CubeGrid {
             (u0 - u0.clamp(0.0, last)) as i32,
             (v0 - v0.clamp(0.0, last)) as i32,
         );
-        let at = |dx: i32, dy: i32| {
-            self.neighbour(home, du + dx, dv + dy)
-                .map_or(field[home], |cell| field[cell])
-        };
+        let at = |dx: i32, dy: i32| value(self.neighbour(home, du + dx, dv + dy).unwrap_or(home));
         let top = at(0, 0) + (at(1, 0) - at(0, 0)) * tu;
         let bottom = at(0, 1) + (at(1, 1) - at(0, 1)) * tu;
         top + (bottom - top) * tv
@@ -292,6 +295,11 @@ impl CubeGrid {
     /// A field's value at a point on a smooth curve (a cubic B-spline) over
     /// the cells around it: no creases along cell edges, for shading.
     pub fn sample_smooth(&self, field: &[f64], point: Point) -> f64 {
+        self.sample_smooth_by(point, |cell| field[cell])
+    }
+
+    /// As `sample_smooth`, reading the field through `value`.
+    pub fn sample_smooth_by(&self, point: Point, value: impl Fn(usize) -> f64) -> f64 {
         let (face, u, v) = self.locate(point);
         let (u, v) = (u - 0.5, v - 0.5);
         let (u0, v0) = (u.floor(), v.floor());
@@ -316,16 +324,16 @@ impl CubeGrid {
             ]
         };
         let (wu, wv) = (weights(tu), weights(tv));
-        let mut value = 0.0;
+        let mut sum = 0.0;
         for (row, weight_v) in wv.iter().enumerate() {
             for (column, weight_u) in wu.iter().enumerate() {
                 let cell = self
                     .neighbour(home, du + column as i32 - 1, dv + row as i32 - 1)
                     .unwrap_or(home);
-                value += field[cell] * weight_u * weight_v;
+                sum += value(cell) * weight_u * weight_v;
             }
         }
-        value
+        sum
     }
 
     /// One face of a field, padded on every side by `width` cells of its

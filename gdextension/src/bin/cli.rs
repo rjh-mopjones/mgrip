@@ -1093,9 +1093,7 @@ fn run_inspect_cube_seam(seed: u32) {
     };
     let grid = &fine.grid;
     let heights: Vec<f64> = fine.heights.iter().map(|&height| height as f64).collect();
-    let blocks = |point: mg_core::sphere::Point| {
-        (grid.sample(&heights, point) * SEAM_HEIGHT_SCALE).floor()
-    };
+    let blocks = |point: mg_core::sphere::Point| (fine.sample_point(point) * SEAM_HEIGHT_SCALE).floor();
     let between = |a: mg_core::sphere::Point, b: mg_core::sphere::Point, share: f64| {
         let mixed = [
             a[0] + (b[0] - a[0]) * share,

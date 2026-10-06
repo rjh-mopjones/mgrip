@@ -439,21 +439,23 @@ impl FineHeights {
         (self.sample(wx, wy) < level).then_some(level)
     }
 
-    fn widened(&self) -> Vec<f64> {
-        self.heights.iter().map(|&height| height as f64).collect()
-    }
-
     /// Height at a world position, between cells in straight lines.
     pub fn sample(&self, wx: f64, wy: f64) -> f64 {
+        self.sample_point(self.grid.sphere.point_at(wx, wy))
+    }
+
+    /// Height at a point on the sphere, as `sample`.
+    pub fn sample_point(&self, point: mg_core::sphere::Point) -> f64 {
         self.grid
-            .sample(&self.widened(), self.grid.sphere.point_at(wx, wy))
+            .sample_by(point, |cell| self.heights[cell] as f64)
     }
 
     /// Height at a world position on a smooth curve (a cubic B-spline) over
     /// the cells: no creases along cell edges, so it shades cleanly as relief.
     pub fn sample_smooth(&self, wx: f64, wy: f64) -> f64 {
-        self.grid
-            .sample_smooth(&self.widened(), self.grid.sphere.point_at(wx, wy))
+        self.grid.sample_smooth_by(self.grid.sphere.point_at(wx, wy), |cell| {
+            self.heights[cell] as f64
+        })
     }
 }
 
