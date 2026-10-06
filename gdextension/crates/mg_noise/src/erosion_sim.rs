@@ -10,8 +10,14 @@
 //! what keeps large time steps stable (Braun and Willett 2013):
 //!
 //!   h = (h + dt*U + f*h_receiver) / (1 + f),   f = K * dt * flow^m / distance
+//!
+//! The grid is laid over the sphere (spec 014): distances between cells are
+//! the true ones, neighbours join across the poles, and a blur reaches a
+//! distance along the ground rather than a count of cells.
 
-use crate::drainage::{solve_drainage, step_distance, Drainage, LAKE_MIN_DEPTH, NO_RECEIVER};
+use mg_core::Sphere;
+
+use crate::drainage::{solve_drainage, Drainage, Steps, LAKE_MIN_DEPTH, NO_RECEIVER};
 
 pub struct ErosionParams {
     /// How easily average rock is cut (K). Soft rock erodes faster.
@@ -130,6 +136,7 @@ pub fn erosion_step(
     step: u32,
 ) -> Drainage {
     let dt = params.time_step;
+    let steps = Steps::new(land.width, land.height);
     // Under ice it is the ice that flows, down its own surface: smoother than
     // the ground, level across valleys, and able to ride over a sill.
     let ice_thickness = ice_thickness(ground, land);
@@ -189,12 +196,12 @@ pub fn erosion_step(
             continue;
         }
         let receiver = receiver as usize;
+        // In equatorial cells, so per world unit is this times cells per unit.
+        let distance = steps.distance(cell, receiver);
         if ice_thickness[cell] >= ICE_MIN_THICKNESS {
             // Thick ice digs by how much of it there is and how fast it
             // slides, not towards the height of the ground downstream.
-            let fall = (surface[cell] - surface[receiver])
-                / step_distance(cell, receiver, land.width)
-                * cells_per_wu;
+            let fall = (surface[cell] - surface[receiver]) / distance * cells_per_wu;
             let dug = dt
                 * params.ice_cutting
                 * land.ice[cell]
@@ -226,14 +233,13 @@ pub fn erosion_step(
         let erodibility = params.erodibility
             * (1.5 - land.rock_hardness[cell])
             * (1.0 + (params.canyon_power - 1.0) * desert);
-        let cutting = erodibility * dt * working_flow.powf(params.flow_exponent)
-            / step_distance(cell, receiver, land.width);
+        let cutting = erodibility * dt * working_flow.powf(params.flow_exponent) / distance;
         let lowered = (lifted + cutting * towards) / (1.0 + cutting);
         sediment[cell] += (ground[cell] - lowered).max(0.0);
         ground[cell] = lowered;
     }
 
-    widen_valleys(ground, &drainage, land, params, flood);
+    widen_valleys(ground, &drainage, land, params, flood, &steps);
     *ground = crept(
         ground,
         land.is_base_level,
@@ -265,24 +271,34 @@ fn ice_thickness(ground: &[f64], land: &Land) -> Vec<f64> {
         .collect()
 }
 
-/// `field` averaged over `reach` cells each way, along rows and then along
-/// columns. The map joins east to west; north and south edges repeat.
+/// `field` averaged over `reach` equatorial cells each way along the
+/// ground, along rows and then along columns. Along a row the reach spans
+/// more cells where the cells are narrow, towards the poles; along a column
+/// it runs over a pole and down the far side.
 pub fn box_blurred(field: &[f64], width: usize, height: usize, reach: i32) -> Vec<f64> {
+    let grid = Sphere::MARGIN.grid(width, height);
+    // Along each row by running sums, so the wide reach near the poles costs
+    // no more than a narrow one. The row is laid out three times over so a
+    // window of up to half the row can hang off either end of the middle copy.
+    let mut rows = vec![0.0; width * height];
+    let mut running = vec![0.0; 3 * width + 1];
+    for y in 0..height {
+        let row = &field[y * width..(y + 1) * width];
+        for i in 0..3 * width {
+            running[i + 1] = running[i] + row[i % width];
+        }
+        let row_reach = grid.reach_along_row(y, reach) as usize;
+        for x in 0..width {
+            let (start, end) = (x + width - row_reach, x + width + row_reach + 1);
+            rows[y * width + x] = (running[end] - running[start]) / (2 * row_reach + 1) as f64;
+        }
+    }
     let span = (2 * reach + 1) as f64;
-    let rows: Vec<f64> = (0..width * height)
-        .map(|cell| {
-            let (x, y) = ((cell % width) as i32, cell / width);
-            (-reach..=reach)
-                .map(|dx| field[y * width + (x + dx).rem_euclid(width as i32) as usize])
-                .sum::<f64>()
-                / span
-        })
-        .collect();
     (0..width * height)
         .map(|cell| {
-            let (x, y) = (cell % width, (cell / width) as i32);
+            let (x, y) = grid.cell(cell);
             (-reach..=reach)
-                .map(|dy| rows[(y + dy).clamp(0, height as i32 - 1) as usize * width + x])
+                .map(|dy| rows[grid.index(grid.wrap_cell(x as i64, y as i64 + dy as i64))])
                 .sum::<f64>()
                 / span
         })
@@ -301,6 +317,7 @@ fn widen_valleys(
     land: &Land,
     params: &ErosionParams,
     flood: f64,
+    steps: &Steps,
 ) {
     if params.ice_widening <= 0.0 && params.scarp_retreat <= 0.0 {
         return;
@@ -330,14 +347,7 @@ fn widen_valleys(
                 1.0
             }
         };
-        let (x, y) = ((cell % land.width) as i32, (cell / land.width) as i32);
-        for (dx, dy) in crate::rivers::D8_OFFSETS {
-            let beside_y = y + dy;
-            if beside_y < 0 || beside_y >= land.height as i32 {
-                continue;
-            }
-            let beside_x = (x + dx).rem_euclid(land.width as i32) as usize;
-            let beside = beside_y as usize * land.width + beside_x;
+        for (beside, _) in steps.neighbours(cell) {
             if !land.is_base_level[beside] && ground[beside] > ground[cell] {
                 ground[beside] -= pull * reaches(beside) * (ground[beside] - ground[cell]);
             }
@@ -354,18 +364,16 @@ pub fn crept(
     height: usize,
     share: f64,
 ) -> Vec<f64> {
+    let grid = Sphere::MARGIN.grid(width, height);
     (0..width * height)
         .map(|cell| {
             if is_base_level[cell] {
                 return ground[cell];
             }
-            let (x, y) = (cell % width, cell / width);
-            // The map joins east to west; north and south edges repeat.
-            let west = ground[y * width + (x + width - 1) % width];
-            let east = ground[y * width + (x + 1) % width];
-            let north = ground[y.saturating_sub(1) * width + x];
-            let south = ground[(y + 1).min(height - 1) * width + x];
-            ground[cell] + share * ((west + east + north + south) / 4.0 - ground[cell])
+            let (x, y) = grid.cell(cell);
+            let beside = |dx: i32, dy: i32| ground[grid.index(grid.neighbour(x, y, dx, dy))];
+            let mean = (beside(-1, 0) + beside(1, 0) + beside(0, -1) + beside(0, 1)) / 4.0;
+            ground[cell] + share * (mean - ground[cell])
         })
         .collect()
 }
@@ -537,5 +545,18 @@ mod tests {
             .filter(|&&r| r != NO_RECEIVER)
             .count();
         assert_eq!(draining, 144 - 9);
+    }
+
+    #[test]
+    fn a_blur_reaches_over_the_pole_and_round_the_world() {
+        // An 8 by 4 world with one hot cell at (0, 0). Blurred by one cell,
+        // its heat reaches (7, 0) round the seam and (4, 0) over the pole,
+        // but not (4, 2), far away on the other side.
+        let mut field = vec![0.0; 32];
+        field[0] = 8.0;
+        let blurred = box_blurred(&field, 8, 4, 1);
+        assert!(blurred[7] > 0.0);
+        assert!(blurred[4] > 0.0);
+        assert_eq!(blurred[2 * 8 + 4], 0.0);
     }
 }

@@ -7,11 +7,19 @@
 //! et al. 2014; Braun and Willett 2013): flood the land upwards from base
 //! level, raising any hollow to the level at which it spills, then send each
 //! cell's water to its lowest neighbour on that flooded surface.
+//!
+//! The grid is laid over the sphere (spec 014): neighbours join east to
+//! west and across the poles, slopes are measured over the true distance
+//! between cells, and rain is gathered by area. Distances and flows are in
+//! equatorial cells, the unit a flat grid would have used, so nothing
+//! calibrated on one needs changing.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::rivers::{position_jitter, D8_DISTANCES, D8_OFFSETS};
+use mg_core::{Sphere, SphereGrid};
+
+use crate::rivers::position_jitter;
 
 /// Marks a cell that drains nowhere: it is base level (the sea).
 pub const NO_RECEIVER: u32 = u32::MAX;
@@ -39,7 +47,8 @@ pub struct Drainage {
     /// comes after the cell it drains to.
     pub order: Vec<u32>,
     /// Rain gathered at each cell: its own and all that drains through it,
-    /// less what evaporated from lakes on the way.
+    /// less what evaporated from lakes on the way. In equatorial cells of
+    /// run-off.
     pub flow: Vec<f64>,
 }
 
@@ -147,31 +156,54 @@ impl Ord for Flooding {
     }
 }
 
-/// The eight neighbours of a cell with their distances. The map joins east
-/// to west; north and south are edges.
-fn neighbours(cell: usize, width: usize, height: usize) -> impl Iterator<Item = (usize, f64)> {
-    let (x, y) = ((cell % width) as i32, (cell / width) as i32);
-    D8_OFFSETS
-        .iter()
-        .zip(D8_DISTANCES)
-        .filter_map(move |(&(dx, dy), distance)| {
-            let neighbour_y = y + dy;
-            if neighbour_y < 0 || neighbour_y >= height as i32 {
-                return None;
-            }
-            let neighbour_x = (x + dx).rem_euclid(width as i32) as usize;
-            Some((neighbour_y as usize * width + neighbour_x, distance))
-        })
+/// The grid over the sphere, with the distances between neighbours worked
+/// out once per row.
+pub struct Steps {
+    pub grid: SphereGrid,
+    /// By row, then in `D8_OFFSETS` order: in equatorial cells.
+    by_row: Vec<[f64; 8]>,
 }
 
-/// Distance between a cell and one of its eight neighbours.
-pub fn step_distance(from: usize, to: usize, width: usize) -> f64 {
-    let same_column = from % width == to % width;
-    let same_row = from / width == to / width;
-    if same_column || same_row {
-        1.0
-    } else {
-        std::f64::consts::SQRT_2
+impl Steps {
+    pub fn new(width: usize, height: usize) -> Self {
+        let grid = Sphere::MARGIN.grid(width, height);
+        let cells_per_wu = grid.cells_per_world_unit();
+        let by_row = grid
+            .row_step_distances()
+            .into_iter()
+            .map(|row| row.map(|wu| wu * cells_per_wu))
+            .collect();
+        Self { grid, by_row }
+    }
+
+    /// The eight neighbours of a cell with the distance to each, in
+    /// equatorial cells.
+    pub fn neighbours(&self, cell: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
+        let (x, y) = self.grid.cell(cell);
+        self.grid
+            .neighbours(x, y)
+            .into_iter()
+            .zip(self.by_row[y])
+            .map(move |(to, distance)| (self.grid.index(to), distance))
+    }
+
+    /// Distance between a cell and one of its eight neighbours, in
+    /// equatorial cells.
+    pub fn distance(&self, from: usize, to: usize) -> f64 {
+        self.neighbours(from)
+            .find(|&(cell, _)| cell == to)
+            .map_or_else(
+                || {
+                    self.grid.distance(self.grid.cell(from), self.grid.cell(to))
+                        * self.grid.cells_per_world_unit()
+                },
+                |(_, distance)| distance,
+            )
+    }
+
+    /// A cell's area as a share of an equatorial cell's.
+    pub fn area_share(&self, cell: usize) -> f64 {
+        self.grid.area_share(cell / self.grid.width)
     }
 }
 
@@ -192,9 +224,10 @@ fn routing_lot(cell: usize, salt: u32) -> f64 {
 }
 
 /// Solve drainage over `ground`. Water runs to `is_base_level` cells (the
-/// sea), which stay as they are. `rainfall` is the run-off each cell adds and
-/// `evaporation` what a cell of open lake loses (`lake_evaporation`).
-/// Land with no way to base level is left with no receiver.
+/// sea), which stay as they are. `rainfall` is the run-off each cell adds
+/// per equatorial cell of area, and `evaporation` what a cell of open lake
+/// loses (`lake_evaporation`). Land with no way to base level is left with
+/// no receiver.
 ///
 /// `salt` picks how the lots fall (see `STEEPNESS_PREFERENCE`): erosion
 /// changes it every step so no one pattern is cut into the land.
@@ -207,6 +240,7 @@ pub fn solve_drainage(
     height: usize,
     salt: u32,
 ) -> Drainage {
+    let steps = Steps::new(width, height);
     let total = width * height;
     let mut filled = ground.to_vec();
     let mut reached = vec![false; total];
@@ -225,7 +259,7 @@ pub fn solve_drainage(
     while let Some(Flooding { cell, .. }) = waiting.pop() {
         order.push(cell);
         let cell = cell as usize;
-        for (neighbour, _) in neighbours(cell, width, height) {
+        for (neighbour, _) in steps.neighbours(cell) {
             if reached[neighbour] {
                 continue;
             }
@@ -246,7 +280,8 @@ pub fn solve_drainage(
             if is_base_level[cell] || !reached[cell] {
                 return NO_RECEIVER;
             }
-            let downhill: Vec<(usize, f64)> = neighbours(cell, width, height)
+            let downhill: Vec<(usize, f64)> = steps
+                .neighbours(cell)
                 .map(|(neighbour, distance)| {
                     (neighbour, (filled[cell] - filled[neighbour]) / distance)
                 })
@@ -267,13 +302,14 @@ pub fn solve_drainage(
         })
         .collect();
 
-    // Gather rain from the highest cells down.
+    // Gather rain from the highest cells down. A cell adds its rain by its
+    // area, so the narrow cells towards the poles add less.
     let mut flow: Vec<f64> = (0..total)
         .map(|cell| {
             if is_base_level[cell] {
                 0.0
             } else {
-                rainfall[cell]
+                rainfall[cell] * steps.area_share(cell)
             }
         })
         .collect();
@@ -282,7 +318,7 @@ pub fn solve_drainage(
         // Water crossing a lake loses some of itself to the air; a lake
         // that loses all of it has no river out.
         if filled[cell] - ground[cell] >= LAKE_MIN_DEPTH {
-            flow[cell] = (flow[cell] - evaporation[cell]).max(0.0);
+            flow[cell] = (flow[cell] - evaporation[cell] * steps.area_share(cell)).max(0.0);
         }
         let receiver = receivers[cell];
         if receiver != NO_RECEIVER {
@@ -374,6 +410,18 @@ mod tests {
                 assert!(position(receiver) < position(cell));
             }
         }
+    }
+
+    #[test]
+    fn water_drains_over_a_pole_to_the_sea_beyond_it() {
+        // A 4 by 2 world: the top row touches the north pole. Sea at (0, 0);
+        // the cell across the pole from it, (2, 0), is land with nothing but
+        // the pole between it and the sea.
+        let ground = vec![0.0, 9.0, 1.0, 9.0, 9.0, 9.0, 9.0, 9.0];
+        let sea = vec![true, false, false, false, false, false, false, false];
+        let drainage = solve_drainage(&ground, &sea, &vec![1.0; 8], &vec![0.0; 8], 4, 2, 0);
+
+        assert_eq!(drainage.receivers[2], 0);
     }
 
     #[test]

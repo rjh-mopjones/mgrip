@@ -1,6 +1,6 @@
 # Spec 014 - A Spherical World
 
-**Status:** In progress. Stages 0 (the geometry module), 1 (noise on the sphere) and 2 (light from the sphere) done.
+**Status:** In progress. Stages 0 (the geometry module), 1 (noise on the sphere), 2 (light from the sphere) and 3 (area, distance and neighbours) done. Stages 4 to 6 not started.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (shared macro data), Spec 013 (uplift terrain)
 **Supersedes:** the cylinder (`wrap.rs`), the light formula in `light_level.rs`, the "terminus is an arc" invariant, `mg_life::Grid`
@@ -119,7 +119,9 @@ the strategies go.
 3D noise costs about twice what 2D does, but noise is a small share of
 the macro pass. Measured on seed 42 with the climate pass included: 64 s
 before, 62 s after. (The 35 s in spec 013 predates the climate pass.)
-Budget: no slower than before.
+Budget: no slower than before. After stage 3: 59 s. A blur whose reach
+grows towards the poles cost 40% more until its row pass was done by
+running sums; anything else that reaches along rows should do the same.
 
 ### Tectonics
 
@@ -297,6 +299,11 @@ macro pass within 60 s.
   sandbox before it is a constant.
 - **What the day pole looks like.** Today the bottom edge is dry wadi and
   desert. A single sub-stellar point might deserve its own treatment (a
-  glassed plain, a permanent storm). Lore first.
+  glassed plain, a permanent storm). Lore first. Found in stage 3: the
+  surface wind converges on the sub-stellar point from every side, and the
+  moisture it still carries has nowhere to go but down, so the climate pass
+  rains it out there. The flat model piled the same moisture along its
+  bottom row. A model that lifted converging air (the return flow) would
+  carry it away instead; until then the pole is wetter than it should be.
 - **Whether chunk 1023 and chunk −1 should be the same chunk at runtime.**
   This spec says yes; the streamer has never had to care.

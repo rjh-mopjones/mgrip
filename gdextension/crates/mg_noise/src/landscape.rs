@@ -110,8 +110,9 @@ impl UpliftSources {
         let crested = |field: Vec<f64>, shift: f64| -> Vec<f64> {
             (0..width * height)
                 .map(|cell| {
-                    let wx = (cell % width) as f64 * WORLD_WIDTH / width as f64;
-                    let wy = (cell / width) as f64 * WORLD_WIDTH / width as f64;
+                    let grid = mg_core::Sphere::MARGIN.grid(width, height);
+                    let wx = (cell % width) as f64 / grid.cells_per_world_unit();
+                    let wy = (cell / width) as f64 * grid.cell_height();
                     field[cell] * (CREST_FLOOR + CREST_GAIN * crest(wx, wy, shift).powi(3))
                 })
                 .collect()
@@ -464,11 +465,11 @@ impl FineHeights {
     /// ground climbs through that level.
     pub fn lake_level(&self, wx: f64, wy: f64) -> Option<f64> {
         let (x, y, _, _) = self.around(wx, wy);
+        let grid = mg_core::Sphere::MARGIN.grid(self.width, self.height);
         let level = [(0, 0), (1, 0), (0, 1), (1, 1)]
             .into_iter()
             .map(|(dx, dy)| {
-                let column = (x + dx).rem_euclid(self.width as i64) as usize;
-                let row = (y + dy).clamp(0, self.height as i64 - 1) as usize;
+                let (column, row) = grid.wrap_cell(x + dx, y + dy);
                 self.water_level[row * self.width + column]
             })
             .fold(f32::NEG_INFINITY, f32::max) as f64;
@@ -476,10 +477,10 @@ impl FineHeights {
     }
 
     /// The four cells around a world position and how far between them it
-    /// lies. The map joins east to west; north and south edges are clamped.
+    /// lies. The map joins east to west and over the poles (`at`).
     fn around(&self, wx: f64, wy: f64) -> (i64, i64, f64, f64) {
         let fx = wx * self.cells_per_wu as f64;
-        let fy = (wy * self.cells_per_wu as f64).clamp(0.0, (self.height - 1) as f64);
+        let fy = wy * self.cells_per_wu as f64;
         (
             fx.floor() as i64,
             fy.floor() as i64,
@@ -489,8 +490,9 @@ impl FineHeights {
     }
 
     fn at(&self, x: i64, y: i64) -> f64 {
-        let x = x.rem_euclid(self.width as i64) as usize;
-        let y = y.clamp(0, self.height as i64 - 1) as usize;
+        let (x, y) = mg_core::Sphere::MARGIN
+            .grid(self.width, self.height)
+            .wrap_cell(x, y);
         self.heights[y * self.width + x] as f64
     }
 
@@ -607,15 +609,29 @@ pub fn refine_landscape(inputs: &LandscapeInputs, macro_heights: &[f64]) -> Fine
 /// the size of a cell in world units. Biome classification reads this to
 /// tell rugged country from plains.
 pub fn flatness(heightmap: &[f64], width: usize, height: usize, cell_size_wu: f64) -> Vec<f64> {
+    // A grid over the whole world lies on the sphere, joining east to west
+    // and over the poles, with cells narrowing towards them. A tile of the
+    // world (a chunk) is flat, and its edges are its edges.
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
+    let whole_world = (width as f64 * cell_size_wu - WORLD_WIDTH).abs() < 1e-6;
     (0..width * height)
         .map(|cell| {
-            let (x, y) = (cell % width, cell / width);
-            let at = |x: usize, y: usize| heightmap[y * width + x];
-            let (west, east) = (x.saturating_sub(1), (x + 1).min(width - 1));
-            let (north, south) = (y.saturating_sub(1), (y + 1).min(height - 1));
-            let rise_x = (at(east, y) - at(west, y)) / ((east - west).max(1) as f64 * cell_size_wu);
-            let rise_y =
-                (at(x, south) - at(x, north)) / ((south - north).max(1) as f64 * cell_size_wu);
+            let (x, y) = grid.cell(cell);
+            let (rise_x, rise_y) = if whole_world {
+                let at = |dx: i32, dy: i32| heightmap[grid.index(grid.neighbour(x, y, dx, dy))];
+                (
+                    (at(1, 0) - at(-1, 0)) / (2.0 * grid.cell_width(y)),
+                    (at(0, 1) - at(0, -1)) / (2.0 * grid.cell_height()),
+                )
+            } else {
+                let at = |x: usize, y: usize| heightmap[y * width + x];
+                let (west, east) = (x.saturating_sub(1), (x + 1).min(width - 1));
+                let (north, south) = (y.saturating_sub(1), (y + 1).min(height - 1));
+                (
+                    (at(east, y) - at(west, y)) / ((east - west).max(1) as f64 * cell_size_wu),
+                    (at(x, south) - at(x, north)) / ((south - north).max(1) as f64 * cell_size_wu),
+                )
+            };
             flatness_of_slope((rise_x * rise_x + rise_y * rise_y).sqrt())
         })
         .collect()

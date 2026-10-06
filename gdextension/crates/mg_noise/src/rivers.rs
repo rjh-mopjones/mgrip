@@ -338,6 +338,8 @@ fn longest_run<T>(items: &[T], test: impl Fn(&T) -> bool) -> (usize, usize) {
 /// The direction (an index into `D8_OFFSETS`) from each cell to the cell it
 /// drains to, or `NO_FLOW`.
 fn flow_directions(drainage: &Drainage, width: usize) -> Vec<u8> {
+    let height = drainage.receivers.len() / width;
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
     drainage
         .receivers
         .iter()
@@ -346,18 +348,12 @@ fn flow_directions(drainage: &Drainage, width: usize) -> Vec<u8> {
             if receiver == NO_RECEIVER {
                 return NO_FLOW;
             }
-            let receiver = receiver as usize;
-            let dy = (receiver / width) as i32 - (cell / width) as i32;
-            // The map joins east to west, so a step can cross the seam.
-            let raw_dx = (receiver % width) as i32 - (cell % width) as i32;
-            let dx = if raw_dx.abs() > 1 {
-                -raw_dx.signum()
-            } else {
-                raw_dx
-            };
-            D8_OFFSETS
+            // Which of the eight neighbours the receiver is: a step may
+            // cross the seam or a pole, so it is matched by cell, not offset.
+            let (x, y) = grid.cell(cell);
+            grid.neighbours(x, y)
                 .iter()
-                .position(|&offset| offset == (dx, dy))
+                .position(|&beside| grid.index(beside) == receiver as usize)
                 .map_or(NO_FLOW, |direction| direction as u8)
         })
         .collect()
@@ -619,8 +615,11 @@ impl RiverNetwork {
             .collect();
 
         // Step 4: Build river tree
-        let min_accumulation = ((total as f64) * MIN_RIVER_ACCUMULATION_RATIO)
-            .max(MIN_RIVER_ACCUMULATION_FLOOR) as u32;
+        // A share of the world's area, in the equatorial cells flow is
+        // counted in.
+        let world_area = mg_core::Sphere::MARGIN.grid(width, height).cells_of_area();
+        let min_accumulation =
+            (world_area * MIN_RIVER_ACCUMULATION_RATIO).max(MIN_RIVER_ACCUMULATION_FLOOR) as u32;
         let mut segments = build_river_tree(
             &flow_dir,
             &accumulation,
@@ -1003,6 +1002,7 @@ fn path_to_open_water(
     sea_level: f64,
 ) -> Vec<usize> {
     let depth = |cell: usize| sea_level - continentalness.get(cell).copied().unwrap_or(0.0);
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
     let mut came_from: HashMap<usize, usize> = HashMap::new();
     let path_to = |cell: usize, came_from: &HashMap<usize, usize>| {
         let mut path = Vec::new();
@@ -1026,13 +1026,9 @@ fn path_to_open_water(
         if steps == MOUTH_MAX_CELLS_INTO_SEA {
             continue;
         }
-        for (dx, dy) in D8_OFFSETS {
-            let x = ((cell % width) as i32 + dx).rem_euclid(width as i32) as usize;
-            let y = (cell / width) as i32 + dy;
-            if y < 0 || y >= height as i32 {
-                continue;
-            }
-            let neighbour = y as usize * width + x;
+        let (x, y) = grid.cell(cell);
+        for beside in grid.neighbours(x, y) {
+            let neighbour = grid.index(beside);
             if neighbour != start && depth(neighbour) >= 0.0 && !came_from.contains_key(&neighbour)
             {
                 came_from.insert(neighbour, cell);
@@ -1060,19 +1056,23 @@ pub fn sea_bodies(
     sea_level: f64,
 ) -> Vec<bool> {
     let cells_per_wu = width as f64 / WORLD_WIDTH;
-    let min_cells = (SEA_BODY_MIN_AREA_WU2 * cells_per_wu * cells_per_wu).ceil() as usize;
-    stretches_below_sea(continentalness, width, height, sea_level, min_cells)
+    let min_area = SEA_BODY_MIN_AREA_WU2 * cells_per_wu * cells_per_wu;
+    stretches_below_sea(continentalness, width, height, sea_level, min_area)
 }
 
-/// For every cell, whether it lies in a connected stretch of at least
-/// `min_cells` cells below sea level.
+/// For every cell, whether it lies in a connected stretch below sea level
+/// of at least `min_area` equatorial cells. The grid lies on the sphere, so
+/// a stretch runs round the seam and over the poles, and cells towards the
+/// poles count for less.
 fn stretches_below_sea(
     continentalness: &[f64],
     width: usize,
     height: usize,
     sea_level: f64,
-    min_cells: usize,
+    min_area: f64,
 ) -> Vec<bool> {
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
+    let shares: Vec<f64> = (0..height).map(|y| grid.area_share(y)).collect();
     let below_sea = |cell: usize| continentalness[cell] <= sea_level;
     let mut in_body = vec![false; width * height];
     let mut seen = vec![false; width * height];
@@ -1087,20 +1087,17 @@ fn stretches_below_sea(
         while next < stretch.len() {
             let cell = stretch[next];
             next += 1;
-            for (dx, dy) in D8_OFFSETS {
-                let x = ((cell % width) as i32 + dx).rem_euclid(width as i32) as usize;
-                let y = (cell / width) as i32 + dy;
-                if y < 0 || y >= height as i32 {
-                    continue;
-                }
-                let neighbour = y as usize * width + x;
+            let (x, y) = grid.cell(cell);
+            for beside in grid.neighbours(x, y) {
+                let neighbour = grid.index(beside);
                 if !seen[neighbour] && below_sea(neighbour) {
                     seen[neighbour] = true;
                     stretch.push(neighbour);
                 }
             }
         }
-        if stretch.len() >= min_cells {
+        let area: f64 = stretch.iter().map(|&cell| shares[cell / width]).sum();
+        if area >= min_area {
             for cell in stretch {
                 in_body[cell] = true;
             }
@@ -1121,6 +1118,7 @@ fn build_river_tree(
     min_accumulation: u32,
 ) -> Vec<RiverSegment> {
     let total = width * height;
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
     // Convert pixel indices to world coordinates. At 1:1 macro (1024×512)
     // this is an identity transform. At 2:1 (2048×1024) it scales by 0.5.
     // Without this, path coordinates are in macro pixel space and the
@@ -1141,16 +1139,11 @@ fn build_river_tree(
         if !is_river[idx] || flow_dir[idx] == NO_FLOW {
             continue;
         }
-        let x = idx % width;
-        let y = idx / width;
+        let (x, y) = grid.cell(idx);
         let (dx, dy) = D8_OFFSETS[flow_dir[idx] as usize];
-        let nx = (x as i32 + dx).rem_euclid(width as i32) as usize;
-        let ny = y as i32 + dy;
-        if ny >= 0 && (ny as usize) < height {
-            let nidx = ny as usize * width + nx;
-            if is_river[nidx] {
-                inflow_count[nidx] += 1;
-            }
+        let nidx = grid.index(grid.neighbour(x, y, dx, dy));
+        if is_river[nidx] {
+            inflow_count[nidx] += 1;
         }
     }
 
@@ -1198,15 +1191,9 @@ fn build_river_tree(
                 break;
             }
 
-            let x = current % width;
-            let y = current / width;
+            let (x, y) = grid.cell(current);
             let (dx, dy) = D8_OFFSETS[flow_dir[current] as usize];
-            let nx = (x as i32 + dx).rem_euclid(width as i32) as usize;
-            let ny = y as i32 + dy;
-            if ny < 0 || ny >= height as i32 {
-                break;
-            }
-            current = ny as usize * width + nx;
+            current = grid.index(grid.neighbour(x, y, dx, dy));
         }
 
         if path.len() < 2 {
@@ -1274,15 +1261,9 @@ fn build_river_tree(
             if flow_dir[cur_idx] == NO_FLOW {
                 break;
             }
-            let x = cur_idx % width;
-            let y = cur_idx / width;
+            let (x, y) = grid.cell(cur_idx);
             let (dx, dy) = D8_OFFSETS[flow_dir[cur_idx] as usize];
-            let nx = (x as i32 + dx).rem_euclid(width as i32) as usize;
-            let ny = y as i32 + dy;
-            if ny < 0 || ny >= height as i32 {
-                break;
-            }
-            let next = ny as usize * width + nx;
+            let next = grid.index(grid.neighbour(x, y, dx, dy));
 
             if let Some(ds) = segment_id_at[next] {
                 if ds != i {
@@ -1298,7 +1279,7 @@ fn build_river_tree(
                 break;
             }
             // Add bridge cell to this segment's path
-            bridge_path.push((nx as f64 * px_to_wx, (ny as usize) as f64 * px_to_wy));
+            bridge_path.push(to_world(next));
             segment_id_at[next] = Some(i);
             cur_idx = next;
         }
@@ -2360,39 +2341,52 @@ mod course_tests {
         assert_eq!(segments[1].surface_from, Some(0));
     }
 
+    /// A three-row world with `middle` as its middle row and land above and
+    /// below: on the sphere a one-row world would touch both poles, and
+    /// every cell its far side.
+    fn strip(middle: &[f64]) -> Vec<f64> {
+        let land = vec![0.2; middle.len()];
+        [&land[..], middle, &land[..]].concat()
+    }
+
     #[test]
     fn a_mouth_is_carried_through_the_shallows_to_open_water() {
-        // One row, sea level 0: land, then two shallow cells, then open water.
-        let continentalness = [0.2, -0.01, -0.02, -0.2, -0.3];
+        // Sea level 0: land, then two shallow cells, then open water.
+        let continentalness = strip(&[0.2, -0.01, -0.02, -0.2, -0.3]);
         assert_eq!(
-            path_to_open_water(1, &continentalness, 5, 1, 0.0),
-            vec![2, 3]
+            path_to_open_water(5 + 1, &continentalness, 5, 3, 0.0),
+            vec![5 + 2, 5 + 3]
         );
         // Already in open water: nothing to add.
-        assert!(path_to_open_water(3, &continentalness, 5, 1, 0.0).is_empty());
+        assert!(path_to_open_water(5 + 3, &continentalness, 5, 3, 0.0).is_empty());
     }
 
     #[test]
     fn in_a_shallow_sea_a_mouth_is_carried_to_the_deepest_water_in_reach() {
         // Nothing here is deep enough to count as open water.
-        let continentalness = [0.2, -0.01, -0.03, -0.02, 0.2, 0.2];
-        assert_eq!(path_to_open_water(1, &continentalness, 6, 1, 0.0), vec![2]);
+        let continentalness = strip(&[0.2, -0.01, -0.03, -0.02, 0.2, 0.2]);
+        assert_eq!(
+            path_to_open_water(6 + 1, &continentalness, 6, 3, 0.0),
+            vec![6 + 2]
+        );
     }
 
     #[test]
     fn a_body_of_water_is_a_stretch_of_sea_of_some_size() {
         // A 20-cell row: one pond cell, land, then a 14-cell lake.
-        let mut continentalness = vec![0.2; 20];
-        continentalness[1] = -0.1;
-        for cell in continentalness.iter_mut().skip(4).take(14) {
+        let mut row = vec![0.2; 20];
+        row[1] = -0.1;
+        for cell in row.iter_mut().skip(4).take(14) {
             *cell = -0.1;
         }
+        let continentalness = strip(&row);
 
-        let in_body = stretches_below_sea(&continentalness, 20, 1, 0.0, 12);
+        // The middle row lies on the equator: a full cell each.
+        let in_body = stretches_below_sea(&continentalness, 20, 3, 0.0, 12.0);
 
-        assert!(!in_body[1]);
-        assert!(!in_body[2]);
-        assert!(in_body[4] && in_body[17]);
+        assert!(!in_body[20 + 1]);
+        assert!(!in_body[20 + 2]);
+        assert!(in_body[20 + 4] && in_body[20 + 17]);
     }
 
     #[test]

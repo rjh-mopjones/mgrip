@@ -201,12 +201,11 @@ impl SphereGrid {
         x.rem_euclid(self.width as i64) as usize
     }
 
-    /// The cell `dx` columns east and `dy` rows south of (x, y). East and
-    /// west join. A step past a pole comes down the far side of it: the
-    /// cell half a world away in the same row.
-    pub fn neighbour(&self, x: usize, y: usize, dx: i32, dy: i32) -> (usize, usize) {
-        let mut column = x as i64 + dx as i64;
-        let mut row = y as i64 + dy as i64;
+    /// Any column and row brought onto the grid. East and west join. A row
+    /// past a pole comes down the far side of it: the cell half a world
+    /// away, as many rows in.
+    pub fn wrap_cell(&self, x: i64, y: i64) -> (usize, usize) {
+        let (mut column, mut row) = (x, y);
         if row < 0 {
             row = -row - 1;
             column += self.width as i64 / 2;
@@ -217,9 +216,24 @@ impl SphereGrid {
         (self.wrap_column(column), row as usize)
     }
 
+    /// The cell `dx` columns east and `dy` rows south of (x, y).
+    pub fn neighbour(&self, x: usize, y: usize, dx: i32, dy: i32) -> (usize, usize) {
+        self.wrap_cell(x as i64 + dx as i64, y as i64 + dy as i64)
+    }
+
     /// The eight neighbours of a cell, in `D8_OFFSETS` order.
     pub fn neighbours(&self, x: usize, y: usize) -> [(usize, usize); 8] {
         D8_OFFSETS.map(|(dx, dy)| self.neighbour(x, y, dx, dy))
+    }
+
+    /// A cell's place in a row-major field.
+    pub fn index(&self, (x, y): (usize, usize)) -> usize {
+        y * self.width + x
+    }
+
+    /// The cell at a place in a row-major field.
+    pub fn cell(&self, index: usize) -> (usize, usize) {
+        (index % self.width, index / self.width)
     }
 
     /// Great-circle distance between the centres of two cells, in world
@@ -227,6 +241,41 @@ impl SphereGrid {
     pub fn distance(&self, a: (usize, usize), b: (usize, usize)) -> f64 {
         self.sphere
             .distance(self.point(a.0, a.1), self.point(b.0, b.1))
+    }
+
+    /// Distance from a cell to each of its eight neighbours, in world
+    /// units, for every row: the same all along a row. Indexed by row, then
+    /// in `D8_OFFSETS` order.
+    pub fn row_step_distances(&self) -> Vec<[f64; 8]> {
+        (0..self.height)
+            .map(|y| self.neighbours(0, y).map(|to| self.distance((0, y), to)))
+            .collect()
+    }
+
+    /// The area of an equatorial cell: a cell's width at the equator times
+    /// its height. The unit that areas and flows are counted in.
+    pub fn equatorial_cell_area(&self) -> f64 {
+        self.sphere.circumference / self.width as f64 * self.cell_height()
+    }
+
+    /// A row's cell area as a share of an equatorial cell's: 1 at the
+    /// equator, near 0 at the poles.
+    pub fn area_share(&self, y: usize) -> f64 {
+        self.cell_area(y) / self.equatorial_cell_area()
+    }
+
+    /// The whole sphere's area in equatorial cells: what a count of every
+    /// cell would be if they were all the size of one at the equator.
+    pub fn cells_of_area(&self) -> f64 {
+        self.sphere.area() / self.equatorial_cell_area()
+    }
+
+    /// How many cells along row `y` a reach of `cells` equatorial cells
+    /// spans: more towards the poles, where cells are narrow, but never
+    /// more than half the way round.
+    pub fn reach_along_row(&self, y: usize, cells: i32) -> i32 {
+        let widened = cells as f64 / self.latitude(y).cos().max(1e-9);
+        (widened.round() as i32).min(self.width as i32 / 2)
     }
 
     /// Signed columns from `from_x` to `to_x`, the short way round.
@@ -413,6 +462,24 @@ mod tests {
         let b = sphere.noise_point_at(101.0, 256.0, frequency);
         let chord = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
         assert!(close(chord, frequency, frequency * 1e-3));
+    }
+
+    #[test]
+    fn area_shares_and_reaches_follow_the_latitude() {
+        let equator = GRID.height / 2;
+        assert!(close(GRID.area_share(equator), 1.0, 1e-4));
+        assert!(GRID.area_share(0) < 0.01);
+        assert_eq!(GRID.reach_along_row(equator, 3), 3);
+        assert!(GRID.reach_along_row(10, 3) > 3);
+        assert_eq!(GRID.reach_along_row(0, 3), GRID.width as i32 / 2);
+        let steps = GRID.row_step_distances();
+        // East and north steps at the equator are a cell; diagonals root two.
+        assert!(close(steps[equator][2], 1.0, 1e-3));
+        assert!(close(steps[equator][0], 1.0, 1e-3));
+        assert!(close(steps[equator][1], 2f64.sqrt(), 1e-2));
+        // The step over the pole lands a row's height away.
+        assert!(steps[0][0] <= GRID.cell_height() * 1.01);
+        assert_eq!(GRID.cell(GRID.index((7, 3))), (7, 3));
     }
 
     #[test]

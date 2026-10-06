@@ -7,7 +7,7 @@
 //! the sand seas are: not wherever a noise layer says, but in the basins the
 //! wind cannot sweep clean.
 
-use crate::biome_map::{SEA_LEVEL, WORLD_HEIGHT, WORLD_WIDTH};
+use crate::biome_map::{SEA_LEVEL, WORLD_WIDTH};
 use crate::drainage::desert;
 use crate::erosion_sim::box_blurred;
 use crate::rivers::D8_OFFSETS;
@@ -70,14 +70,19 @@ impl Wind {
     }
 }
 
-/// A field's slope at a cell, per cell. The map joins east to west.
+/// A field's slope at a cell, per world unit along the ground, east and
+/// south. The grid lies on the sphere: it joins east to west and over the
+/// poles, and a cell narrows towards them. Within the last rows a cell is
+/// a sliver, so the east-west slope there is measured over no less than a
+/// quarter of a cell's height.
 fn slope(field: &[f64], cell: usize, width: usize, height: usize) -> (f64, f64) {
-    let (x, y) = (cell % width, cell / width);
-    let at = |x: usize, y: usize| field[y * width + x];
-    let (north, south) = (y.saturating_sub(1), (y + 1).min(height - 1));
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
+    let (x, y) = grid.cell(cell);
+    let at = |dx: i32, dy: i32| field[grid.index(grid.neighbour(x, y, dx, dy))];
+    let across = grid.cell_width(y).max(grid.cell_height() / 4.0);
     (
-        (at((x + 1) % width, y) - at((x + width - 1) % width, y)) / 2.0,
-        (at(x, south) - at(x, north)) / (south - north).max(1) as f64,
+        (at(1, 0) - at(-1, 0)) / (2.0 * across),
+        (at(0, 1) - at(0, -1)) / (2.0 * grid.cell_height()),
     )
 }
 
@@ -99,10 +104,10 @@ pub fn surface_wind(light_level: &[f64], heightmap: &[f64], width: usize, height
         let to_light = (to_light_x * to_light_x + to_light_y * to_light_y)
             .sqrt()
             .max(1e-12);
-        // Slopes are per cell; the turning is by slope per world unit.
+        // Slopes are per world unit, as the turning is.
         let (rise_x, rise_y) = slope(&surroundings, cell, width, height);
-        let x = to_light_x / to_light - rise_x * cells_per_wu * DEFLECTION;
-        let y = to_light_y / to_light - rise_y * cells_per_wu * DEFLECTION;
+        let x = to_light_x / to_light - rise_x * DEFLECTION;
+        let y = to_light_y / to_light - rise_y * DEFLECTION;
         let length = (x * x + y * y).sqrt().max(1e-12);
         let speed = (1.0 + (ground[cell] - surroundings[cell]) * EXPOSURE_GAIN)
             .clamp(SLOWEST_WIND, FASTEST_WIND);
@@ -145,11 +150,16 @@ pub fn drifted_sand(
     // nearest in direction, it would travel in dead-straight streaks along
     // those eight; so it is shared between the two neighbours either side of
     // the wind's true direction, more to the nearer.
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
     let neighbour = |cell: usize, direction: usize| {
         let (dx, dy) = D8_OFFSETS[direction % 8];
-        let to_y = ((cell / width) as i32 + dy).clamp(0, height as i32 - 1) as usize;
-        to_y * width + ((cell % width) as i32 + dx).rem_euclid(width as i32) as usize
+        let (x, y) = grid.cell(cell);
+        grid.index(grid.neighbour(x, y, dx, dy))
     };
+    // Sand is a depth over a cell. Blown onto a cell of a different size it
+    // lies deeper or shallower by the ratio of the two areas.
+    let shares: Vec<f64> = (0..height).map(|y| grid.area_share(y)).collect();
+    let into = |from: usize, to: usize| shares[from / width] / shares[to / width];
     let downwind: Vec<[(usize, f64); 2]> = (0..total)
         .map(|cell| {
             // `D8_OFFSETS` runs clockwise from north, an eighth of a turn apart.
@@ -175,7 +185,7 @@ pub fn drifted_sand(
             for (to, share) in downwind[cell] {
                 // Sand blown onto water sinks; it is gone.
                 if !is_water[to] {
-                    next[to] += carried * share;
+                    next[to] += carried * share * into(cell, to);
                 }
             }
         }

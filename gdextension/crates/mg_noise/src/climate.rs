@@ -32,6 +32,12 @@ const FROZEN_AIR_C: f64 = -20.0;
 const WARM_AIR_C: f64 = 35.0;
 const HOT_AIR_C: f64 = 80.0;
 const HOT_AIR_RAIN_SHARE: f64 = 0.25;
+/// Over hot ground the surface air rises, and takes this share of its
+/// moisture up with it each step, into the high return flow this model does
+/// not follow. Full by `HOT_AIR_C`. Without it the wind, which converges on
+/// the sub-stellar point from every side, piles all the moisture it still
+/// carries onto the day pole and rains it out there (spec 014).
+const UPDRAFT_SHARE: f64 = 0.03;
 /// Steps of carrying; moisture travels up to a cell a step. Enough to cross
 /// the widest continent and settle.
 const CARRY_STEPS: usize = 700;
@@ -92,11 +98,17 @@ pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
     // Where each cell's air goes: shared between the two neighbours either
     // side of the wind's true direction, as sand is, or it would travel in
     // straight spokes.
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
     let neighbour = |cell: usize, direction: usize| {
         let (dx, dy) = D8_OFFSETS[direction % 8];
-        let to_y = ((cell / width) as i32 + dy).clamp(0, height as i32 - 1) as usize;
-        to_y * width + ((cell % width) as i32 + dx).rem_euclid(width as i32) as usize
+        let (x, y) = grid.cell(cell);
+        grid.index(grid.neighbour(x, y, dx, dy))
     };
+    // Moisture is an amount over a cell. Carried onto a cell of a different
+    // size it is thicker or thinner by the ratio of the two areas, so a
+    // plume does not pile up as the cells narrow towards a pole.
+    let shares: Vec<f64> = (0..height).map(|y| grid.area_share(y)).collect();
+    let into = |from: usize, to: usize| shares[from / width] / shares[to / width];
     let downwind: Vec<[(usize, f64); 2]> = (0..total)
         .map(|cell| {
             let turn = wind.x[cell]
@@ -137,6 +149,12 @@ pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
             ((BASE_RAIN + OROGRAPHIC_RAIN * rise) * cold_gain * hot_share).min(0.95)
         })
         .collect();
+    // How hot the ground is, 0 to 1: over hot ground the surface air rises.
+    let hot_ground: Vec<f64> = (0..total)
+        .map(|cell| {
+            ((land.temperature[cell] - WARM_AIR_C) / (HOT_AIR_C - WARM_AIR_C)).clamp(0.0, 1.0)
+        })
+        .collect();
 
     let mut moisture = vec![0.0f64; total];
     let mut rain = vec![0.0f64; total];
@@ -145,14 +163,18 @@ pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
         for cell in 0..total {
             let gathered = moisture[cell] + source[cell];
             let in_air = gathered.min(AIR_CAPACITY);
-            let fallen = in_air * falls[cell] + (gathered - in_air);
+            // More than the air can hold falls at once, except over hot
+            // ground, where the excess rises away with the updraft instead.
+            let excess = (gathered - in_air) * (1.0 - hot_ground[cell]);
+            let fallen = in_air * falls[cell] + excess;
             rain[cell] = fallen;
-            let carried = in_air - fallen;
+            let carried = (in_air - fallen) * (1.0 - UPDRAFT_SHARE * hot_ground[cell]);
             for (to, share) in downwind[cell] {
-                next[to] += carried * (1.0 - MIXING) * share;
+                next[to] += carried * (1.0 - MIXING) * share * into(cell, to);
             }
             for direction in 0..8 {
-                next[neighbour(cell, direction)] += carried * MIXING / 8.0;
+                let to = neighbour(cell, direction);
+                next[to] += carried * MIXING / 8.0 * into(cell, to);
             }
         }
         moisture = next;
@@ -202,6 +224,42 @@ mod tests {
         (light, heights, sea, temperature)
     }
 
+    #[test]
+    fn over_hot_ground_the_air_rises_and_little_reaches_the_pole() {
+        let (light, heights, sea, mut temperature) = world(0.1);
+        let cool = rainfall(
+            &surface_wind(&light, &heights, WIDE, HIGH),
+            &Land {
+                heightmap: &heights,
+                temperature: &temperature,
+                is_liquid_sea: &sea,
+                width: WIDE,
+                height: HIGH,
+            },
+        );
+        // The land south of the sea is hot.
+        for cell in 9 * WIDE..WIDE * HIGH {
+            temperature[cell] = HOT_AIR_C;
+        }
+        let hot = rainfall(
+            &surface_wind(&light, &heights, WIDE, HIGH),
+            &Land {
+                heightmap: &heights,
+                temperature: &temperature,
+                is_liquid_sea: &sea,
+                width: WIDE,
+                height: HIGH,
+            },
+        );
+        let pole = (HIGH - 1) * WIDE + 16;
+        assert!(
+            hot[pole] < cool[pole] * 0.5,
+            "{} vs {}",
+            hot[pole],
+            cool[pole]
+        );
+    }
+
     fn rain_over(range_height: f64) -> Vec<f64> {
         let (light, heights, sea, temperature) = world(range_height);
         let wind = surface_wind(&light, &heights, WIDE, HIGH);
@@ -221,8 +279,11 @@ mod tests {
     fn rain_falls_downwind_of_the_sea_and_fades_inland() {
         let rain = rain_over(0.1);
         let at = |row: usize| rain[row * WIDE + 16];
-        assert!(at(9) > at(12));
-        assert!(at(12) > at(20));
+        // Fades over the first rows inland. Further on, the sphere tells:
+        // a wind blowing south everywhere converges on the south pole, and
+        // what it still carries piles up there rather than fading.
+        assert!(at(9) > at(10));
+        assert!(at(10) > at(12));
         // Nothing upwind of the sea.
         assert!(at(2) < at(9) * 0.1);
     }

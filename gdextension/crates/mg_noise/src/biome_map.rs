@@ -225,8 +225,13 @@ impl MacroOceanMask {
         if self.width == 0 || self.height == 0 {
             return false;
         }
-        let px = ((wx / self.world_width * self.width as f64) as usize).min(self.width - 1);
-        let py = ((wy / self.world_height * self.height as f64) as usize).min(self.height - 1);
+        // The map joins east to west and over the poles.
+        let (px, py) = mg_core::Sphere::MARGIN
+            .grid(self.width, self.height)
+            .wrap_cell(
+                (wx / self.world_width * self.width as f64).floor() as i64,
+                (wy / self.world_height * self.height as f64).floor() as i64,
+            );
         self.pixels
             .get(py * self.width + px)
             .copied()
@@ -257,8 +262,9 @@ pub fn sample_field_smooth(
     if field.is_empty() || width == 0 || height == 0 {
         return 0.0;
     }
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
     let fx = wx.rem_euclid(world_width) * width as f64 / world_width;
-    let fy = (wy.clamp(0.0, world_height) * height as f64 / world_height).min((height - 1) as f64);
+    let fy = wy * height as f64 / world_height;
     let (x0, y0) = (fx.floor(), fy.floor());
     let (tx, ty) = (fx - x0, fy - y0);
     // Cubic B-spline weights for the four cells around a position.
@@ -274,10 +280,9 @@ pub fn sample_field_smooth(
     let (weights_x, weights_y) = (weights(tx), weights(ty));
     let mut value = 0.0;
     for (row, weight_y) in weights_y.iter().enumerate() {
-        // North and south edges are clamped; the map joins east to west.
-        let y = (y0 as i32 + row as i32 - 1).clamp(0, height as i32 - 1) as usize;
+        // The map joins east to west and over the poles.
         for (column, weight_x) in weights_x.iter().enumerate() {
-            let x = (x0 as i32 + column as i32 - 1).rem_euclid(width as i32) as usize;
+            let (x, y) = grid.wrap_cell(x0 as i64 + column as i64 - 1, y0 as i64 + row as i64 - 1);
             value += field[y * width + x] * weight_x * weight_y;
         }
     }
@@ -298,27 +303,17 @@ pub fn sample_field_bilinear(
     }
     debug_assert_eq!(field.len(), width * height);
 
-    let wrapped_x = wx.rem_euclid(world_width);
-    let fx = wrapped_x * width as f64 / world_width;
-    let clamped_y = wy.clamp(0.0, world_height);
-    let fy = (clamped_y * height as f64 / world_height).min((height - 1) as f64);
-
-    let x0f = fx.floor();
-    let y0f = fy.floor();
-    let tx = fx - x0f;
-    let ty = fy - y0f;
-
-    let x0 = (x0f as i32).rem_euclid(width as i32) as usize;
-    let x1 = (x0f as i32 + 1).rem_euclid(width as i32) as usize;
-    let y0_i = (y0f as i32).max(0);
-    let y1_i = (y0_i + 1).min(height as i32 - 1);
-    let y0 = y0_i as usize;
-    let y1 = y1_i as usize;
-
-    let v00 = field[y0 * width + x0];
-    let v10 = field[y0 * width + x1];
-    let v01 = field[y1 * width + x0];
-    let v11 = field[y1 * width + x1];
+    let grid = mg_core::Sphere::MARGIN.grid(width, height);
+    let fx = wx.rem_euclid(world_width) * width as f64 / world_width;
+    let fy = wy * height as f64 / world_height;
+    let (x0f, y0f) = (fx.floor(), fy.floor());
+    let (tx, ty) = (fx - x0f, fy - y0f);
+    // The map joins east to west and over the poles.
+    let at = |dx: i64, dy: i64| {
+        let (x, y) = grid.wrap_cell(x0f as i64 + dx, y0f as i64 + dy);
+        field[y * width + x]
+    };
+    let (v00, v10, v01, v11) = (at(0, 0), at(1, 0), at(0, 1), at(1, 1));
 
     let top = v00 * (1.0 - tx) + v10 * tx;
     let bot = v01 * (1.0 - tx) + v11 * tx;
