@@ -343,7 +343,11 @@ fn flow_directions(drainage: &Drainage, width: usize) -> Vec<u8> {
             let dy = (receiver / width) as i32 - (cell / width) as i32;
             // The map joins east to west, so a step can cross the seam.
             let raw_dx = (receiver % width) as i32 - (cell % width) as i32;
-            let dx = if raw_dx.abs() > 1 { -raw_dx.signum() } else { raw_dx };
+            let dx = if raw_dx.abs() > 1 {
+                -raw_dx.signum()
+            } else {
+                raw_dx
+            };
             D8_OFFSETS
                 .iter()
                 .position(|&offset| offset == (dx, dy))
@@ -447,9 +451,13 @@ pub fn build_river_chains(segments: &[RiverSegment]) -> Vec<RiverChain> {
 
             let n = s.path.len();
             for (i, &pt) in s.path.iter().enumerate() {
-                let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 1.0 };
-                let d = upstream_drain as f64
-                    + (s.drainage_area as f64 - upstream_drain as f64) * t;
+                let t = if n > 1 {
+                    i as f64 / (n - 1) as f64
+                } else {
+                    1.0
+                };
+                let d =
+                    upstream_drain as f64 + (s.drainage_area as f64 - upstream_drain as f64) * t;
                 path.push(pt);
                 drainage_per_point.push(d as u32);
             }
@@ -465,7 +473,9 @@ pub fn build_river_chains(segments: &[RiverSegment]) -> Vec<RiverChain> {
 
         if path.len() >= 2 {
             // Use the character from the midpoint segment for visibility/color.
-            let mid_char = segments.get(idx).map_or(RiverCharacter::Permanent, |s| s.character);
+            let mid_char = segments
+                .get(idx)
+                .map_or(RiverCharacter::Permanent, |s| s.character);
             chains.push(RiverChain {
                 path,
                 drainage_per_point,
@@ -584,20 +594,34 @@ impl RiverNetwork {
             .iter()
             .zip(&in_sea_body)
             .map(|(&cont, &in_body)| {
-                if in_body || cont > sea_level { cont } else { sea_level + POND_RAISED_ABOVE_SEA }
+                if in_body || cont > sea_level {
+                    cont
+                } else {
+                    sea_level + POND_RAISED_ABOVE_SEA
+                }
             })
             .collect();
         let real_continentalness = continentalness;
         let continentalness = &drainage_continentalness[..];
 
         let flow_dir = flow_directions(drainage, width);
-        let accumulation: Vec<u32> = drainage.flow.iter().map(|&flow| flow.round() as u32).collect();
+        let accumulation: Vec<u32> = drainage
+            .flow
+            .iter()
+            .map(|&flow| flow.round() as u32)
+            .collect();
 
         // Step 4: Build river tree
-        let min_accumulation =
-            ((total as f64) * MIN_RIVER_ACCUMULATION_RATIO).max(MIN_RIVER_ACCUMULATION_FLOOR) as u32;
+        let min_accumulation = ((total as f64) * MIN_RIVER_ACCUMULATION_RATIO)
+            .max(MIN_RIVER_ACCUMULATION_FLOOR) as u32;
         let mut segments = build_river_tree(
-            &flow_dir, &accumulation, continentalness, width, height, sea_level, min_accumulation,
+            &flow_dir,
+            &accumulation,
+            continentalness,
+            width,
+            height,
+            sea_level,
+            min_accumulation,
         );
 
         // Step 5: Classify river character at each segment midpoint
@@ -648,7 +672,9 @@ impl RiverNetwork {
         // only where it reaches the sea.
         let splines = crate::biome_splines::BiomeSplines::new(sea_level);
         let cell_at = |x: f64, y: f64| {
-            let px = (x / world_width * width as f64).floor().rem_euclid(width as f64) as usize;
+            let px = (x / world_width * width as f64)
+                .floor()
+                .rem_euclid(width as f64) as usize;
             let py = ((y / world_height * height as f64) as usize).min(height - 1);
             py * width + px
         };
@@ -660,7 +686,13 @@ impl RiverNetwork {
             let cont = real_continentalness.get(idx).copied().unwrap_or(0.0);
             if cont < sea_level {
                 let tectonic = tectonic_stress.get(idx).copied().unwrap_or(0.5);
-                splines.sea_is_liquid(cont, temp, tectonic, light, crate::biome_map::sea_margin_drift(x, y))
+                splines.sea_is_liquid(
+                    cont,
+                    temp,
+                    tectonic,
+                    light,
+                    crate::biome_map::sea_margin_drift(x, y),
+                )
             } else {
                 river_water_is_liquid(light, temp)
             }
@@ -674,11 +706,26 @@ impl RiverNetwork {
             let segs_above_500 = segments.iter().filter(|s| s.drainage_area >= 500).count();
             let segs_above_100 = segments.iter().filter(|s| s.drainage_area >= 100).count();
             let visible = segments.iter().filter(|s| s.surface_from.is_some()).count();
-            let buried = segments.iter().filter(|s| matches!(s.character, RiverCharacter::BuriedIce)).count();
-            let dry = segments.iter().filter(|s| matches!(s.character, RiverCharacter::DryWadi)).count();
-            let frozen = segments.iter().filter(|s| matches!(s.character, RiverCharacter::Frozen)).count();
-            let seasonal = segments.iter().filter(|s| matches!(s.character, RiverCharacter::SeasonalFlow)).count();
-            let permanent = segments.iter().filter(|s| matches!(s.character, RiverCharacter::Permanent)).count();
+            let buried = segments
+                .iter()
+                .filter(|s| matches!(s.character, RiverCharacter::BuriedIce))
+                .count();
+            let dry = segments
+                .iter()
+                .filter(|s| matches!(s.character, RiverCharacter::DryWadi))
+                .count();
+            let frozen = segments
+                .iter()
+                .filter(|s| matches!(s.character, RiverCharacter::Frozen))
+                .count();
+            let seasonal = segments
+                .iter()
+                .filter(|s| matches!(s.character, RiverCharacter::SeasonalFlow))
+                .count();
+            let permanent = segments
+                .iter()
+                .filter(|s| matches!(s.character, RiverCharacter::Permanent))
+                .count();
             eprintln!(
                 "[rivers] {} segments, max drainage {max_drainage}, >=500: {segs_above_500}, >=100: {segs_above_100}  visible: {visible} (perm={permanent} season={seasonal} frozen={frozen}) hidden: buried={buried} dry={dry}",
                 segments.len()
@@ -694,17 +741,24 @@ impl RiverNetwork {
             let total_chains = chains.len();
             let avg_len = if total_chains > 0 {
                 chains.iter().map(|c| c.path.len()).sum::<usize>() / total_chains
-            } else { 0 };
+            } else {
+                0
+            };
             let max_len = chains.iter().map(|c| c.path.len()).max().unwrap_or(0);
             let long_chains = chains.iter().filter(|c| c.path.len() > 20).count();
             // Check how many chains end near an ocean cell (last point near sea_level)
-            let reaches_ocean = chains.iter().filter(|c| {
-                if let Some(&(lx, ly)) = c.path.last() {
-                    let px = ((lx / 1024.0 * width as f64) as usize).min(width - 1);
-                    let py = ((ly / 512.0 * height as f64) as usize).min(height - 1);
-                    continentalness.get(py * width + px).copied().unwrap_or(0.0) <= sea_level
-                } else { false }
-            }).count();
+            let reaches_ocean = chains
+                .iter()
+                .filter(|c| {
+                    if let Some(&(lx, ly)) = c.path.last() {
+                        let px = ((lx / 1024.0 * width as f64) as usize).min(width - 1);
+                        let py = ((ly / 512.0 * height as f64) as usize).min(height - 1);
+                        continentalness.get(py * width + px).copied().unwrap_or(0.0) <= sea_level
+                    } else {
+                        false
+                    }
+                })
+                .count();
             eprintln!(
                 "[chains] {} chains, avg_pts={avg_len}, max_pts={max_len}, long(>20)={long_chains}, reaches_ocean={reaches_ocean}/{}",
                 total_chains, total_chains
@@ -752,8 +806,10 @@ impl RiverNetwork {
     /// Query river segments intersecting rectangular bounds.
     pub fn query_chunk(
         &self,
-        min_x: f64, min_y: f64,
-        max_x: f64, max_y: f64,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
         lod_drainage_threshold: u32,
     ) -> Vec<RiverConstraint> {
         let ix_min = min_x.floor() as i32;
@@ -852,15 +908,22 @@ struct FloodCell {
 }
 
 impl PartialEq for FloodCell {
-    fn eq(&self, other: &Self) -> bool { self.index == other.index }
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
 }
 impl Eq for FloodCell {}
 impl PartialOrd for FloodCell {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 impl Ord for FloodCell {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.elevation.partial_cmp(&self.elevation).unwrap_or(Ordering::Equal)
+        other
+            .elevation
+            .partial_cmp(&self.elevation)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -962,7 +1025,8 @@ fn path_to_open_water(
                 continue;
             }
             let neighbour = y as usize * width + x;
-            if neighbour != start && depth(neighbour) >= 0.0 && !came_from.contains_key(&neighbour) {
+            if neighbour != start && depth(neighbour) >= 0.0 && !came_from.contains_key(&neighbour)
+            {
                 came_from.insert(neighbour, cell);
                 frontier.push_back((neighbour, steps + 1));
             }
@@ -981,7 +1045,12 @@ const POND_RAISED_ABOVE_SEA: f64 = 0.001;
 /// For every cell, whether it lies in a body of water: a connected stretch
 /// of at least `SEA_BODY_MIN_AREA_WU2` below sea level, on a grid `width`
 /// cells across the world. The map joins east to west.
-pub fn sea_bodies(continentalness: &[f64], width: usize, height: usize, sea_level: f64) -> Vec<bool> {
+pub fn sea_bodies(
+    continentalness: &[f64],
+    width: usize,
+    height: usize,
+    sea_level: f64,
+) -> Vec<bool> {
     let cells_per_wu = width as f64 / WORLD_WIDTH;
     let min_cells = (SEA_BODY_MIN_AREA_WU2 * cells_per_wu * cells_per_wu).ceil() as usize;
     stretches_below_sea(continentalness, width, height, sea_level, min_cells)
@@ -1035,8 +1104,13 @@ fn stretches_below_sea(
 // ─── River Tree Building ────────────────────────────────────────────────────
 
 fn build_river_tree(
-    flow_dir: &[u8], accumulation: &[u32], continentalness: &[f64],
-    width: usize, height: usize, sea_level: f64, min_accumulation: u32,
+    flow_dir: &[u8],
+    accumulation: &[u32],
+    continentalness: &[f64],
+    width: usize,
+    height: usize,
+    sea_level: f64,
+    min_accumulation: u32,
 ) -> Vec<RiverSegment> {
     let total = width * height;
     // Convert pixel indices to world coordinates. At 1:1 macro (1024×512)
@@ -1048,12 +1122,17 @@ fn build_river_tree(
     let world_height: f64 = 512.0;
     let px_to_wx = world_width / width as f64;
     let px_to_wy = world_height / height as f64;
-    let is_river: Vec<bool> = accumulation.iter().map(|&a| a >= min_accumulation).collect();
+    let is_river: Vec<bool> = accumulation
+        .iter()
+        .map(|&a| a >= min_accumulation)
+        .collect();
 
     // Count river-cell inflows
     let mut inflow_count = vec![0u32; total];
     for idx in 0..total {
-        if !is_river[idx] || flow_dir[idx] == NO_FLOW { continue; }
+        if !is_river[idx] || flow_dir[idx] == NO_FLOW {
+            continue;
+        }
         let x = idx % width;
         let y = idx / width;
         let (dx, dy) = D8_OFFSETS[flow_dir[idx] as usize];
@@ -1061,14 +1140,18 @@ fn build_river_tree(
         let ny = y as i32 + dy;
         if ny >= 0 && (ny as usize) < height {
             let nidx = ny as usize * width + nx;
-            if is_river[nidx] { inflow_count[nidx] += 1; }
+            if is_river[nidx] {
+                inflow_count[nidx] += 1;
+            }
         }
     }
 
     // Find segment start points: headwaters (inflow=0) and confluences (inflow>=2)
     let mut starts: Vec<usize> = Vec::new();
     for idx in 0..total {
-        if !is_river[idx] { continue; }
+        if !is_river[idx] {
+            continue;
+        }
         if inflow_count[idx] == 0 || inflow_count[idx] >= 2 {
             starts.push(idx);
         }
@@ -1080,33 +1163,47 @@ fn build_river_tree(
     let mut segments: Vec<RiverSegment> = Vec::new();
 
     for &start in &starts {
-        if segment_id_at[start].is_some() && inflow_count[start] == 0 { continue; }
+        if segment_id_at[start].is_some() && inflow_count[start] == 0 {
+            continue;
+        }
 
         let mut path = Vec::new();
         let mut current = start;
 
         loop {
-            if current != start && segment_id_at[current].is_some() { break; }
-            if current != start && inflow_count[current] >= 2 { break; }
+            if current != start && segment_id_at[current].is_some() {
+                break;
+            }
+            if current != start && inflow_count[current] >= 2 {
+                break;
+            }
 
             path.push((
                 (current % width) as f64 * px_to_wx,
                 (current / width) as f64 * px_to_wy,
             ));
 
-            if continentalness.get(current).copied().unwrap_or(0.0) < sea_level { break; }
-            if flow_dir[current] == NO_FLOW { break; }
+            if continentalness.get(current).copied().unwrap_or(0.0) < sea_level {
+                break;
+            }
+            if flow_dir[current] == NO_FLOW {
+                break;
+            }
 
             let x = current % width;
             let y = current / width;
             let (dx, dy) = D8_OFFSETS[flow_dir[current] as usize];
             let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
             let ny = y as i32 + dy;
-            if ny < 0 || ny >= height as i32 { break; }
+            if ny < 0 || ny >= height as i32 {
+                break;
+            }
             current = ny as usize * width + nx;
         }
 
-        if path.len() < 2 { continue; }
+        if path.len() < 2 {
+            continue;
+        }
 
         let seg_id = segments.len();
         // Path points are in world units; back to cells.
@@ -1118,7 +1215,9 @@ fn build_river_tree(
 
         for point in &path {
             let idx = cell_of(point);
-            if segment_id_at[idx].is_none() { segment_id_at[idx] = Some(seg_id); }
+            if segment_id_at[idx].is_none() {
+                segment_id_at[idx] = Some(seg_id);
+            }
         }
 
         segments.push(RiverSegment {
@@ -1143,12 +1242,16 @@ fn build_river_tree(
     // segment's path so chains run unbroken to ocean.
     for i in 0..segments.len() {
         let last = *segments[i].path.last().unwrap();
-        let mut cur_idx = (last.1 / px_to_wy).round() as usize * width
-            + (last.0 / px_to_wx).round() as usize;
+        let mut cur_idx =
+            (last.1 / px_to_wy).round() as usize * width + (last.0 / px_to_wx).round() as usize;
         cur_idx = cur_idx.min(width * height - 1);
         let mut bridge_path: Vec<(f64, f64)> = Vec::new();
-        let to_world =
-            |cell: usize| ((cell % width) as f64 * px_to_wx, (cell / width) as f64 * px_to_wy);
+        let to_world = |cell: usize| {
+            (
+                (cell % width) as f64 * px_to_wx,
+                (cell / width) as f64 * px_to_wy,
+            )
+        };
 
         // A segment that already ends below sea level is at the sea: carry
         // it on to open water and look no further downstream.
@@ -1160,13 +1263,17 @@ fn build_river_tree(
         let downstream_steps = if ends_at_sea { 0 } else { width.max(height) };
 
         for _ in 0..downstream_steps {
-            if flow_dir[cur_idx] == NO_FLOW { break; }
+            if flow_dir[cur_idx] == NO_FLOW {
+                break;
+            }
             let x = cur_idx % width;
             let y = cur_idx / width;
             let (dx, dy) = D8_OFFSETS[flow_dir[cur_idx] as usize];
             let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
             let ny = y as i32 + dy;
-            if ny < 0 || ny >= height as i32 { break; }
+            if ny < 0 || ny >= height as i32 {
+                break;
+            }
             let next = ny as usize * width + nx;
 
             if let Some(ds) = segment_id_at[next] {
@@ -1199,10 +1306,13 @@ fn build_river_tree(
     }
 
     // Build upstream links
-    let downstream_links: Vec<(usize, Option<usize>)> = segments.iter().map(|s| (s.id, s.downstream)).collect();
+    let downstream_links: Vec<(usize, Option<usize>)> =
+        segments.iter().map(|s| (s.id, s.downstream)).collect();
     for (seg_id, downstream) in downstream_links {
         if let Some(ds) = downstream {
-            if ds < segments.len() { segments[ds].upstream.push(seg_id); }
+            if ds < segments.len() {
+                segments[ds].upstream.push(seg_id);
+            }
         }
     }
 
@@ -1212,7 +1322,9 @@ fn build_river_tree(
 // ─── Strahler Stream Order ──────────────────────────────────────────────────
 
 fn compute_strahler_orders(segments: &mut [RiverSegment]) {
-    if segments.is_empty() { return; }
+    if segments.is_empty() {
+        return;
+    }
     let mut order: Vec<Option<u32>> = vec![None; segments.len()];
     let mut stack: Vec<usize> = Vec::new();
 
@@ -1224,14 +1336,24 @@ fn compute_strahler_orders(segments: &mut [RiverSegment]) {
     }
 
     while let Some(seg_idx) = stack.pop() {
-        let Some(downstream_id) = segments[seg_idx].downstream else { continue };
-        if downstream_id >= segments.len() { continue; }
+        let Some(downstream_id) = segments[seg_idx].downstream else {
+            continue;
+        };
+        if downstream_id >= segments.len() {
+            continue;
+        }
 
-        let all_computed = segments[downstream_id].upstream.iter()
+        let all_computed = segments[downstream_id]
+            .upstream
+            .iter()
             .all(|&u| u >= segments.len() || order[u].is_some());
-        if !all_computed { continue; }
+        if !all_computed {
+            continue;
+        }
 
-        let upstream_orders: Vec<u32> = segments[downstream_id].upstream.iter()
+        let upstream_orders: Vec<u32> = segments[downstream_id]
+            .upstream
+            .iter()
             .filter_map(|&u| if u < segments.len() { order[u] } else { None })
             .collect();
 
@@ -1240,7 +1362,11 @@ fn compute_strahler_orders(segments: &mut [RiverSegment]) {
         } else {
             let max_order = *upstream_orders.iter().max().unwrap();
             let count_max = upstream_orders.iter().filter(|&&o| o == max_order).count();
-            if count_max >= 2 { max_order + 1 } else { max_order }
+            if count_max >= 2 {
+                max_order + 1
+            } else {
+                max_order
+            }
         };
 
         order[downstream_id] = Some(new_order);
@@ -1255,18 +1381,26 @@ fn compute_strahler_orders(segments: &mut [RiverSegment]) {
 // ─── Path Smoothing ─────────────────────────────────────────────────────────
 
 fn chaikin_smooth(path: &[(f64, f64)], passes: usize) -> Vec<(f64, f64)> {
-    if path.len() < 3 { return path.to_vec(); }
+    if path.len() < 3 {
+        return path.to_vec();
+    }
     let mut current = path.to_vec();
     for _ in 0..passes {
         let n = current.len();
-        if n < 3 { break; }
+        if n < 3 {
+            break;
+        }
         let mut smoothed = Vec::with_capacity(n * 2);
         smoothed.push(current[0]);
         for i in 0..n - 1 {
             let (ax, ay) = current[i];
             let (bx, by) = current[i + 1];
-            if i > 0 { smoothed.push((0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by)); }
-            if i + 1 < n - 1 { smoothed.push((0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by)); }
+            if i > 0 {
+                smoothed.push((0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by));
+            }
+            if i + 1 < n - 1 {
+                smoothed.push((0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by));
+            }
         }
         smoothed.push(current[n - 1]);
         current = smoothed;
@@ -1275,19 +1409,30 @@ fn chaikin_smooth(path: &[(f64, f64)], passes: usize) -> Vec<(f64, f64)> {
 }
 
 fn subdivide_to_spacing(path: &[(f64, f64)], target: f64) -> Vec<(f64, f64)> {
-    if path.len() < 2 || target <= 0.0 { return path.to_vec(); }
-    let max_len = path.windows(2)
+    if path.len() < 2 || target <= 0.0 {
+        return path.to_vec();
+    }
+    let max_len = path
+        .windows(2)
         .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
         .fold(0.0f64, f64::max);
-    if max_len <= target { return path.to_vec(); }
+    if max_len <= target {
+        return path.to_vec();
+    }
     let passes = ((max_len / target).log2().ceil() as usize).min(8);
-    if passes == 0 { return path.to_vec(); }
+    if passes == 0 {
+        return path.to_vec();
+    }
     chaikin_smooth(path, passes)
 }
 
 fn interpolate_drainage(original: &[u32], new_len: usize) -> Vec<u32> {
-    if original.len() == new_len || original.is_empty() { return original.to_vec(); }
-    if original.len() == 1 { return vec![original[0]; new_len]; }
+    if original.len() == new_len || original.is_empty() {
+        return original.to_vec();
+    }
+    if original.len() == 1 {
+        return vec![original[0]; new_len];
+    }
     let mut result = Vec::with_capacity(new_len);
     let scale = (original.len() - 1) as f64 / (new_len - 1).max(1) as f64;
     for i in 0..new_len {
@@ -1303,14 +1448,23 @@ fn interpolate_drainage(original: &[u32], new_len: usize) -> Vec<u32> {
 // ─── Graduated Width Rasterisation ──────────────────────────────────────────
 
 pub fn rasterise_smooth_line(
-    grid: &mut [f64], width: usize, height: usize,
-    path: &[(f64, f64)], drainage_per_point: &[u32],
-    max_drainage: u32, max_half_width: f64,
+    grid: &mut [f64],
+    width: usize,
+    height: usize,
+    path: &[(f64, f64)],
+    drainage_per_point: &[u32],
+    max_drainage: u32,
+    max_half_width: f64,
 ) {
     rasterise_smooth_line_with_min(
-        grid, width, height,
-        path, drainage_per_point,
-        max_drainage, max_half_width, 0.65,
+        grid,
+        width,
+        height,
+        path,
+        drainage_per_point,
+        max_drainage,
+        max_half_width,
+        0.65,
     );
 }
 
@@ -1320,12 +1474,18 @@ pub fn rasterise_smooth_line(
 /// scaling stayed in to keep the small-drainage falloff but the floor is now
 /// the caller's responsibility.
 pub fn rasterise_smooth_line_with_min(
-    grid: &mut [f64], width: usize, height: usize,
-    path: &[(f64, f64)], drainage_per_point: &[u32],
-    max_drainage: u32, max_half_width: f64,
+    grid: &mut [f64],
+    width: usize,
+    height: usize,
+    path: &[(f64, f64)],
+    drainage_per_point: &[u32],
+    max_drainage: u32,
+    max_half_width: f64,
     min_half_width: f64,
 ) {
-    if path.len() < 2 || max_drainage == 0 { return; }
+    if path.len() < 2 || max_drainage == 0 {
+        return;
+    }
     let max_drain_f = max_drainage as f64;
 
     for i in 0..path.len() - 1 {
@@ -1337,7 +1497,9 @@ pub fn rasterise_smooth_line_with_min(
         let seg_dx = x1 - x0;
         let seg_dy = y1 - y0;
         let seg_len = (seg_dx * seg_dx + seg_dy * seg_dy).sqrt();
-        if seg_len < 0.001 { continue; }
+        if seg_len < 0.001 {
+            continue;
+        }
 
         let perp_x = -seg_dy / seg_len;
         let perp_y = seg_dx / seg_len;
@@ -1363,7 +1525,9 @@ pub fn rasterise_smooth_line_with_min(
                 for dx in -hw_ceil..=hw_ceil {
                     let px = px_center + dx;
                     let py = py_center + dy;
-                    if px < 0 || px >= width as i32 || py < 0 || py >= height as i32 { continue; }
+                    if px < 0 || px >= width as i32 || py < 0 || py >= height as i32 {
+                        continue;
+                    }
 
                     let rel_x = px as f64 - cx;
                     let rel_y = py as f64 - cy;
@@ -1445,8 +1609,7 @@ fn meander_warp(x: f64, y: f64) -> (f64, f64) {
     let noise = meander_noise_instance();
     // Sampled on a cylinder so the warp is continuous across the seam.
     let offsets = |frequency: f64, amplitude: f64, shift: f64| {
-        let [cx, cz, cy] =
-            crate::wrap::cylindrical_noise_coords(x, y, frequency, 1.0, WORLD_WIDTH);
+        let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(x, y, frequency, 1.0, WORLD_WIDTH);
         (
             noise.get([cx + shift, cz, cy]) * amplitude,
             noise.get([cx, cz + shift, cy + shift]) * amplitude,
@@ -1605,7 +1768,8 @@ pub fn build_river_courses(network: &RiverNetwork) -> Vec<RiverCourse> {
             // river that feeds it.
             let lake = segment.ends_in_lake.then(|| {
                 let (x, y) = *course.points.last().expect("a course has points");
-                let radius = (course.half_widths.last().copied().unwrap_or(0.0) * LAKE_RADIUS_HALF_WIDTHS)
+                let radius = (course.half_widths.last().copied().unwrap_or(0.0)
+                    * LAKE_RADIUS_HALF_WIDTHS)
                     .max(LAKE_MIN_RADIUS_WU);
                 RiverCourse {
                     points: vec![(x, y), (x + LAKE_STUB_WU, y)],
@@ -1660,17 +1824,25 @@ fn paint_courses(
     let sample_size = (world_size.0 / (tile_w - 1) as f64).max(world_size.1 / (tile_h - 1) as f64);
     // A river thinner than a sample still marks the samples it runs through.
     let min_half_width = COURSE_MIN_HALF_WIDTH_SAMPLES * sample_size;
-    near_courses(courses, origin, world_size, tile_size, 1.0, min_half_width, |cell, near| {
-        if near.distance >= near.half_width {
-            return;
-        }
-        let bank = sample_size.min(near.half_width * 0.5);
-        let coverage = ((near.half_width - near.distance) / bank).min(1.0);
-        let painted = value(coverage, near.own_half_width);
-        if painted > grid[cell] {
-            grid[cell] = painted;
-        }
-    });
+    near_courses(
+        courses,
+        origin,
+        world_size,
+        tile_size,
+        1.0,
+        min_half_width,
+        |cell, near| {
+            if near.distance >= near.half_width {
+                return;
+            }
+            let bank = sample_size.min(near.half_width * 0.5);
+            let coverage = ((near.half_width - near.distance) / bank).min(1.0);
+            let painted = value(coverage, near.own_half_width);
+            if painted > grid[cell] {
+                grid[cell] = painted;
+            }
+        },
+    );
     grid
 }
 
@@ -1816,7 +1988,9 @@ fn near_courses(
 /// Queries segments, applies Chaikin subdivision, then graduated rendering.
 pub fn rasterize_from_network(
     network: &RiverNetwork,
-    world_x: f64, world_y: f64, world_size: f64,
+    world_x: f64,
+    world_y: f64,
+    world_size: f64,
     output_size: usize,
     _lod_drainage_threshold: u32,
 ) -> Vec<f64> {
@@ -1825,7 +1999,12 @@ pub fn rasterize_from_network(
         return grid;
     }
 
-    let global_max = network.segments.iter().map(|s| s.drainage_area).max().unwrap_or(1);
+    let global_max = network
+        .segments
+        .iter()
+        .map(|s| s.drainage_area)
+        .max()
+        .unwrap_or(1);
     let scale = output_size as f64 / world_size;
     let pixels_per_wu = scale;
     let target_spacing = 0.08 / pixels_per_wu.max(0.0001);
@@ -1859,8 +2038,8 @@ pub fn rasterize_from_network(
         }
 
         // Runtime meander: small amplitude so rivers stay within chunk view.
-        let world_half_raw = strahler_world_half_width(chain.max_strahler)
-            * chain.character.width_multiplier();
+        let world_half_raw =
+            strahler_world_half_width(chain.max_strahler) * chain.character.width_multiplier();
         let meander_amplitude = 0.3 + world_half_raw * 1.5;
         let meandered = meander_path(&smoothed, meander_amplitude);
 
@@ -1885,7 +2064,8 @@ pub fn rasterize_from_network(
 
         let max_half_width = (world_half_raw * pixels_per_wu)
             .clamp(TILE_RIVER_MIN_HALF_WIDTH_PX, TILE_RIVER_MAX_HALF_WIDTH_PX);
-        let min_half_width = (max_half_width * 0.15).clamp(TILE_RIVER_MIN_HALF_WIDTH_PX * 0.3, max_half_width);
+        let min_half_width =
+            (max_half_width * 0.15).clamp(TILE_RIVER_MIN_HALF_WIDTH_PX * 0.3, max_half_width);
 
         rasterise_smooth_line_with_min(
             &mut grid,
@@ -1906,20 +2086,33 @@ pub fn rasterize_from_network(
 /// Rasterize rivers onto a meso tile (backward-compatible interface).
 pub fn rasterize_to_tile(
     network: &RiverNetwork,
-    tile_w: usize, tile_h: usize,
-    tile_world_x: f64, tile_world_y: f64,
-    tile_world_w: f64, tile_world_h: f64,
-    _macro_world_w: f64, _macro_world_h: f64,
+    tile_w: usize,
+    tile_h: usize,
+    tile_world_x: f64,
+    tile_world_y: f64,
+    tile_world_w: f64,
+    tile_world_h: f64,
+    _macro_world_w: f64,
+    _macro_world_h: f64,
     threshold: f64,
 ) -> Vec<f64> {
     // Delegate to rasterize_from_network for the square case.
     // For non-square tiles, use the max dimension.
     let size = tile_w.max(tile_h);
     let world_size = tile_world_w.max(tile_world_h);
-    let grid = rasterize_from_network(network, tile_world_x, tile_world_y, world_size, size, threshold as u32);
+    let grid = rasterize_from_network(
+        network,
+        tile_world_x,
+        tile_world_y,
+        world_size,
+        size,
+        threshold as u32,
+    );
 
     // If tile is square and matches output, return directly.
-    if tile_w == size && tile_h == size { return grid; }
+    if tile_w == size && tile_h == size {
+        return grid;
+    }
 
     // Otherwise crop to tile dimensions.
     let mut result = vec![0.0f64; tile_w * tile_h];
@@ -1937,7 +2130,10 @@ fn build_spatial_index(segments: &[RiverSegment]) -> HashMap<RiverChunkCoord, Ve
     let mut index: HashMap<RiverChunkCoord, Vec<usize>> = HashMap::new();
     for seg in segments {
         for &(x, y) in &seg.path {
-            let coord = RiverChunkCoord { x: x.floor() as i32, y: y.floor() as i32 };
+            let coord = RiverChunkCoord {
+                x: x.floor() as i32,
+                y: y.floor() as i32,
+            };
             index.entry(coord).or_default().push(seg.id);
         }
     }
@@ -1950,7 +2146,10 @@ fn build_spatial_index(segments: &[RiverSegment]) -> HashMap<RiverChunkCoord, Ve
 
 /// Legacy flat-grid rasterization.
 pub fn rasterize_from_network_flat(
-    network: &RiverNetwork, width: usize, height: usize, _threshold: f64,
+    network: &RiverNetwork,
+    width: usize,
+    height: usize,
+    _threshold: f64,
 ) -> Vec<f64> {
     network.to_flow_grid(width, height)
 }
@@ -2040,8 +2239,20 @@ mod course_tests {
     /// A headwater (0) flowing into a trunk (1) that ends at the sea.
     fn headwater_and_trunk() -> Vec<RiverSegment> {
         vec![
-            segment(0, &[(100.0, 100.0), (100.0, 110.0), (100.0, 120.0)], 100, Some(1), &[]),
-            segment(1, &[(100.0, 121.0), (100.0, 130.0), (100.0, 140.0)], 400, None, &[0]),
+            segment(
+                0,
+                &[(100.0, 100.0), (100.0, 110.0), (100.0, 120.0)],
+                100,
+                Some(1),
+                &[],
+            ),
+            segment(
+                1,
+                &[(100.0, 121.0), (100.0, 130.0), (100.0, 140.0)],
+                400,
+                None,
+                &[0],
+            ),
         ]
     }
 
@@ -2084,7 +2295,10 @@ mod course_tests {
 
         assert_eq!(segments[0].surface_from, Some(0));
         assert!(!segments[0].ends_in_lake);
-        assert_eq!((segments[1].surface_from, segments[1].surface_to), (Some(0), 2));
+        assert_eq!(
+            (segments[1].surface_from, segments[1].surface_to),
+            (Some(0), 2)
+        );
         assert!(segments[1].ends_in_lake);
     }
 
@@ -2142,7 +2356,10 @@ mod course_tests {
     fn a_mouth_is_carried_through_the_shallows_to_open_water() {
         // One row, sea level 0: land, then two shallow cells, then open water.
         let continentalness = [0.2, -0.01, -0.02, -0.2, -0.3];
-        assert_eq!(path_to_open_water(1, &continentalness, 5, 1, 0.0), vec![2, 3]);
+        assert_eq!(
+            path_to_open_water(1, &continentalness, 5, 1, 0.0),
+            vec![2, 3]
+        );
         // Already in open water: nothing to add.
         assert!(path_to_open_water(3, &continentalness, 5, 1, 0.0).is_empty());
     }
@@ -2280,7 +2497,11 @@ mod course_tests {
         let network = forked_network();
         let grid = network.to_flow_grid(1024, 512);
         let largest = grid.iter().cloned().fold(0.0f64, f64::max);
-        let smallest_river = grid.iter().cloned().filter(|&v| v > 0.0).fold(1.0f64, f64::min);
+        let smallest_river = grid
+            .iter()
+            .cloned()
+            .filter(|&v| v > 0.0)
+            .fold(1.0f64, f64::min);
 
         // The trunk drains the most, so it has the largest value on the grid.
         let trunk_foot = network.courses[2].half_widths.last().copied().unwrap() as f64;

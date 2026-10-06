@@ -79,7 +79,11 @@ pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
     let total = width * height;
     let cells_per_wu = width as f64 / WORLD_WIDTH;
     let relief = box_blurred(
-        &land.heightmap.iter().map(|&h| h.max(SEA_LEVEL)).collect::<Vec<_>>(),
+        &land
+            .heightmap
+            .iter()
+            .map(|&h| h.max(SEA_LEVEL))
+            .collect::<Vec<_>>(),
         width,
         height,
         (RELIEF_SCALE_WU * cells_per_wu / 2.0).round().max(1.0) as i32,
@@ -95,10 +99,15 @@ pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
     };
     let downwind: Vec<[(usize, f64); 2]> = (0..total)
         .map(|cell| {
-            let turn = wind.x[cell].atan2(-wind.y[cell]).rem_euclid(std::f64::consts::TAU)
+            let turn = wind.x[cell]
+                .atan2(-wind.y[cell])
+                .rem_euclid(std::f64::consts::TAU)
                 / (std::f64::consts::TAU / 8.0);
             let (before, share) = (turn.floor() as usize, turn - turn.floor());
-            [(neighbour(cell, before), 1.0 - share), (neighbour(cell, before + 1), share)]
+            [
+                (neighbour(cell, before), 1.0 - share),
+                (neighbour(cell, before + 1), share),
+            ]
         })
         .collect();
 
@@ -107,7 +116,8 @@ pub fn rainfall(wind: &Wind, land: &Land) -> Vec<f64> {
             if !land.is_liquid_sea[cell] {
                 return 0.0;
             }
-            let warmth = ((land.temperature[cell] - COLD_SEA_C) / (WARM_SEA_C - COLD_SEA_C)).clamp(0.0, 1.0);
+            let warmth =
+                ((land.temperature[cell] - COLD_SEA_C) / (WARM_SEA_C - COLD_SEA_C)).clamp(0.0, 1.0);
             SEA_EVAPORATION * warmth
         })
         .collect();
@@ -173,7 +183,9 @@ mod tests {
     /// Light rising from north to south; liquid sea in rows 6 to 8; a range
     /// across the land at row 15.
     fn world(range_height: f64) -> (Vec<f64>, Vec<f64>, Vec<bool>, Vec<f64>) {
-        let light: Vec<f64> = (0..WIDE * HIGH).map(|cell| (cell / WIDE) as f64 / (HIGH - 1) as f64).collect();
+        let light: Vec<f64> = (0..WIDE * HIGH)
+            .map(|cell| (cell / WIDE) as f64 / (HIGH - 1) as f64)
+            .collect();
         let mut heights = vec![0.1; WIDE * HIGH];
         let mut sea = vec![false; WIDE * HIGH];
         for cell in 0..WIDE * HIGH {
@@ -193,7 +205,16 @@ mod tests {
     fn rain_over(range_height: f64) -> Vec<f64> {
         let (light, heights, sea, temperature) = world(range_height);
         let wind = surface_wind(&light, &heights, WIDE, HIGH);
-        rainfall(&wind, &Land { heightmap: &heights, temperature: &temperature, is_liquid_sea: &sea, width: WIDE, height: HIGH })
+        rainfall(
+            &wind,
+            &Land {
+                heightmap: &heights,
+                temperature: &temperature,
+                is_liquid_sea: &sea,
+                width: WIDE,
+                height: HIGH,
+            },
+        )
     }
 
     #[test]

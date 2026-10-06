@@ -125,8 +125,14 @@ mod tests {
     fn a_position_one_lap_round_has_the_same_light_level() {
         let light = strategy();
 
-        assert_eq!(light.generate(300.0, 200.0, 0), light.generate(300.0 + WORLD_WIDTH, 200.0, 0));
-        assert_eq!(light.generate(1000.0, 200.0, 0), light.generate(1000.0 - WORLD_WIDTH, 200.0, 0));
+        assert_eq!(
+            light.generate(300.0, 200.0, 0),
+            light.generate(300.0 + WORLD_WIDTH, 200.0, 0)
+        );
+        assert_eq!(
+            light.generate(1000.0, 200.0, 0),
+            light.generate(1000.0 - WORLD_WIDTH, 200.0, 0)
+        );
     }
 
     #[test]
@@ -136,9 +142,15 @@ mod tests {
 
         // Untouched up to the start of the blend band.
         assert_eq!(light.seamless(500.0, identity), 500.0);
-        assert_eq!(light.seamless(WORLD_WIDTH - SEAM_BLEND_WU, identity), WORLD_WIDTH - SEAM_BLEND_WU);
+        assert_eq!(
+            light.seamless(WORLD_WIDTH - SEAM_BLEND_WU, identity),
+            WORLD_WIDTH - SEAM_BLEND_WU
+        );
         // Halfway through the band: an even mix of here and one lap west.
         let halfway = WORLD_WIDTH - SEAM_BLEND_WU / 2.0;
-        assert_eq!(light.seamless(halfway, identity), (halfway + (halfway - WORLD_WIDTH)) / 2.0);
+        assert_eq!(
+            light.seamless(halfway, identity),
+            (halfway + (halfway - WORLD_WIDTH)) / 2.0
+        );
     }
 }

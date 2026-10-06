@@ -90,10 +90,15 @@ pub fn surface_wind(light_level: &[f64], heightmap: &[f64], width: usize, height
     let reach = (SHELTER_SCALE_WU * cells_per_wu / 2.0).round().max(1.0) as i32;
     let surroundings = box_blurred(&ground, width, height, reach);
 
-    let (mut wind_x, mut wind_y) = (Vec::with_capacity(ground.len()), Vec::with_capacity(ground.len()));
+    let (mut wind_x, mut wind_y) = (
+        Vec::with_capacity(ground.len()),
+        Vec::with_capacity(ground.len()),
+    );
     for cell in 0..ground.len() {
         let (to_light_x, to_light_y) = slope(light_level, cell, width, height);
-        let to_light = (to_light_x * to_light_x + to_light_y * to_light_y).sqrt().max(1e-12);
+        let to_light = (to_light_x * to_light_x + to_light_y * to_light_y)
+            .sqrt()
+            .max(1e-12);
         // Slopes are per cell; the turning is by slope per world unit.
         let (rise_x, rise_y) = slope(&surroundings, cell, width, height);
         let x = to_light_x / to_light - rise_x * cells_per_wu * DEFLECTION;
@@ -104,7 +109,10 @@ pub fn surface_wind(light_level: &[f64], heightmap: &[f64], width: usize, height
         wind_x.push(x / length * speed);
         wind_y.push(y / length * speed);
     }
-    Wind { x: wind_x, y: wind_y }
+    Wind {
+        x: wind_x,
+        y: wind_y,
+    }
 }
 
 /// Where the sand ends up, from 0 (bare) to 1 (a sand sea), one value per
@@ -145,10 +153,15 @@ pub fn drifted_sand(
     let downwind: Vec<[(usize, f64); 2]> = (0..total)
         .map(|cell| {
             // `D8_OFFSETS` runs clockwise from north, an eighth of a turn apart.
-            let turn = wind.x[cell].atan2(-wind.y[cell]).rem_euclid(std::f64::consts::TAU)
+            let turn = wind.x[cell]
+                .atan2(-wind.y[cell])
+                .rem_euclid(std::f64::consts::TAU)
                 / (std::f64::consts::TAU / 8.0);
             let (before, share) = (turn.floor() as usize, turn - turn.floor());
-            [(neighbour(cell, before), 1.0 - share), (neighbour(cell, before + 1), share)]
+            [
+                (neighbour(cell, before), 1.0 - share),
+                (neighbour(cell, before + 1), share),
+            ]
         })
         .collect();
 
@@ -174,7 +187,13 @@ pub fn drifted_sand(
     // Soften the grid of eight directions out of the result.
     let settled = box_blurred(&sand, width, height, 1);
     (0..total)
-        .map(|cell| if is_water[cell] { 0.0 } else { (settled[cell] / FULL_SAND).min(1.0) })
+        .map(|cell| {
+            if is_water[cell] {
+                0.0
+            } else {
+                (settled[cell] / FULL_SAND).min(1.0)
+            }
+        })
         .collect()
 }
 
@@ -196,7 +215,8 @@ pub fn dune_height(sand: f64, wx: f64, wy: f64, sample_spacing: f64) -> f64 {
     static WANDER: std::sync::OnceLock<noise::OpenSimplex> = std::sync::OnceLock::new();
     let noise = WANDER.get_or_init(|| noise::OpenSimplex::new(0xD0_0E5u32));
     let wander = |frequency: f64, shift: f64| {
-        let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
+        let [cx, cz, cy] =
+            crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
         noise.get([cx + shift, cz, cy + shift])
     };
 
@@ -205,12 +225,17 @@ pub fn dune_height(sand: f64, wx: f64, wy: f64, sample_spacing: f64) -> f64 {
     let east = (wx - WORLD_WIDTH / 2.0).rem_euclid(WORLD_WIDTH);
     let across = east.min(WORLD_WIDTH - east);
     let from_sun = (across * across + (WORLD_HEIGHT - wy) * (WORLD_HEIGHT - wy)).sqrt();
-    let along_wind =
-        from_sun / DUNE_SPACING_WU + wander(0.35, 0.0) * DUNE_SWING + wander(3.0, 700.0) * DUNE_KINK;
+    let along_wind = from_sun / DUNE_SPACING_WU
+        + wander(0.35, 0.0) * DUNE_SWING
+        + wander(3.0, 700.0) * DUNE_KINK;
     // A dune is long and gentle on its windward side, short on its lee, and
     // rounded at crest and foot.
     let place = along_wind.rem_euclid(1.0);
-    let rise = if place < 0.7 { place / 0.7 } else { (1.0 - place) / 0.3 };
+    let rise = if place < 0.7 {
+        place / 0.7
+    } else {
+        (1.0 - place) / 0.3
+    };
     let profile = rise * rise * (3.0 - 2.0 * rise);
     // Dunes come and go along a crest, and stand higher in some fields.
     let patch = (0.55 + 0.6 * wander(1.6, 300.0)).clamp(0.0, 1.0);
@@ -226,7 +251,9 @@ mod tests {
 
     /// Light rising from north (0) to south (1): all desert in the south.
     fn light() -> Vec<f64> {
-        (0..WIDE * HIGH).map(|cell| (cell / WIDE) as f64 / (HIGH - 1) as f64).collect()
+        (0..WIDE * HIGH)
+            .map(|cell| (cell / WIDE) as f64 / (HIGH - 1) as f64)
+            .collect()
     }
 
     #[test]
@@ -277,9 +304,12 @@ mod tests {
         assert_eq!(dune_height(0.1, 500.0, 400.0, 0.001), 0.0);
         // Too fine for samples half a world unit apart to draw.
         assert_eq!(dune_height(1.0, 512.0, 400.0, 0.5), 0.0);
-        let along: Vec<f64> =
-            (0..200).map(|step| dune_height(1.0, 512.0, 400.0 + step as f64 * 0.01, 0.001)).collect();
-        let (lowest, highest) = along.iter().fold((f64::MAX, f64::MIN), |(low, high), &h| (low.min(h), high.max(h)));
+        let along: Vec<f64> = (0..200)
+            .map(|step| dune_height(1.0, 512.0, 400.0 + step as f64 * 0.01, 0.001))
+            .collect();
+        let (lowest, highest) = along.iter().fold((f64::MAX, f64::MIN), |(low, high), &h| {
+            (low.min(h), high.max(h))
+        });
         assert!(highest > lowest + 0.005);
         assert!(highest <= DUNE_HEIGHT);
     }

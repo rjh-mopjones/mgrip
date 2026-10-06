@@ -34,7 +34,10 @@ const SAND_SEA_FROM: f64 = 0.45;
 
 /// Whether a tile is ice lying on water or land.
 pub fn tile_is_ice(tile: TileType) -> bool {
-    matches!(tile, TileType::White | TileType::IceSheet | TileType::Glacier)
+    matches!(
+        tile,
+        TileType::White | TileType::IceSheet | TileType::Glacier
+    )
 }
 
 pub fn tile_has_fluid_surface(tile: TileType) -> bool {
@@ -100,7 +103,8 @@ pub fn sea_margin_drift(wx: f64, wy: f64) -> f64 {
     let (mut sum, mut weight, mut total) = (0.0, 1.0, 0.0);
     for octave in 0..SEA_MARGIN_OCTAVES {
         let frequency = 2f64.powi(octave as i32) / SEA_MARGIN_BEND_WU;
-        let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
+        let [cx, cz, cy] =
+            crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
         sum += weight * noise.get([cx, cz, cy]);
         total += weight;
         weight *= 0.55;
@@ -112,8 +116,14 @@ pub fn sea_margin_drift(wx: f64, wy: f64) -> f64 {
 /// A function of position and seed alone, so anything can ask for it without
 /// a generated map.
 pub fn light_level_at(seed: u32, wx: f64, wy: f64) -> f64 {
-    LightLevelStrategy::new(seed.wrapping_add(SEED_LIGHT_LEVEL), 0.5, 1.0, WORLD_WIDTH, WORLD_HEIGHT)
-        .generate(wx, wy, 0)
+    LightLevelStrategy::new(
+        seed.wrapping_add(SEED_LIGHT_LEVEL),
+        0.5,
+        1.0,
+        WORLD_WIDTH,
+        WORLD_HEIGHT,
+    )
+    .generate(wx, wy, 0)
 }
 
 // Map tiles show the shape of the land, not the roughness of the ground
@@ -226,7 +236,10 @@ impl MacroOceanMask {
         }
         let px = ((wx / self.world_width * self.width as f64) as usize).min(self.width - 1);
         let py = ((wy / self.world_height * self.height as f64) as usize).min(self.height - 1);
-        self.pixels.get(py * self.width + px).copied().unwrap_or(false)
+        self.pixels
+            .get(py * self.width + px)
+            .copied()
+            .unwrap_or(false)
     }
 }
 
@@ -522,13 +535,8 @@ impl BiomeMap {
                 let cont = cont_strat.generate(wx, wy, detail_level);
                 let light = light_strat.generate(wx, wy, detail_level);
                 let rock = rock_strat.generate(wx, wy, detail_level);
-                let humid = humid_strat.generate_terminator_model(
-                    wx,
-                    wy,
-                    detail_level,
-                    cont,
-                    light,
-                );
+                let humid =
+                    humid_strat.generate_terminator_model(wx, wy, detail_level, cont, light);
                 let pv_base = pv_strat.generate(wx, wy, detail_level);
                 (cont, light, rock, humid, pv_base)
             })
@@ -582,8 +590,12 @@ impl BiomeMap {
                     // sea must neither freeze in the one nor dry in the other.
                     let drift = sea_margin_drift(wx, wy);
                     [0.0, 1.0].into_iter().all(|humidity| {
-                        let at_sea =
-                            derived::derive_temperature(map.light_level[i], SEA_LEVEL, humidity, SEA_LEVEL);
+                        let at_sea = derived::derive_temperature(
+                            map.light_level[i],
+                            SEA_LEVEL,
+                            humidity,
+                            SEA_LEVEL,
+                        );
                         splines.sea_is_liquid(
                             SEA_LEVEL - crate::rim_sea::STRAIT_DEPTH,
                             at_sea,
@@ -673,9 +685,7 @@ impl BiomeMap {
                 },
             );
             map.humidity = (0..tile_w * tile_h)
-                .map(|i| {
-                    crate::climate::humidity_from_rain(rain[i], map.light_level[i])
-                })
+                .map(|i| crate::climate::humidity_from_rain(rain[i], map.light_level[i]))
                 .collect();
 
             // Rivers are read from a finer copy of the land, so they follow
@@ -826,7 +836,10 @@ impl BiomeMap {
             // A hollow holding water is a lake: open water where the sea
             // would be liquid, ice where it would be frozen, a salt flat
             // where it would have dried out.
-            let lake_level = macro_water_level.get(i).copied().unwrap_or(f32::NEG_INFINITY) as f64;
+            let lake_level = macro_water_level
+                .get(i)
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY) as f64;
             let biome = if map.heightmap[i] >= SEA_LEVEL && map.heightmap[i] < lake_level {
                 splines.lake_biome(
                     lake_level - map.heightmap[i],
@@ -912,7 +925,9 @@ impl BiomeMap {
             let wy = sample_world_coord(origin_y, world_size_y, tile_h, py);
             let wx_center = wx.floor() + 0.5;
             let wy_center = wy.floor() + 0.5;
-            if mask.is_ocean_at_world(wx_center, wy_center) && !tile_has_fluid_surface(self.biomes[i]) {
+            if mask.is_ocean_at_world(wx_center, wy_center)
+                && !tile_has_fluid_surface(self.biomes[i])
+            {
                 let depth = SEA_LEVEL - self.continentalness[i];
                 self.biomes[i] = if depth > 0.25 {
                     TileType::DeepOcean
@@ -1048,10 +1063,8 @@ impl BiomeMap {
                 //     top of the macro-anchored heightmap
                 self.continentalness[idx] =
                     macro_map.sample_field_at(&macro_map.continentalness, wx, wy);
-                self.tectonic[idx] =
-                    macro_map.sample_field_at(&macro_map.tectonic, wx, wy);
-                self.humidity[idx] =
-                    macro_map.sample_field_at(&macro_map.humidity, wx, wy);
+                self.tectonic[idx] = macro_map.sample_field_at(&macro_map.tectonic, wx, wy);
+                self.humidity[idx] = macro_map.sample_field_at(&macro_map.humidity, wx, wy);
                 self.rock_hardness[idx] =
                     macro_map.sample_field_at(&macro_map.rock_hardness, wx, wy);
                 self.peaks_valleys[idx] =
@@ -1094,8 +1107,7 @@ impl BiomeMap {
                 self.aridity[idx] = arid;
                 self.precipitation_type[idx] = precip;
                 self.snowpack[idx] = snow;
-                self.resource_richness[idx] =
-                    derived::derive_resource_richness(tect, rock, eros);
+                self.resource_richness[idx] = derived::derive_resource_richness(tect, rock, eros);
 
                 // Classify biome with the SAME spline call the macro pass uses
                 // (`biome_map.rs:483`, non-dithered). With every spline input
@@ -1144,7 +1156,8 @@ impl BiomeMap {
                 } else {
                     macro_map.sample_field_at(&macro_map.sand, wx, wy)
                 };
-                let dry_land = !tile_has_fluid_surface(self.biomes[idx]) && !tile_is_ice(self.biomes[idx]);
+                let dry_land =
+                    !tile_has_fluid_surface(self.biomes[idx]) && !tile_is_ice(self.biomes[idx]);
                 // (The bed of a dried sea is dry land too, and holds the most.)
                 if dry_land {
                     if sand >= SAND_SEA_FROM {
@@ -1152,7 +1165,8 @@ impl BiomeMap {
                     } else if self.biomes[idx] == TileType::Erg {
                         self.biomes[idx] = TileType::Desert;
                     }
-                    hm += crate::wind::dune_height(sand, wx, wy, world_size_x / (tile_w - 1) as f64);
+                    hm +=
+                        crate::wind::dune_height(sand, wx, wy, world_size_x / (tile_w - 1) as f64);
                 }
                 if apply_micro_detail {
                     hm = derived::derive_micro_heightmap(hm, wx, wy, &detail_noise);
@@ -1188,7 +1202,8 @@ impl BiomeMap {
         );
         for i in 0..tile_w * tile_h {
             if self.heightmap[i] > SEA_LEVEL {
-                self.heightmap[i] = (self.heightmap[i] - carved[i]).max(SEA_LEVEL + RIVER_BED_ABOVE_SEA);
+                self.heightmap[i] =
+                    (self.heightmap[i] - carved[i]).max(SEA_LEVEL + RIVER_BED_ABOVE_SEA);
             }
         }
 
@@ -1467,7 +1482,18 @@ mod tests {
     /// A small chunk anchored to `macro_map`, the way the runtime builds one.
     fn anchored_chunk(macro_map: &BiomeMap, x: f64, y: f64) -> BiomeMap {
         let mut chunk = BiomeMap::generate(SEED, x, y, 1.0, 1.0, 32, 32, 2, false, false, 8.0);
-        chunk.anchor_to_macro(macro_map, &[], SEED, x, y, 1.0, 1.0, LOD_THRESHOLD_MICRO, 0.2, true);
+        chunk.anchor_to_macro(
+            macro_map,
+            &[],
+            SEED,
+            x,
+            y,
+            1.0,
+            1.0,
+            LOD_THRESHOLD_MICRO,
+            0.2,
+            true,
+        );
         chunk
     }
 
@@ -1475,8 +1501,7 @@ mod tests {
     fn smooth_sampling_follows_the_field_and_wraps_east_to_west() {
         // A 4 by 2 field over a 4 by 2 world: one cell per world unit.
         let field = [0.0, 1.0, 4.0, 9.0, 0.0, 1.0, 4.0, 9.0];
-        let sample =
-            |wx: f64, wy: f64| super::sample_field_smooth(&field, wx, wy, 4.0, 2.0, 4, 2);
+        let sample = |wx: f64, wy: f64| super::sample_field_smooth(&field, wx, wy, 4.0, 2.0, 4, 2);
 
         // Between cells it lies between its neighbours.
         assert!(sample(1.5, 0.0) > 1.0 && sample(1.5, 0.0) < 4.0);
@@ -1491,17 +1516,27 @@ mod tests {
     #[test]
     fn anchored_chunks_have_identical_heights_along_their_shared_border() {
         // A coarse macro map without the river pass, which assumes the full-size grid.
-        let macro_map = BiomeMap::generate(SEED, 0.0, 0.0, 1024.0, 512.0, 256, 128, 0, false, false, 1.0);
+        let macro_map = BiomeMap::generate(
+            SEED, 0.0, 0.0, 1024.0, 512.0, 256, 128, 0, false, false, 1.0,
+        );
         let here = anchored_chunk(&macro_map, 440.0, 220.0);
         let east = anchored_chunk(&macro_map, 441.0, 220.0);
         let south = anchored_chunk(&macro_map, 440.0, 221.0);
         let (w, h) = (here.width, here.height);
 
         for row in 0..h {
-            assert_eq!(here.heightmap[row * w + (w - 1)], east.heightmap[row * w], "east border, row {row}");
+            assert_eq!(
+                here.heightmap[row * w + (w - 1)],
+                east.heightmap[row * w],
+                "east border, row {row}"
+            );
         }
         for column in 0..w {
-            assert_eq!(here.heightmap[(h - 1) * w + column], south.heightmap[column], "south border, column {column}");
+            assert_eq!(
+                here.heightmap[(h - 1) * w + column],
+                south.heightmap[column],
+                "south border, column {column}"
+            );
         }
     }
 

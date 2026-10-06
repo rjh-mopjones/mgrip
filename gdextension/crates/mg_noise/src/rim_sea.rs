@@ -193,7 +193,11 @@ mod tests {
         (0..24 * 9)
             .map(|cell| {
                 let (x, y) = (cell % 24, cell / 24);
-                if y == 4 && !(10..=13).contains(&x) { -0.2 } else { 0.3 }
+                if y == 4 && !(10..=13).contains(&x) {
+                    -0.2
+                } else {
+                    0.3
+                }
             })
             .collect()
     }
@@ -227,7 +231,11 @@ mod tests {
             .map(|cell| {
                 let (x, y) = (cell % 24, cell / 24);
                 let blocked = y == 6 && (10..=13).contains(&x);
-                if (y == 1 || y == 6) && !blocked { -0.2 } else { 0.3 }
+                if (y == 1 || y == 6) && !blocked {
+                    -0.2
+                } else {
+                    0.3
+                }
             })
             .collect();
         let stays_liquid: Vec<bool> = (0..24 * 9).map(|cell| cell / 24 >= 4).collect();

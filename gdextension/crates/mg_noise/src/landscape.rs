@@ -92,13 +92,16 @@ impl UpliftSources {
     ) -> Self {
         // The tectonic layer is high where the crust is quiet.
         let stress: Vec<f64> = tectonic.iter().map(|quiet| (1.0 - quiet).powi(2)).collect();
-        let reach = (FAULT_SPREAD_WU * width as f64 / WORLD_WIDTH / 2.0).round().max(1.0) as i32;
+        let reach = (FAULT_SPREAD_WU * width as f64 / WORLD_WIDTH / 2.0)
+            .round()
+            .max(1.0) as i32;
         let faults = spread(&stress, width, height, reach);
         // The crust pulls apart along boundaries where the peaks-and-valleys
         // layer runs deepest, as it is pushed up where that layer peaks.
         let rifts = (0..width * height)
             .map(|cell| {
-                let trough = (-peaks_valleys[cell] - RIFT_FROM_VALLEY_DEPTH).max(0.0) / (1.0 - RIFT_FROM_VALLEY_DEPTH);
+                let trough = (-peaks_valleys[cell] - RIFT_FROM_VALLEY_DEPTH).max(0.0)
+                    / (1.0 - RIFT_FROM_VALLEY_DEPTH);
                 trough * faults[cell]
             })
             .collect();
@@ -116,11 +119,18 @@ impl UpliftSources {
         Self {
             interior: continentalness
                 .iter()
-                .map(|cont| ((cont - SEA_LEVEL) / INTERIOR_FULL_AT).clamp(0.0, 1.0).sqrt())
+                .map(|cont| {
+                    ((cont - SEA_LEVEL) / INTERIOR_FULL_AT)
+                        .clamp(0.0, 1.0)
+                        .sqrt()
+                })
                 .collect(),
             // Mountain belts follow the ridges of the peaks-and-valleys layer.
             ranges: crested(
-                peaks_valleys.iter().map(|peaks| peaks.clamp(0.0, 1.0).powi(2)).collect(),
+                peaks_valleys
+                    .iter()
+                    .map(|peaks| peaks.clamp(0.0, 1.0).powi(2))
+                    .collect(),
                 0.0,
             ),
             faults: crested(faults, 500.0),
@@ -158,7 +168,8 @@ fn crest(wx: f64, wy: f64, shift: f64) -> f64 {
     let (mut sum, mut weight, mut total) = (0.0, 1.0, 0.0);
     for octave in 0..CREST_OCTAVES {
         let frequency = 2f64.powi(octave as i32) / CREST_SPACING_WU;
-        let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
+        let [cx, cz, cy] =
+            crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
         sum += weight * (1.0 - noise.get([cx + shift, cz + shift, cy]).abs());
         total += weight;
         weight *= 0.5;
@@ -287,7 +298,10 @@ impl Grid {
     }
 
     fn lake_evaporation(&self) -> Vec<f64> {
-        self.light_level.iter().map(|&light| lake_evaporation(light)).collect()
+        self.light_level
+            .iter()
+            .map(|&light| lake_evaporation(light))
+            .collect()
     }
 
     /// Drainage of the finished land.
@@ -314,9 +328,17 @@ impl Grid {
         )
         .mixed(&UpliftMix::default());
         let rainfall = self.rainfall();
-        let ice: Vec<f64> = self.light_level.iter().map(|&light| iciness(light)).collect();
+        let ice: Vec<f64> = self
+            .light_level
+            .iter()
+            .map(|&light| iciness(light))
+            .collect();
         let lake_evaporation = self.lake_evaporation();
-        let desert: Vec<f64> = self.light_level.iter().map(|&light| desert(light)).collect();
+        let desert: Vec<f64> = self
+            .light_level
+            .iter()
+            .map(|&light| desert(light))
+            .collect();
         let land = Land {
             is_base_level: is_sea,
             rock_hardness: &self.rock_hardness,
@@ -336,12 +358,21 @@ impl Grid {
 }
 
 /// `coarse` (half the resolution) sampled smoothly onto a grid of `width`.
-fn doubled(coarse: &[f64], coarse_width: usize, coarse_height: usize, width: usize, height: usize) -> Vec<f64> {
+fn doubled(
+    coarse: &[f64],
+    coarse_width: usize,
+    coarse_height: usize,
+    width: usize,
+    height: usize,
+) -> Vec<f64> {
     (0..width * height)
         .map(|cell| {
             // Coarse cell (x, y) sits on fine cell (2x, 2y).
             let (fx, fy) = ((cell % width) as f64 / 2.0, (cell / width) as f64 / 2.0);
-            let (x0, y0) = (fx.floor() as usize, (fy.floor() as usize).min(coarse_height - 1));
+            let (x0, y0) = (
+                fx.floor() as usize,
+                (fy.floor() as usize).min(coarse_height - 1),
+            );
             let (x1, y1) = ((x0 + 1) % coarse_width, (y0 + 1).min(coarse_height - 1));
             let (tx, ty) = (fx - fx.floor(), fy - fy.floor());
             let at = |x: usize, y: usize| coarse[y * coarse_width + x];
@@ -366,7 +397,12 @@ pub fn grow_landscape(inputs: &LandscapeInputs) -> Landscape {
         let coarse_sea = coarse.is_sea();
         let mut coarse_ground = starting_ground(&coarse.continentalness, &coarse_sea, coarse.width);
         let mut coarse_sediment = vec![0.0; coarse.width * coarse.height];
-        coarse.erode(&mut coarse_ground, &mut coarse_sediment, &coarse_sea, COARSE_STEPS);
+        coarse.erode(
+            &mut coarse_ground,
+            &mut coarse_sediment,
+            &coarse_sea,
+            COARSE_STEPS,
+        );
 
         // Carry the coarse land up. Where the two grids disagree about the
         // coast, the fine grid's sea stays sea and its land stays land.
@@ -445,7 +481,12 @@ impl FineHeights {
     fn around(&self, wx: f64, wy: f64) -> (i64, i64, f64, f64) {
         let fx = wx * self.cells_per_wu as f64;
         let fy = (wy * self.cells_per_wu as f64).clamp(0.0, (self.height - 1) as f64);
-        (fx.floor() as i64, fy.floor() as i64, fx - fx.floor(), fy - fy.floor())
+        (
+            fx.floor() as i64,
+            fy.floor() as i64,
+            fx - fx.floor(),
+            fy - fy.floor(),
+        )
     }
 
     fn at(&self, x: i64, y: i64) -> f64 {
@@ -502,7 +543,13 @@ pub struct FineLand {
 pub fn refined_field(field: &[f64], width: usize, height: usize, factor: usize) -> Vec<f64> {
     let (mut current, mut current_width, mut current_height) = (field.to_vec(), width, height);
     while current_width < width * factor {
-        current = doubled(&current, current_width, current_height, current_width * 2, current_height * 2);
+        current = doubled(
+            &current,
+            current_width,
+            current_height,
+            current_width * 2,
+            current_height * 2,
+        );
         current_width *= 2;
         current_height *= 2;
     }
@@ -568,7 +615,8 @@ pub fn flatness(heightmap: &[f64], width: usize, height: usize, cell_size_wu: f6
             let (west, east) = (x.saturating_sub(1), (x + 1).min(width - 1));
             let (north, south) = (y.saturating_sub(1), (y + 1).min(height - 1));
             let rise_x = (at(east, y) - at(west, y)) / ((east - west).max(1) as f64 * cell_size_wu);
-            let rise_y = (at(x, south) - at(x, north)) / ((south - north).max(1) as f64 * cell_size_wu);
+            let rise_y =
+                (at(x, south) - at(x, north)) / ((south - north).max(1) as f64 * cell_size_wu);
             flatness_of_slope((rise_x * rise_x + rise_y * rise_y).sqrt())
         })
         .collect()
@@ -623,7 +671,10 @@ mod tests {
 
         assert!(landscape.heightmap[centre] > SEA_LEVEL + 0.05);
         // Heights are kept within -1 to 1.
-        assert_eq!(landscape.heightmap[corner], continentalness[corner].max(-1.0));
+        assert_eq!(
+            landscape.heightmap[corner],
+            continentalness[corner].max(-1.0)
+        );
     }
 
     #[test]

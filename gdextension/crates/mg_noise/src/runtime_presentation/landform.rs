@@ -71,10 +71,12 @@ impl LandformClass {
             + score_low(sample.heightmap, 0.02, 0.22) * 1.4
             + score_high(sample.water_table, 0.20, 0.60) * 1.0
             + score_high(sample.local_relief, 0.08, 0.26) * 0.8
-            + f64::from(zone.is_dayside()) * f64::from(matches!(
-                water_state,
-                SurfaceWaterState::EvaporiteBasin | SurfaceWaterState::BrineFlat
-            )) * 2.6
+            + f64::from(zone.is_dayside())
+                * f64::from(matches!(
+                    water_state,
+                    SurfaceWaterState::EvaporiteBasin | SurfaceWaterState::BrineFlat
+                ))
+                * 2.6
             + f64::from(matches!(
                 water_state,
                 SurfaceWaterState::EvaporiteBasin

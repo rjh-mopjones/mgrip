@@ -104,12 +104,14 @@ pub fn rainfall_with(
     let reaches_rivers = if light_level < FROZEN_BELOW_LIGHT {
         frozen_runoff
     } else if light_level < FULL_RUNOFF_FROM_LIGHT {
-        let thaw = (light_level - FROZEN_BELOW_LIGHT) / (FULL_RUNOFF_FROM_LIGHT - FROZEN_BELOW_LIGHT);
+        let thaw =
+            (light_level - FROZEN_BELOW_LIGHT) / (FULL_RUNOFF_FROM_LIGHT - FROZEN_BELOW_LIGHT);
         frozen_runoff + (1.0 - frozen_runoff) * thaw
     } else if light_level < FULL_RUNOFF_TO_LIGHT {
         1.0
     } else if light_level < EVAPORATED_ABOVE_LIGHT {
-        let dried = (light_level - FULL_RUNOFF_TO_LIGHT) / (EVAPORATED_ABOVE_LIGHT - FULL_RUNOFF_TO_LIGHT);
+        let dried =
+            (light_level - FULL_RUNOFF_TO_LIGHT) / (EVAPORATED_ABOVE_LIGHT - FULL_RUNOFF_TO_LIGHT);
         1.0 - (1.0 - evaporated_runoff) * dried
     } else {
         evaporated_runoff
@@ -214,7 +216,10 @@ pub fn solve_drainage(
     for cell in 0..total {
         if is_base_level[cell] {
             reached[cell] = true;
-            waiting.push(Flooding { level: ground[cell], cell: cell as u32 });
+            waiting.push(Flooding {
+                level: ground[cell],
+                cell: cell as u32,
+            });
         }
     }
     while let Some(Flooding { cell, .. }) = waiting.pop() {
@@ -228,7 +233,10 @@ pub fn solve_drainage(
             let jitter = position_jitter((neighbour % width) as u32, (neighbour / width) as u32);
             let spill = filled[cell] + FLAT_SLOPE * (0.3 + 1.4 * jitter);
             filled[neighbour] = ground[neighbour].max(spill);
-            waiting.push(Flooding { level: filled[neighbour], cell: neighbour as u32 });
+            waiting.push(Flooding {
+                level: filled[neighbour],
+                cell: neighbour as u32,
+            });
         }
     }
 
@@ -239,7 +247,9 @@ pub fn solve_drainage(
                 return NO_RECEIVER;
             }
             let downhill: Vec<(usize, f64)> = neighbours(cell, width, height)
-                .map(|(neighbour, distance)| (neighbour, (filled[cell] - filled[neighbour]) / distance))
+                .map(|(neighbour, distance)| {
+                    (neighbour, (filled[cell] - filled[neighbour]) / distance)
+                })
                 .filter(|&(_, slope)| slope > 0.0)
                 .map(|(neighbour, slope)| (neighbour, slope.powf(STEEPNESS_PREFERENCE)))
                 .collect();
@@ -251,13 +261,21 @@ pub fn solve_drainage(
                     return neighbour as u32;
                 }
             }
-            downhill.last().map_or(NO_RECEIVER, |&(neighbour, _)| neighbour as u32)
+            downhill
+                .last()
+                .map_or(NO_RECEIVER, |&(neighbour, _)| neighbour as u32)
         })
         .collect();
 
     // Gather rain from the highest cells down.
     let mut flow: Vec<f64> = (0..total)
-        .map(|cell| if is_base_level[cell] { 0.0 } else { rainfall[cell] })
+        .map(|cell| {
+            if is_base_level[cell] {
+                0.0
+            } else {
+                rainfall[cell]
+            }
+        })
         .collect();
     for &cell in order.iter().rev() {
         let cell = cell as usize;
@@ -272,7 +290,12 @@ pub fn solve_drainage(
         }
     }
 
-    Drainage { filled, receivers, order, flow }
+    Drainage {
+        filled,
+        receivers,
+        order,
+        flow,
+    }
 }
 
 #[cfg(test)]
@@ -319,7 +342,16 @@ mod tests {
         // A hollow at x = 2, behind a sill at x = 1: a lake one cell big.
         let (ground, sea) = strip([0.0, 2.0, 0.5, 3.0, 9.0]);
         let flow = |evaporation: f64| {
-            solve_drainage(&ground, &sea, &vec![1.0; 15], &vec![evaporation; 15], 5, 3, 0).flow
+            solve_drainage(
+                &ground,
+                &sea,
+                &vec![1.0; 15],
+                &vec![evaporation; 15],
+                5,
+                3,
+                0,
+            )
+            .flow
         };
         let (lake, below_lake) = (7, 6);
 

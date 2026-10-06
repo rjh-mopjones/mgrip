@@ -3,9 +3,9 @@ pub mod biome_splines;
 pub mod climate;
 pub mod derived;
 pub mod drainage;
+pub mod erosion_sim;
 pub mod landscape;
 pub mod rim_sea;
-pub mod erosion_sim;
 pub mod rivers;
 pub mod runtime_presentation;
 pub mod strategy;
@@ -16,10 +16,9 @@ pub mod wind;
 pub mod wrap;
 
 pub use biome_map::{
-    generate_map_tile,
-    generate_macro_map, generate_macro_probe, sample_field_bilinear, tile_has_fluid_surface,
-    BiomeMap, MacroOceanMask, MACRO_MAP_HEIGHT, MACRO_MAP_WIDTH, SEA_LEVEL, WORLD_HEIGHT,
-    WORLD_WIDTH,
+    generate_macro_map, generate_macro_probe, generate_map_tile, sample_field_bilinear,
+    tile_has_fluid_surface, BiomeMap, MacroOceanMask, MACRO_MAP_HEIGHT, MACRO_MAP_WIDTH, SEA_LEVEL,
+    WORLD_HEIGHT, WORLD_WIDTH,
 };
 pub use biome_splines::BiomeSplines;
 pub use derived::{
@@ -29,8 +28,9 @@ pub use derived::{
 };
 pub use erosion_sim::{erosion_step, ErosionParams, Land};
 pub use rivers::{
-    rasterize_from_network, rasterize_to_tile, RiverCharacter, RiverConstraint, RiverNetwork,
-    RiverSegment, LOD_THRESHOLD_MACRO, LOD_THRESHOLD_MESO, LOD_THRESHOLD_MICRO, rasterize_courses, RiverCourse,
+    rasterize_courses, rasterize_from_network, rasterize_to_tile, RiverCharacter, RiverConstraint,
+    RiverCourse, RiverNetwork, RiverSegment, LOD_THRESHOLD_MACRO, LOD_THRESHOLD_MESO,
+    LOD_THRESHOLD_MICRO,
 };
 pub use runtime_presentation::{
     AtmosphereClass, LandformClass, PlanetZone, RuntimeChunkPresentation,

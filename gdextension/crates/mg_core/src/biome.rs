@@ -76,7 +76,7 @@ impl TileType {
             Self::River => [64, 164, 223],
 
             Self::Beach => [220, 182, 130],
-            Self::Mangrove => [38, 18, 32],         // dark purple-brown coastal
+            Self::Mangrove => [38, 18, 32], // dark purple-brown coastal
             Self::RockyCoast => [98, 95, 108],
             Self::SeaCliff => [135, 135, 155],
 
@@ -88,40 +88,40 @@ impl TileType {
             // Frozen fringe — dark gray-purple (bioluminescent ecosystem, no photosynthesis)
             Self::FrozenBog => [60, 50, 80],
             Self::Tundra => [80, 65, 95],
-            Self::Taiga => [28, 18, 38],   // near-black; dark-adapted conifers
+            Self::Taiga => [28, 18, 38], // near-black; dark-adapted conifers
             Self::AlpineMeadow => [70, 50, 80],
 
             // Terminator / temperate — dark photosynthesizers: black, maroon, burgundy
             // RED SUPERGIANT → no blue-green light → no green pigment viable
-            Self::Plains => [85, 45, 65],          // sparse dark vegetation on plain
-            Self::Meadow => [70, 35, 55],           // deep maroon-purple
-            Self::Forest => [30, 10, 25],           // near-black canopy
-            Self::DeciduousForest => [50, 20, 40],  // dark burgundy
+            Self::Plains => [85, 45, 65], // sparse dark vegetation on plain
+            Self::Meadow => [70, 35, 55], // deep maroon-purple
+            Self::Forest => [30, 10, 25], // near-black canopy
+            Self::DeciduousForest => [50, 20, 40], // dark burgundy
             Self::TemperateRainforest => [20, 5, 18], // almost black
-            Self::Woodland => [60, 25, 45],         // dark burgundy-purple
-            Self::Scrubland => [115, 80, 65],       // dry reddish-brown scrub
-            Self::Marsh => [45, 30, 55],            // dark swampy purple
-            Self::Steppe => [145, 115, 85],         // dry ochre-brown (sparse)
+            Self::Woodland => [60, 25, 45], // dark burgundy-purple
+            Self::Scrubland => [115, 80, 65], // dry reddish-brown scrub
+            Self::Marsh => [45, 30, 55],  // dark swampy purple
+            Self::Steppe => [145, 115, 85], // dry ochre-brown (sparse)
             Self::Mountain => [105, 105, 112],
             Self::Plateau => [130, 75, 55],
 
             // Warm/subtropical — transitioning to hot; darker vegetation toward dayside
-            Self::SubtropicalForest => [40, 15, 30],   // dark burgundy
-            Self::DryWoodland => [130, 95, 65],        // dry brown
-            Self::Thornland => [140, 100, 65],         // reddish-brown
-            Self::HighlandSavanna => [170, 145, 90],   // dry highland tan
-            Self::CloudForest => [22, 8, 28],          // near-black cloud canopy
+            Self::SubtropicalForest => [40, 15, 30], // dark burgundy
+            Self::DryWoodland => [130, 95, 65],      // dry brown
+            Self::Thornland => [140, 100, 65],       // reddish-brown
+            Self::HighlandSavanna => [170, 145, 90], // dry highland tan
+            Self::CloudForest => [22, 8, 28],        // near-black cloud canopy
 
             // Hot/dayside — scorched, no complex vegetation survives
-            Self::Savanna => [185, 162, 95],       // dry yellowish-tan (dead analogs)
-            Self::Jungle => [22, 5, 18],           // near-black xerophyte jungle
+            Self::Savanna => [185, 162, 95], // dry yellowish-tan (dead analogs)
+            Self::Jungle => [22, 5, 18],     // near-black xerophyte jungle
             Self::Desert => [255, 210, 90],
             Self::Sahara => [248, 168, 60],
             Self::Erg => [232, 205, 130],
             Self::Hamada => [130, 92, 68],
             Self::SaltFlat => [238, 232, 215],
             Self::Badlands => [175, 98, 62],
-            Self::Oasis => [55, 18, 45],           // dark maroon (oasis plants appear black)
+            Self::Oasis => [55, 18, 45], // dark maroon (oasis plants appear black)
             Self::Volcanic => [64, 28, 28],
             Self::LavaField => [90, 35, 20],
             Self::MoltenWaste => [110, 25, 10],

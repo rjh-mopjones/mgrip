@@ -133,11 +133,17 @@ pub fn erosion_step(
     // Under ice it is the ice that flows, down its own surface: smoother than
     // the ground, level across valleys, and able to ride over a sill.
     let ice_thickness = ice_thickness(ground, land);
-    let surface: Vec<f64> = ground.iter().zip(&ice_thickness).map(|(bed, ice)| bed + ice).collect();
+    let surface: Vec<f64> = ground
+        .iter()
+        .zip(&ice_thickness)
+        .map(|(bed, ice)| bed + ice)
+        .collect();
     // Little water runs off the night side, but none of its snow is lost:
     // it all leaves as ice, and as meltwater where the ice ends.
     let gathered: Vec<f64> = (0..ground.len())
-        .map(|cell| land.rainfall[cell] + (SNOWFALL - land.rainfall[cell]).max(0.0) * land.ice[cell])
+        .map(|cell| {
+            land.rainfall[cell] + (SNOWFALL - land.rainfall[cell]).max(0.0) * land.ice[cell]
+        })
         .collect();
     let drainage = solve_drainage(
         &surface,
@@ -163,7 +169,8 @@ pub fn erosion_step(
         // Well-watered land is kept down by its rivers and may rise to the
         // full limit. Dry and frozen land has only the ceiling to stop it.
         let wetness = (land.rainfall[cell] / CEILING_LIFTED_BY_RUNOFF).min(1.0);
-        let by_uplift = (land.uplift_share[cell] / CEILING_FULL_AT_SHARE).clamp(CEILING_LEAST_SHARE, 1.0);
+        let by_uplift =
+            (land.uplift_share[cell] / CEILING_FULL_AT_SHARE).clamp(CEILING_LEAST_SHARE, 1.0);
         let ceiling = params.uplift_limit * (by_uplift + (1.0 - by_uplift) * wetness);
         let share = land.uplift_share[cell];
         // Sinking ground (a negative share) sinks whatever its height, until
@@ -185,7 +192,8 @@ pub fn erosion_step(
         if ice_thickness[cell] >= ICE_MIN_THICKNESS {
             // Thick ice digs by how much of it there is and how fast it
             // slides, not towards the height of the ground downstream.
-            let fall = (surface[cell] - surface[receiver]) / step_distance(cell, receiver, land.width)
+            let fall = (surface[cell] - surface[receiver])
+                / step_distance(cell, receiver, land.width)
                 * cells_per_wu;
             let dug = dt
                 * params.ice_cutting
@@ -226,7 +234,13 @@ pub fn erosion_step(
     }
 
     widen_valleys(ground, &drainage, land, params, flood);
-    *ground = crept(ground, land.is_base_level, land.width, land.height, params.slope_creep);
+    *ground = crept(
+        ground,
+        land.is_base_level,
+        land.width,
+        land.height,
+        params.slope_creep,
+    );
     drainage
 }
 
@@ -281,7 +295,13 @@ pub fn box_blurred(field: &[f64], width: usize, height: usize, reach: i32) -> Ve
 /// Under ice, the more ice gathers in a stream the harder it pulls: valley
 /// floors widen into troughs with steep walls where the pull gives out. In
 /// desert, the walls of a canyon in flood break and fall back.
-fn widen_valleys(ground: &mut [f64], drainage: &Drainage, land: &Land, params: &ErosionParams, flood: f64) {
+fn widen_valleys(
+    ground: &mut [f64],
+    drainage: &Drainage,
+    land: &Land,
+    params: &ErosionParams,
+    flood: f64,
+) {
     if params.ice_widening <= 0.0 && params.scarp_retreat <= 0.0 {
         return;
     }
@@ -293,13 +313,23 @@ fn widen_valleys(ground: &mut [f64], drainage: &Drainage, land: &Land, params: &
         let flow = drainage.flow[cell];
         let by_ice = params.ice_widening * land.ice[cell] * (flow / full_stream).sqrt().min(1.0);
         let in_flood = flow > flood * land.desert[cell];
-        let by_scarps = if in_flood { params.scarp_retreat * land.desert[cell] } else { 0.0 };
+        let by_scarps = if in_flood {
+            params.scarp_retreat * land.desert[cell]
+        } else {
+            0.0
+        };
         let pull = by_ice.max(by_scarps);
         if land.is_base_level[cell] || pull <= 0.0 {
             continue;
         }
         // Ice pulls only on ground that is itself under ice.
-        let reaches = |beside: usize| if by_ice >= by_scarps { land.ice[beside] } else { 1.0 };
+        let reaches = |beside: usize| {
+            if by_ice >= by_scarps {
+                land.ice[beside]
+            } else {
+                1.0
+            }
+        };
         let (x, y) = ((cell % land.width) as i32, (cell / land.width) as i32);
         for (dx, dy) in crate::rivers::D8_OFFSETS {
             let beside_y = y + dy;
@@ -317,7 +347,13 @@ fn widen_valleys(ground: &mut [f64], drainage: &Drainage, land: &Land, params: &
 
 /// The ground after one step of slope creep: each land cell moves `share` of
 /// the way towards the mean of its four neighbours.
-pub fn crept(ground: &[f64], is_base_level: &[bool], width: usize, height: usize, share: f64) -> Vec<f64> {
+pub fn crept(
+    ground: &[f64],
+    is_base_level: &[bool],
+    width: usize,
+    height: usize,
+    share: f64,
+) -> Vec<f64> {
     (0..width * height)
         .map(|cell| {
             if is_base_level[cell] {
@@ -409,7 +445,13 @@ mod tests {
         let mut sediment = vec![0.0; 144];
         let mut drainage = None;
         for step in 0..steps {
-            drainage = Some(erosion_step(&mut ground, &mut sediment, &land, &params, step));
+            drainage = Some(erosion_step(
+                &mut ground,
+                &mut sediment,
+                &land,
+                &params,
+                step,
+            ));
         }
         (ground, drainage.expect("at least one step"))
     }
@@ -489,7 +531,11 @@ mod tests {
         for y in 0..9 {
             assert_eq!(after[y * 16], before[y * 16]);
         }
-        let draining = drainage.receivers.iter().filter(|&&r| r != NO_RECEIVER).count();
+        let draining = drainage
+            .receivers
+            .iter()
+            .filter(|&&r| r != NO_RECEIVER)
+            .count();
         assert_eq!(draining, 144 - 9);
     }
 }

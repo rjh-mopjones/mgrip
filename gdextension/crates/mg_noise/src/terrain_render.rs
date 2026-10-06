@@ -3,8 +3,8 @@
 //! Replaces flat biome colors with a multi-layer composited image using
 //! heightmap, erosion, snowpack, rivers, vegetation, and lighting data.
 
+use crate::biome_map::{compute_slope_grid, BiomeMap, SEA_LEVEL};
 use mg_core::TileType;
-use crate::biome_map::{BiomeMap, SEA_LEVEL, compute_slope_grid};
 
 /// Global heightmap statistics for consistent normalization across tiles.
 #[derive(Clone, Debug)]
@@ -46,13 +46,20 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
             let mut hmin = f64::MAX;
             let mut hmax = f64::MIN;
             for &v in &map.heightmap {
-                if v < hmin { hmin = v; }
-                if v > hmax { hmax = v; }
+                if v < hmin {
+                    hmin = v;
+                }
+                if v > hmax {
+                    hmax = v;
+                }
             }
             (hmin, hmax)
         };
         let range = if hmax > hmin { hmax - hmin } else { 1.0 };
-        map.heightmap.iter().map(|&v| ((v - hmin) / range).clamp(0.0, 1.0)).collect::<Vec<f64>>()
+        map.heightmap
+            .iter()
+            .map(|&v| ((v - hmin) / range).clamp(0.0, 1.0))
+            .collect::<Vec<f64>>()
     };
 
     let slope = compute_slope_grid(&norm_height, w, h);
@@ -72,18 +79,19 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                 // colour solid instead of blending it over land tinting. This
                 // is the difference between a clear blue river and a tan-tinted
                 // smear at low river strength.
-                solid_river_color(
-                    map.temperature[idx],
-                    map.light_level[idx],
-                    map.aridity[idx],
-                )
+                solid_river_color(map.temperature[idx], map.light_level[idx], map.aridity[idx])
             } else {
                 let mut pixel = biome.rgb();
 
                 // Sub-biome tinting for highland biomes
-                if matches!(biome,
-                    TileType::Mountain | TileType::Plateau | TileType::Badlands
-                    | TileType::Hamada | TileType::ScorchedRock | TileType::AlpineMeadow
+                if matches!(
+                    biome,
+                    TileType::Mountain
+                        | TileType::Plateau
+                        | TileType::Badlands
+                        | TileType::Hamada
+                        | TileType::ScorchedRock
+                        | TileType::AlpineMeadow
                 ) {
                     let rock = map.rock_hardness[idx];
                     let eros = map.erosion[idx];
@@ -117,9 +125,17 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                     }
                     let stress = 1.0 - tect;
                     if stress > 0.5 {
-                        pixel = lerp_rgb(pixel, [150, 100, 80], ((stress - 0.5) / 0.5).clamp(0.0, 1.0) * 0.15);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [150, 100, 80],
+                            ((stress - 0.5) / 0.5).clamp(0.0, 1.0) * 0.15,
+                        );
                     } else if stress < 0.2 {
-                        pixel = lerp_rgb(pixel, [140, 150, 165], ((0.2 - stress) / 0.2).clamp(0.0, 1.0) * 0.15);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [140, 150, 165],
+                            ((0.2 - stress) / 0.2).clamp(0.0, 1.0) * 0.15,
+                        );
                     }
                 }
 
@@ -130,24 +146,49 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                     let eros = map.erosion[idx];
                     let arid = map.aridity[idx];
 
-                    if rock > 0.6 { pixel = lerp_rgb(pixel, [140, 90, 60], (rock - 0.6) * 0.5); }
-                    else if rock < 0.4 { pixel = lerp_rgb(pixel, [230, 210, 170], (0.4 - rock) * 0.4); }
+                    if rock > 0.6 {
+                        pixel = lerp_rgb(pixel, [140, 90, 60], (rock - 0.6) * 0.5);
+                    } else if rock < 0.4 {
+                        pixel = lerp_rgb(pixel, [230, 210, 170], (0.4 - rock) * 0.4);
+                    }
                     if temp > 80.0 {
-                        pixel = lerp_rgb(pixel, [200, 120, 60], ((temp - 80.0) / 40.0).clamp(0.0, 1.0) * 0.2);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [200, 120, 60],
+                            ((temp - 80.0) / 40.0).clamp(0.0, 1.0) * 0.2,
+                        );
                     }
                     if eros > 0.4 {
-                        pixel = lerp_rgb(pixel, [185, 110, 75], ((eros - 0.4) / 0.4).clamp(0.0, 1.0) * 0.2);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [185, 110, 75],
+                            ((eros - 0.4) / 0.4).clamp(0.0, 1.0) * 0.2,
+                        );
                     }
                     if !map.drainage_area.is_empty() {
                         let drain = (map.drainage_area[idx] as f64 / 500.0).clamp(0.0, 1.0);
-                        if drain > 0.1 { pixel = lerp_rgb(pixel, [220, 210, 190], drain * 0.25); }
+                        if drain > 0.1 {
+                            pixel = lerp_rgb(pixel, [220, 210, 190], drain * 0.25);
+                        }
                     }
                     if arid > 0.85 {
-                        pixel = lerp_rgb(pixel, [120, 80, 55], ((arid - 0.85) / 0.15).clamp(0.0, 1.0) * 0.2);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [120, 80, 55],
+                            ((arid - 0.85) / 0.15).clamp(0.0, 1.0) * 0.2,
+                        );
                     } else if arid > 0.6 {
-                        pixel = lerp_rgb(pixel, [240, 230, 200], ((arid - 0.6) / 0.25).clamp(0.0, 1.0) * 0.15);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [240, 230, 200],
+                            ((arid - 0.6) / 0.25).clamp(0.0, 1.0) * 0.15,
+                        );
                     } else if arid > 0.3 {
-                        pixel = lerp_rgb(pixel, [210, 185, 120], ((arid - 0.3) / 0.3).clamp(0.0, 1.0) * 0.15);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [210, 185, 120],
+                            ((arid - 0.3) / 0.3).clamp(0.0, 1.0) * 0.15,
+                        );
                     }
                 }
 
@@ -158,10 +199,18 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                     let snow_depth = map.snowpack[idx];
                     let rock_show = pv.abs() * rock;
                     if rock_show > 0.1 {
-                        pixel = lerp_rgb(pixel, [100, 105, 115], ((rock_show - 0.1) / 0.4).clamp(0.0, 1.0) * 0.25);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [100, 105, 115],
+                            ((rock_show - 0.1) / 0.4).clamp(0.0, 1.0) * 0.25,
+                        );
                     }
                     if snow_depth < 0.3 {
-                        pixel = lerp_rgb(pixel, [180, 210, 235], ((0.3 - snow_depth) / 0.3).clamp(0.0, 1.0) * 0.2);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [180, 210, 235],
+                            ((0.3 - snow_depth) / 0.3).clamp(0.0, 1.0) * 0.2,
+                        );
                     }
                 }
 
@@ -169,7 +218,11 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                 {
                     let sl = slope[idx];
                     if sl > 0.03 && !is_water_biome(biome) {
-                        pixel = lerp_rgb(pixel, [90, 85, 80], ((sl - 0.03) / 0.07).clamp(0.0, 1.0) * 0.2);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [90, 85, 80],
+                            ((sl - 0.03) / 0.07).clamp(0.0, 1.0) * 0.2,
+                        );
                     }
                 }
 
@@ -183,16 +236,27 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                 ];
 
                 // Coastal fringing
-                if !matches!(biome, TileType::Beach | TileType::Mangrove | TileType::RockyCoast | TileType::SeaCliff) {
+                if !matches!(
+                    biome,
+                    TileType::Beach
+                        | TileType::Mangrove
+                        | TileType::RockyCoast
+                        | TileType::SeaCliff
+                ) {
                     let coast = coastal_fringe(cont);
                     if coast > 0.0 {
                         let temp = map.temperature[idx];
                         let rock = map.rock_hardness[idx];
                         let humid = map.humidity[idx];
-                        let coast_color = if temp < 0.0 { [210, 220, 235] }
-                        else if rock > 0.6 { [130, 115, 100] }
-                        else if humid > 0.6 && temp > 20.0 { [144, 146, 110] }
-                        else { [210, 190, 150] };
+                        let coast_color = if temp < 0.0 {
+                            [210, 220, 235]
+                        } else if rock > 0.6 {
+                            [130, 115, 100]
+                        } else if humid > 0.6 && temp > 20.0 {
+                            [144, 146, 110]
+                        } else {
+                            [210, 190, 150]
+                        };
                         pixel = lerp_rgb(pixel, coast_color, coast * 0.4);
                     }
                 }
@@ -207,8 +271,7 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                 if river > 0.005 {
                     let arid = map.aridity[idx];
                     let light = map.light_level[idx];
-                    let corridor_color =
-                        solid_river_color(temp_here, light, arid);
+                    let corridor_color = solid_river_color(temp_here, light, arid);
                     if river >= 0.05 {
                         pixel = corridor_color;
                     } else {
@@ -220,7 +283,11 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                 if !map.sediment.is_empty() && river > 0.01 {
                     let sed = map.sediment[idx];
                     if sed > 0.2 {
-                        pixel = lerp_rgb(pixel, [100, 80, 50], ((sed - 0.2) / 0.5).clamp(0.0, 1.0) * 0.2);
+                        pixel = lerp_rgb(
+                            pixel,
+                            [100, 80, 50],
+                            ((sed - 0.2) / 0.5).clamp(0.0, 1.0) * 0.2,
+                        );
                     }
                 }
                 let rmoist = map.water_table[idx];
@@ -241,8 +308,11 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                 let is_emissive = volc > 0.85;
                 if volc > 0.5 {
                     let factor = ((volc - 0.5) / 0.5).clamp(0.0, 1.0);
-                    if is_emissive { pixel = lerp_rgb(pixel, [255, 120, 30], factor); }
-                    else { pixel = lerp_rgb(pixel, [120, 40, 20], factor); }
+                    if is_emissive {
+                        pixel = lerp_rgb(pixel, [255, 120, 30], factor);
+                    } else {
+                        pixel = lerp_rgb(pixel, [120, 40, 20], factor);
+                    }
                 }
 
                 // Vegetation tint — category-aware
@@ -260,7 +330,11 @@ pub fn render_terrain(map: &BiomeMap, hints: Option<&NormalizationHints>) -> Vec
                     } else if is_grassland_biome(biome) {
                         let arid = map.aridity[idx];
                         let steppe_target = if arid > 0.4 {
-                            lerp_rgb([126, 142, 82], [184, 168, 104], ((arid - 0.4) / 0.4).clamp(0.0, 1.0))
+                            lerp_rgb(
+                                [126, 142, 82],
+                                [184, 168, 104],
+                                ((arid - 0.4) / 0.4).clamp(0.0, 1.0),
+                            )
                         } else {
                             [118, (veg * 58.0 + 108.0).min(255.0) as u8, 84]
                         };
@@ -321,62 +395,105 @@ fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f64) -> [u8; 3] {
 
 fn normalize(v: [f64; 3]) -> [f64; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len < 1e-10 { return [0.0, 0.0, 1.0]; }
+    if len < 1e-10 {
+        return [0.0, 0.0, 1.0];
+    }
     [v[0] / len, v[1] / len, v[2] / len]
 }
 
 fn is_water_biome(b: TileType) -> bool {
-    matches!(b,
-        TileType::Sea | TileType::ShallowSea | TileType::ContinentalShelf
-        | TileType::DeepOcean | TileType::OceanTrench | TileType::OceanRidge
-        | TileType::White
+    matches!(
+        b,
+        TileType::Sea
+            | TileType::ShallowSea
+            | TileType::ContinentalShelf
+            | TileType::DeepOcean
+            | TileType::OceanTrench
+            | TileType::OceanRidge
+            | TileType::White
     )
 }
 
 fn is_polar_ice(b: TileType, light_level: f64) -> bool {
     if light_level < 0.12 {
-        return matches!(b,
-            TileType::White | TileType::IceSheet | TileType::Snow
-            | TileType::Glacier | TileType::FrozenBog | TileType::Mountain | TileType::Tundra
+        return matches!(
+            b,
+            TileType::White
+                | TileType::IceSheet
+                | TileType::Snow
+                | TileType::Glacier
+                | TileType::FrozenBog
+                | TileType::Mountain
+                | TileType::Tundra
         );
     }
     if light_level < 0.20 {
-        return matches!(b, TileType::White | TileType::IceSheet | TileType::Snow | TileType::Glacier);
+        return matches!(
+            b,
+            TileType::White | TileType::IceSheet | TileType::Snow | TileType::Glacier
+        );
     }
     false
 }
 
 fn is_desert_biome(b: TileType) -> bool {
-    matches!(b,
-        TileType::Desert | TileType::Sahara | TileType::Erg
-        | TileType::Hamada | TileType::SaltFlat | TileType::Badlands | TileType::ScorchedRock
+    matches!(
+        b,
+        TileType::Desert
+            | TileType::Sahara
+            | TileType::Erg
+            | TileType::Hamada
+            | TileType::SaltFlat
+            | TileType::Badlands
+            | TileType::ScorchedRock
     )
 }
 
 fn is_forest_biome(b: TileType) -> bool {
-    matches!(b,
-        TileType::Forest | TileType::DeciduousForest | TileType::TemperateRainforest
-        | TileType::SubtropicalForest | TileType::CloudForest | TileType::Jungle
-        | TileType::Taiga | TileType::Woodland | TileType::DryWoodland
+    matches!(
+        b,
+        TileType::Forest
+            | TileType::DeciduousForest
+            | TileType::TemperateRainforest
+            | TileType::SubtropicalForest
+            | TileType::CloudForest
+            | TileType::Jungle
+            | TileType::Taiga
+            | TileType::Woodland
+            | TileType::DryWoodland
     )
 }
 
 fn is_grassland_biome(b: TileType) -> bool {
-    matches!(b,
-        TileType::Plains | TileType::Meadow | TileType::Steppe
-        | TileType::Savanna | TileType::HighlandSavanna | TileType::Scrubland
-        | TileType::Thornland | TileType::AlpineMeadow
+    matches!(
+        b,
+        TileType::Plains
+            | TileType::Meadow
+            | TileType::Steppe
+            | TileType::Savanna
+            | TileType::HighlandSavanna
+            | TileType::Scrubland
+            | TileType::Thornland
+            | TileType::AlpineMeadow
     )
 }
 
 fn is_wetland_biome(b: TileType) -> bool {
-    matches!(b, TileType::Marsh | TileType::FrozenBog | TileType::Mangrove)
+    matches!(
+        b,
+        TileType::Marsh | TileType::FrozenBog | TileType::Mangrove
+    )
 }
 
 fn is_frozen_biome(b: TileType) -> bool {
-    matches!(b,
-        TileType::Snow | TileType::IceSheet | TileType::Glacier
-        | TileType::FrozenBog | TileType::Tundra | TileType::White
+    matches!(
+        b,
+        TileType::Snow
+            | TileType::IceSheet
+            | TileType::Glacier
+            | TileType::FrozenBog
+            | TileType::Tundra
+            | TileType::White
     )
 }
 
@@ -400,7 +517,9 @@ fn solid_river_color(temperature: f64, light_level: f64, _aridity: f64) -> [u8; 
 }
 
 fn coastal_fringe(continentalness: f64) -> f64 {
-    if continentalness < SEA_LEVEL { return 0.0; }
+    if continentalness < SEA_LEVEL {
+        return 0.0;
+    }
     1.0 - ((continentalness - SEA_LEVEL) / 0.03).clamp(0.0, 1.0)
 }
 
@@ -431,12 +550,21 @@ fn compute_ao(nh: &[f64], x: usize, y: usize, w: usize, h: usize) -> f64 {
     1.0 - (-laplacian * 8.0).clamp(0.0, 0.3)
 }
 
-fn render_ocean(biome: TileType, continentalness: f64, light_level: f64, temperature: f64) -> [u8; 3] {
+fn render_ocean(
+    biome: TileType,
+    continentalness: f64,
+    light_level: f64,
+    temperature: f64,
+) -> [u8; 3] {
     let depth = (SEA_LEVEL - continentalness).clamp(0.0, 0.5);
     let depth_norm = depth / 0.5;
 
     if biome == TileType::White {
-        let base_ice = lerp_rgb([220, 235, 250], [235, 245, 255], (1.0 - depth_norm).clamp(0.0, 1.0));
+        let base_ice = lerp_rgb(
+            [220, 235, 250],
+            [235, 245, 255],
+            (1.0 - depth_norm).clamp(0.0, 1.0),
+        );
         let brightness = 0.85 + light_level * 0.15;
         return [
             (base_ice[0] as f64 * brightness) as u8,
@@ -464,7 +592,11 @@ fn render_ocean(biome: TileType, continentalness: f64, light_level: f64, tempera
         pixel = lerp_rgb(pixel, [200, 220, 240], ice_hint);
     }
 
-    let brightness = if temperature < -10.0 { 0.7 + light_level * 0.3 } else { 0.5 + light_level * 0.5 };
+    let brightness = if temperature < -10.0 {
+        0.7 + light_level * 0.3
+    } else {
+        0.5 + light_level * 0.5
+    };
     [
         (pixel[0] as f64 * brightness) as u8,
         (pixel[1] as f64 * brightness) as u8,

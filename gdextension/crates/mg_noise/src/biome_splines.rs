@@ -131,7 +131,13 @@ impl BiomeSplines {
         sea_margin_drift: f64,
     ) -> TileType {
         if elevation < self.sea_level {
-            return self.below_sea_biome(elevation, temperature, tectonic, light_level, sea_margin_drift);
+            return self.below_sea_biome(
+                elevation,
+                temperature,
+                tectonic,
+                light_level,
+                sea_margin_drift,
+            );
         }
 
         let adjusted_humidity = self.adjust_humidity(humidity, elevation);
@@ -187,7 +193,13 @@ impl BiomeSplines {
 
     /// The biome of a lake `depth` deep: open water where the sea would be
     /// liquid, ice where it would freeze, a salt flat where it would dry out.
-    pub fn lake_biome(&self, depth: f64, temp: f64, light_level: f64, margin_drift: f64) -> TileType {
+    pub fn lake_biome(
+        &self,
+        depth: f64,
+        temp: f64,
+        light_level: f64,
+        margin_drift: f64,
+    ) -> TileType {
         let as_sea =
             self.below_sea_biome(self.sea_level - depth, temp, 0.5, light_level, margin_drift);
         if crate::biome_map::tile_has_fluid_surface(as_sea) {
@@ -429,8 +441,10 @@ mod tests {
     fn below_sea_extremities_do_not_default_to_marine_tiles() {
         let splines = BiomeSplines::new(0.0);
 
-        let nightside = splines.evaluate_with_light(-0.18, -42.0, 0.2, 0.0, 0.0, 0.4, 0.2, 0.5, 0.04, 0.0);
-        let dayside = splines.evaluate_with_light(-0.08, 58.0, 0.2, 0.0, 0.0, 0.1, 0.9, 0.5, 0.72, 0.0);
+        let nightside =
+            splines.evaluate_with_light(-0.18, -42.0, 0.2, 0.0, 0.0, 0.4, 0.2, 0.5, 0.04, 0.0);
+        let dayside =
+            splines.evaluate_with_light(-0.08, 58.0, 0.2, 0.0, 0.0, 0.1, 0.9, 0.5, 0.72, 0.0);
 
         assert_eq!(nightside, TileType::White);
         assert_eq!(dayside, TileType::SaltFlat);
@@ -439,7 +453,8 @@ mod tests {
     #[test]
     fn below_sea_terminus_can_still_emit_marine_tiles() {
         let splines = BiomeSplines::new(0.0);
-        let terminus = splines.evaluate_with_light(-0.08, 12.0, 0.4, 0.0, 0.0, 0.5, 0.3, 0.5, 0.34, 0.0);
+        let terminus =
+            splines.evaluate_with_light(-0.08, 12.0, 0.4, 0.0, 0.0, 0.5, 0.3, 0.5, 0.34, 0.0);
 
         assert!(matches!(
             terminus,
