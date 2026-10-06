@@ -113,13 +113,13 @@ Build on these seams. Do not create parallel ownership paths.
 - Margin is tidally locked — permanent day side and night side
 - The map wraps east to west, not north to south. Its left and right edges
   are neighbours
-- Light is distance from the sub-stellar point (bottom centre of the map), so
-  the terminus is an arc across the map, not a straight band. This is
-  deliberate: it is a round world. Do not flatten it into a ring.
-  `specs/014` replaces this: the world is generated on a sphere, the
-  sub-stellar point is its south pole and the terminus is the equator ring,
-  with the flat map an equirectangular projection. Until that lands, the arc
-  stands; do not build new light or climate work on the flat distance
+- Margin is a sphere (`specs/014`, `mg_core::sphere`): the sub-stellar point
+  is its south pole, the anti-stellar point its north. Light is the angle
+  from the sub-stellar point, warped by noise, so the terminus is a ragged
+  band round the equator. The flat map is an equirectangular projection:
+  columns are longitude, rows latitude, the top and bottom edges the poles.
+  Everything that measures a distance, an area or a step goes through the
+  sphere module; nothing else knows the projection
 - Neighbouring chunks share their border samples: a chunk's last column and
   its neighbour's first column are the same world positions and must have the
   same heights. Check with `margins_grip inspect chunk-seam <seed> <x> <y>`
@@ -134,9 +134,11 @@ Build on these seams. Do not create parallel ownership paths.
 - Where the sea freezes and where it dries out are ragged lines, not arcs
   (`sea_margin_drift`). Anything that asks whether sea is liquid must pass
   that drift, or it will disagree with the map
-- Most of the world is land and most of it is hostile, by design. On seed 42:
-  89% of chunks are land, 11% liquid sea; by zone, 55% dayside, 22% terminus,
-  23% nightside. Do not "fix" this towards Earth-like proportions
+- Most of the world is land and most of it is hostile, by design. On seed 42
+  before spec 014: 89% of chunks were land, 11% liquid sea; by zone, 55%
+  dayside, 22% terminus, 23% nightside. Those are cell counts on the old
+  flat light; they are re-measured by area when spec 014 lands. Do not
+  "fix" this towards Earth-like proportions
 
 ## River invariants
 

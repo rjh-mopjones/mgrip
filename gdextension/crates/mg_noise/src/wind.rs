@@ -219,11 +219,9 @@ pub fn dune_height(sand: f64, wx: f64, wy: f64, sample_spacing: f64) -> f64 {
         noise.get([cx + shift, cz, cy + shift])
     };
 
-    // Distance from the sub-stellar point (bottom centre of the map), the
-    // short way round.
-    let east = (wx - WORLD_WIDTH / 2.0).rem_euclid(WORLD_WIDTH);
-    let across = east.min(WORLD_WIDTH - east);
-    let from_sun = (across * across + (WORLD_HEIGHT - wy) * (WORLD_HEIGHT - wy)).sqrt();
+    // Distance from the sub-stellar point, the south pole.
+    let sphere = mg_core::Sphere::MARGIN;
+    let from_sun = sphere.distance(sphere.point_at(wx, wy), [0.0, 0.0, -1.0]);
     let along_wind = from_sun / DUNE_SPACING_WU
         + wander(0.35, 0.0) * DUNE_SWING
         + wander(3.0, 700.0) * DUNE_KINK;

@@ -22,6 +22,10 @@ use std::collections::{BinaryHeap, HashMap};
 
 // ─── D8 Constants ────────────────────────────────────────────────────────────
 
+/// Rivers further from the equator than this, in radians of latitude, are
+/// outside the surface band: 54°, a fifth of the way from each pole.
+const SURFACE_RIVER_LATITUDE: f64 = 0.3 * std::f64::consts::PI;
+
 pub(crate) const D8_OFFSETS: [(i32, i32); 8] = [
     (0, -1),
     (1, -1),
@@ -221,8 +225,10 @@ impl RiverCharacter {
         }
     }
 
-    fn outside_surface_band(y: usize, height: usize) -> Self {
-        if y < height / 5 {
+    /// A river beyond the surface band: under the ice in the north, a dry
+    /// wadi in the south.
+    fn outside_surface_band(latitude: f64) -> Self {
+        if latitude > 0.0 {
             RiverCharacter::BuriedIce
         } else {
             RiverCharacter::DryWadi
@@ -640,11 +646,12 @@ impl RiverNetwork {
             let light = light_level.get(idx).copied().unwrap_or(0.5);
             let humid = humidity.get(idx).copied().unwrap_or(0.5);
             let temp = temperature.get(idx).copied().unwrap_or(15.0);
-            // Narrow the forced-character bands to 20% each polar extreme.
-            // The previous 33% bands made terminus-coast rivers (world y 100-170)
-            // classify as BuriedIce and vanish after is_visible_channel filtering.
-            seg.character = if py < height / 5 || py >= (height * 4) / 5 {
-                RiverCharacter::outside_surface_band(py, height)
+            // Beyond 54° of latitude either way a river is forced under the
+            // ice or into a dry wadi; a wider band once swallowed the
+            // terminus-coast rivers.
+            let latitude = mg_core::Sphere::MARGIN.grid(width, height).latitude(py);
+            seg.character = if latitude.abs() >= SURFACE_RIVER_LATITUDE {
+                RiverCharacter::outside_surface_band(latitude)
             } else {
                 RiverCharacter::classify(light, humid, temp)
             };

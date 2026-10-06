@@ -114,14 +114,7 @@ pub fn sea_margin_drift(wx: f64, wy: f64) -> f64 {
 /// A function of position and seed alone, so anything can ask for it without
 /// a generated map.
 pub fn light_level_at(seed: u32, wx: f64, wy: f64) -> f64 {
-    LightLevelStrategy::new(
-        seed.wrapping_add(SEED_LIGHT_LEVEL),
-        0.5,
-        1.0,
-        WORLD_WIDTH,
-        WORLD_HEIGHT,
-    )
-    .generate(wx, wy, 0)
+    LightLevelStrategy::new(seed.wrapping_add(SEED_LIGHT_LEVEL)).generate(wx, wy, 0)
 }
 
 // Map tiles show the shape of the land, not the roughness of the ground
@@ -467,13 +460,7 @@ impl BiomeMap {
             TectonicPlatesStrategy::new_wrapping(seed.wrapping_add(SEED_TECTONIC), world_width);
         let humid_strat = HumidityStrategy::new(seed.wrapping_add(SEED_HUMIDITY));
         let rock_strat = RockHardnessStrategy::new(seed.wrapping_add(SEED_ROCK_HARDNESS));
-        let light_strat = LightLevelStrategy::new(
-            seed.wrapping_add(SEED_LIGHT_LEVEL),
-            0.5,
-            1.0,
-            world_width,
-            world_height,
-        );
+        let light_strat = LightLevelStrategy::new(seed.wrapping_add(SEED_LIGHT_LEVEL));
         let pv_strat = PeaksAndValleysStrategy::new(seed.wrapping_add(SEED_PEAKS_VALLEYS));
         let detail_noise = OpenSimplex::new(seed.wrapping_add(SEED_MICRO_DETAIL));
 

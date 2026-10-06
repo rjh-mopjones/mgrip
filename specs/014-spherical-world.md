@@ -1,6 +1,6 @@
 # Spec 014 - A Spherical World
 
-**Status:** In progress. Stage 0 (the geometry module) and stage 1 (noise on the sphere) done.
+**Status:** In progress. Stages 0 (the geometry module), 1 (noise on the sphere) and 2 (light from the sphere) done.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (shared macro data), Spec 013 (uplift terrain)
 **Supersedes:** the cylinder (`wrap.rs`), the light formula in `light_level.rs`, the "terminus is an arc" invariant, `mg_life::Grid`
@@ -145,9 +145,9 @@ sea are functions of light already and do not change. Humidity is rain
 (spec 013 stages 3 and 4, `climate.rs`), carried by the wind, and moves
 onto the sphere with the wind in the next section.
 
-Two places use the row as a stand-in for night and day: `rivers.rs` forces
+Two places used the row as a stand-in for night and day: `rivers.rs` forced
 buried ice in the top fifth of rows and dry wadi in the bottom fifth. They
-say so in latitude, which is now the same thing.
+now say so in latitude (54° either way), which is the same thing.
 
 ### Area, distance and neighbours
 
@@ -182,7 +182,10 @@ say so in latitude, which is now the same thing.
   only exist near the equator, where cells are nearly square, so their look
   should not change.
 - `rim_sea.rs`: the ring is the equator; the strait search runs round the
-  sphere instead of from column 0 to column 1023.
+  sphere instead of from column 0 to column 1023. Seen on seed 42 after
+  stage 2: the one strait it cuts through the land bridge east of the sea
+  is a dead-straight east-west channel. The search should cost its steps
+  by the sphere and prefer the shortest water, not the same row.
 - `biome_map.rs` samplers (`sample_field_smooth`, `sample_field_bilinear`,
   `sample_heightmap_at`, `sample_biome_at_world`, `MacroOceanMask`,
   `FineHeights`, `doubled`, `refined_field`): all wrap `x` and clamp `y`

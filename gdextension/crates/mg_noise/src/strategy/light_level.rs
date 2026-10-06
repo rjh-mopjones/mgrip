@@ -1,37 +1,27 @@
-use mg_core::{NoiseStrategy, Sphere};
+use mg_core::{sphere::Point, NoiseStrategy, Sphere};
 use noise::{NoiseFn, OpenSimplex};
 
-/// Light from the sub-stellar point, with noise warps so the zone edges are
-/// ragged. The noise is sampled on the sphere, so it is seamless (spec 014).
-/// The distance itself is still measured on the flat sheet; spec 014 stage 2
-/// measures it on the sphere.
+/// Light from the sub-stellar point: a function of the angle from it on the
+/// sphere, warped by noise so the zone edges are ragged (spec 014). The
+/// sub-stellar point is the south pole and the anti-stellar point the
+/// north, so on the flat map the light runs in bands across it and the
+/// terminus is the equator ring.
 pub struct LightLevelStrategy {
     noise: OpenSimplex,
-    sub_stellar_x: f64,
-    sub_stellar_y: f64,
-    map_width: f64,
-    map_height: f64,
 }
 
+const SOUTH_POLE: Point = [0.0, 0.0, -1.0];
+/// The warps push a place along its meridian, towards or away from the
+/// sun, by up to this share of the way from pole to pole: a broad swell and
+/// a finer one, each (frequency per world unit, amplitude).
+const WARP_BROAD: (f64, f64) = (0.0015, 0.12);
+const WARP_FINE: (f64, f64) = (0.005, 0.06);
+
 impl LightLevelStrategy {
-    pub fn new(
-        seed: u32,
-        sub_stellar_x: f64,
-        sub_stellar_y: f64,
-        map_width: f64,
-        map_height: f64,
-    ) -> Self {
+    pub fn new(seed: u32) -> Self {
         Self {
             noise: OpenSimplex::new(seed),
-            sub_stellar_x,
-            sub_stellar_y,
-            map_width,
-            map_height,
         }
-    }
-
-    pub fn default_for_map(seed: u32) -> Self {
-        Self::new(seed, 0.5, 1.0, 1024.0, 512.0)
     }
 
     /// One noise sample at `frequency` cycles per world unit; `shift` picks
@@ -58,25 +48,13 @@ impl LightLevelStrategy {
 
 impl NoiseStrategy for LightLevelStrategy {
     fn generate(&self, x: f64, y: f64, _detail_level: u32) -> f64 {
-        let x = x.rem_euclid(self.map_width);
-        let nx = x / self.map_width;
-        let ny = y / self.map_height;
-
-        // Two-pass domain warping for irregular climate zone boundaries
-        let warp1_x = self.warp(x, y, 0.0015, 50.0) * 0.12;
-        let warp1_y = self.warp(x, y, 0.0015, 150.0) * 0.12;
-        let warp2_x = self.warp(x, y, 0.005, 100.0) * 0.06;
-        let warp2_y = self.warp(x, y, 0.005, 200.0) * 0.06;
-
-        // The short way round, east to west.
-        let mut dx = nx - self.sub_stellar_x + warp1_x + warp2_x;
-        if dx > 0.5 {
-            dx -= 1.0;
-        } else if dx < -0.5 {
-            dx += 1.0;
-        }
-        let dy = ny - self.sub_stellar_y + warp1_y + warp2_y;
-        let dist = (dx * dx + dy * dy).sqrt().min(1.0);
+        let sphere = Sphere::MARGIN;
+        // The warps move the place along its meridian before its angle from
+        // the sun is measured; a push east or west would change nothing.
+        let warp = self.warp(x, y, WARP_BROAD.0, 150.0) * WARP_BROAD.1
+            + self.warp(x, y, WARP_FINE.0, 200.0) * WARP_FINE.1;
+        let warped_y = (y + warp * sphere.height()).clamp(0.0, sphere.height());
+        let dist = sphere.angle(sphere.point_at(x, warped_y), SOUTH_POLE) / std::f64::consts::PI;
 
         // Cosine falloff with extra darkening past dist=0.5
         let far_dist = ((dist - 0.5) / 0.5).max(0.0);
@@ -99,7 +77,7 @@ mod tests {
     const WORLD_WIDTH: f64 = 1024.0;
 
     fn strategy() -> LightLevelStrategy {
-        LightLevelStrategy::new(42, 0.5, 1.0, WORLD_WIDTH, 512.0)
+        LightLevelStrategy::new(42)
     }
 
     #[test]
@@ -127,5 +105,31 @@ mod tests {
             light.generate(1000.0, 200.0, 0),
             light.generate(1000.0 - WORLD_WIDTH, 200.0, 0)
         );
+    }
+
+    #[test]
+    fn the_sun_is_overhead_at_the_south_pole_and_the_north_pole_is_dark() {
+        let light = strategy();
+        for x in [0.0, 256.0, 700.0] {
+            assert!(light.generate(x, 512.0, 0) > 0.85, "south pole at x={x}");
+            assert!(light.generate(x, 0.0, 0) < 0.1, "north pole at x={x}");
+        }
+    }
+
+    #[test]
+    fn light_falls_from_south_to_north_round_the_whole_world() {
+        let light = strategy();
+        let mean_at = |y: f64| {
+            (0..64)
+                .map(|i| light.generate(i as f64 * 16.0, y, 0))
+                .sum::<f64>()
+                / 64.0
+        };
+        assert!(mean_at(450.0) > mean_at(300.0));
+        assert!(mean_at(300.0) > mean_at(150.0));
+        assert!(mean_at(150.0) > mean_at(30.0));
+        // The terminus is a band round the equator.
+        let equator = mean_at(256.0);
+        assert!(equator > 0.55 && equator < 0.8, "equator {equator}");
     }
 }

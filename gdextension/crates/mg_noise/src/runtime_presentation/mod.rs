@@ -602,7 +602,10 @@ mod tests {
         // Day-side landforms regenerated again when biomes began reading real
         // elevation and slope (spec 013): these chunks were dune waste and
         // are now flat plain. The night-side landform regenerated when the
-        // noise moved onto the sphere (spec 014, stage 1).
+        // noise moved onto the sphere (spec 014, stage 1). When light became
+        // the angle from the south pole (stage 2) the day-side chunk, off the
+        // centre column, got more light and moved from the margin into the
+        // scorch belt.
 
         // Top row of the map: deep night, a frozen coastal shelf.
         let nightside = build_reference_summary(256.0, 0.0);
@@ -618,7 +621,7 @@ mod tests {
         assert!(nightside.average_temperature < -40.0);
 
         let dayside_margin = build_reference_summary(400.0, 250.0);
-        assert_eq!(dayside_margin.planet_zone, PlanetZone::DryDaysideMargin);
+        assert_eq!(dayside_margin.planet_zone, PlanetZone::ScorchBelt);
         assert_eq!(
             dayside_margin.atmosphere_class,
             AtmosphereClass::HarshAmberHaze
