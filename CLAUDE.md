@@ -115,7 +115,11 @@ Build on these seams. Do not create parallel ownership paths.
   are neighbours
 - Light is distance from the sub-stellar point (bottom centre of the map), so
   the terminus is an arc across the map, not a straight band. This is
-  deliberate: it is a round world. Do not flatten it into a ring
+  deliberate: it is a round world. Do not flatten it into a ring.
+  `specs/014` replaces this: the world is generated on a sphere, the
+  sub-stellar point is its south pole and the terminus is the equator ring,
+  with the flat map an equirectangular projection. Until that lands, the arc
+  stands; do not build new light or climate work on the flat distance
 - Neighbouring chunks share their border samples: a chunk's last column and
   its neighbour's first column are the same world positions and must have the
   same heights. Check with `margins_grip inspect chunk-seam <seed> <x> <y>`
