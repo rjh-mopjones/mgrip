@@ -75,8 +75,12 @@ pub fn open_rim_sea(
                     continue;
                 }
                 let near = near_y as usize * width + (x + dx).rem_euclid(width as i32) as usize;
-                // Deepest along the route, shallowing towards the shore.
-                let bed = sea_level - STRAIT_DEPTH * (1.0 - from_route / (reach as f64 + 1.0));
+                // A flat floor at full depth over the inner half of the
+                // strait, shallowing to the shore beyond it. A floor only
+                // one cell wide would be rounded away where the fine land
+                // is interpolated from the macro cells, and bead into pools.
+                let shore = (1.0 - from_route / (reach as f64 + 1.0)) * 2.0;
+                let bed = sea_level - STRAIT_DEPTH * shore.min(1.0);
                 if continentalness[near] > bed {
                     if continentalness[near] >= sea_level {
                         opened += 1;
