@@ -347,10 +347,9 @@ Lore content:
 
 ## Known issues
 
-- The agent runtime smoke test failed with `action_timed_out` on
-  `move_to_block`: the agent stopped at a chunk boundary. Terrain steps along
-  chunk borders were the likely cause and are fixed, but the smoke test has
-  not been re-run since. Tracked in GitHub issue #3
+- Headless runs print `Parameter "m" is null` from `mesh_get_surface_count`
+  for every road strip `civ_marks.gd` builds: the dummy render server does
+  not track SurfaceTool meshes. Harmless; it does not happen windowed
 - `res://assets/icon.svg` is missing; an error is logged on every launch
 
 ## Git
