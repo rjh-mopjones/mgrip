@@ -108,6 +108,37 @@ impl Sphere {
         [point[0] * scale, point[1] * scale, point[2] * scale]
     }
 
+    /// The directions east and south along the ground at a point. At a
+    /// pole, where there is no east, the x axis stands in.
+    pub fn tangents(point: Point) -> (Point, Point) {
+        let flat = (point[0] * point[0] + point[1] * point[1]).sqrt();
+        let east = if flat < 1e-9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [-point[1] / flat, point[0] / flat, 0.0]
+        };
+        let north = [
+            point[1] * east[2] - point[2] * east[1],
+            point[2] * east[0] - point[0] * east[2],
+            point[0] * east[1] - point[1] * east[0],
+        ];
+        (east, [-north[0], -north[1], -north[2]])
+    }
+
+    /// A point moved along the ground by `east_wu` and `south_wu` world
+    /// units: close for small moves, and a fair warp for larger ones.
+    pub fn moved(&self, point: Point, east_wu: f64, south_wu: f64) -> Point {
+        let (east, south) = Self::tangents(point);
+        let (e, s) = (east_wu / self.radius(), south_wu / self.radius());
+        let moved = [
+            point[0] + east[0] * e + south[0] * s,
+            point[1] + east[1] * e + south[1] * s,
+            point[2] + east[2] * e + south[2] * s,
+        ];
+        let length = (moved[0] * moved[0] + moved[1] * moved[1] + moved[2] * moved[2]).sqrt();
+        [moved[0] / length, moved[1] / length, moved[2] / length]
+    }
+
     /// A raster of `width` by `height` cells over the whole sphere.
     pub fn grid(&self, width: usize, height: usize) -> SphereGrid {
         SphereGrid {

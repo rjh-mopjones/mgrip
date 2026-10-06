@@ -3,24 +3,36 @@ use noise::{NoiseFn, OpenSimplex};
 
 /// Light from the sub-stellar point: a function of the angle from it on the
 /// sphere, warped by noise so the zone edges are ragged (spec 014). The
-/// sub-stellar point is the south pole and the anti-stellar point the
-/// north, so on the flat map the light runs in bands across it and the
-/// terminus is the equator ring.
+/// sub-stellar point sits at the bottom centre of the map, 45° up from the
+/// south pole (spec 015), so the terminator is a great circle that arcs
+/// across the flat map: north of the equator in the middle, south of it at
+/// the edges. Night is deepest at the map's top edges, day hottest at its
+/// bottom centre.
 pub struct LightLevelStrategy {
     noise: OpenSimplex,
 }
 
-const SOUTH_POLE: Point = [0.0, 0.0, -1.0];
-/// The warps push a place along its meridian, towards or away from the
-/// sun, by up to this share of the way from pole to pole: a broad swell and
-/// a finer one, each (frequency per world unit, amplitude).
-const WARP_BROAD: (f64, f64) = (0.0015, 0.12);
-const WARP_FINE: (f64, f64) = (0.005, 0.06);
+/// Where the sun stands: its latitude, and its longitude as a world
+/// position (the middle of the map). −90° would be spec 014's pole sun,
+/// whose light runs in bands across the map.
+pub const SUN_LATITUDE_DEGREES: f64 = -45.0;
+pub const SUN_LONGITUDE_WU: f64 = mg_core::sphere::WORLD_WIDTH / 2.0;
+/// The warps move a place along the ground before its angle from the sun
+/// is measured, so the zones' edges are ragged: a broad swell and a finer
+/// one, each (frequency per world unit, reach in world units).
+const WARP_BROAD: (f64, f64) = (0.0015, 61.0);
+const WARP_FINE: (f64, f64) = (0.005, 31.0);
 /// The cosine of the angle from the sun is raised to this power (its sign
-/// kept): below 1 the light changes fastest at the terminator. 0.5 gives,
-/// on seed 42 by area, about half the world day side, a quarter terminus
-/// and a fifth night.
+/// kept): below 1 the light changes fastest at the terminator, so the
+/// terminus (the zones between light 0.2 and 0.6) is a narrow band.
 const TERMINATOR_STEEPNESS: f64 = 0.5;
+
+/// The sub-stellar point on the unit sphere.
+pub fn sun() -> Point {
+    let sphere = Sphere::MARGIN;
+    let south_of_pole = (90.0 - SUN_LATITUDE_DEGREES) / 180.0 * sphere.height();
+    sphere.point_at(SUN_LONGITUDE_WU, south_of_pole)
+}
 
 impl LightLevelStrategy {
     pub fn new(seed: u32) -> Self {
@@ -54,20 +66,16 @@ impl LightLevelStrategy {
 impl NoiseStrategy for LightLevelStrategy {
     fn generate(&self, x: f64, y: f64, _detail_level: u32) -> f64 {
         let sphere = Sphere::MARGIN;
-        // The warps move the place along its meridian before its angle from
-        // the sun is measured; a push east or west would change nothing.
-        let warp = self.warp(x, y, WARP_BROAD.0, 150.0) * WARP_BROAD.1
+        let east = self.warp(x, y, WARP_BROAD.0, 50.0) * WARP_BROAD.1
+            + self.warp(x, y, WARP_FINE.0, 100.0) * WARP_FINE.1;
+        let south = self.warp(x, y, WARP_BROAD.0, 150.0) * WARP_BROAD.1
             + self.warp(x, y, WARP_FINE.0, 200.0) * WARP_FINE.1;
-        let warped_y = (y + warp * sphere.height()).clamp(0.0, sphere.height());
-        let from_sun = sphere.angle(sphere.point_at(x, warped_y), SOUTH_POLE);
+        let warped = sphere.moved(sphere.point_at(x, y), east, south);
+        let from_sun = sphere.angle(warped, sun());
 
-        // Full under the sun, half at the terminator (the equator), none at
-        // the anti-stellar point, symmetric about the terminator and steep
-        // across it, so the terminus (the zones between light 0.2 and 0.6)
-        // is a narrow band round the equator and the night a hemisphere.
-        // (The flat model's curve had 0.71 at the terminator, which put the
-        // terminus well north of it on the sphere; a plain cosine spread it
-        // over 40% of the world.)
+        // Full under the sun, half at the terminator, none at the
+        // anti-stellar point, symmetric about the terminator and steep
+        // across it.
         let towards_sun = from_sun.cos();
         let base_light =
             0.5 + 0.5 * towards_sun.signum() * towards_sun.abs().powf(TERMINATOR_STEEPNESS);
@@ -119,28 +127,36 @@ mod tests {
     }
 
     #[test]
-    fn the_sun_is_overhead_at_the_south_pole_and_the_north_pole_is_dark() {
+    fn the_sun_stands_over_the_bottom_centre_and_night_lies_at_the_top_edges() {
         let light = strategy();
-        for x in [0.0, 256.0, 700.0] {
-            assert!(light.generate(x, 512.0, 0) > 0.85, "south pole at x={x}");
-            assert!(light.generate(x, 0.0, 0) < 0.1, "north pole at x={x}");
-        }
+        // Under the sun: longitude 512, 45° south.
+        assert!(light.generate(512.0, 384.0, 0) > 0.85);
+        // Opposite it: the map's edge, 45° north.
+        assert!(light.generate(0.0, 128.0, 0) < 0.15);
+        // Both poles are ordinary places now: the north one dim, the south
+        // one bright, neither extreme.
+        assert!(light.generate(300.0, 0.0, 0) < 0.3);
+        assert!(light.generate(300.0, 512.0, 0) > 0.7);
     }
 
     #[test]
-    fn light_falls_from_south_to_north_round_the_whole_world() {
+    fn the_terminus_arcs_across_the_map() {
         let light = strategy();
-        let mean_at = |y: f64| {
-            (0..64)
-                .map(|i| light.generate(i as f64 * 16.0, y, 0))
-                .sum::<f64>()
-                / 64.0
+        // Where light crosses one half, going down a column: north of the
+        // equator in the middle of the map, south of it at the edges.
+        let terminator_row = |x: f64| {
+            (0..512)
+                .map(|row| row as f64)
+                .find(|&y| light.generate(x, y, 0) >= 0.5)
+                .expect("light reaches a half")
         };
-        assert!(mean_at(450.0) > mean_at(300.0));
-        assert!(mean_at(300.0) > mean_at(150.0));
-        assert!(mean_at(150.0) > mean_at(30.0));
-        // The terminus is a band round the equator: half light there.
-        let equator = mean_at(256.0);
-        assert!(equator > 0.4 && equator < 0.6, "equator {equator}");
+        let middle = terminator_row(512.0);
+        let edge = terminator_row(0.0);
+        assert!(
+            middle < 256.0 && edge > 256.0,
+            "middle {middle}, edge {edge}"
+        );
+        // Not stripes: the two differ by a good part of the map's height.
+        assert!(edge - middle > 150.0, "middle {middle}, edge {edge}");
     }
 }

@@ -7,7 +7,7 @@ mod tectonic;
 
 pub use continentalness::ContinentalnessStrategy;
 pub use humidity::HumidityStrategy;
-pub use light_level::LightLevelStrategy;
+pub use light_level::{sun, LightLevelStrategy, SUN_LATITUDE_DEGREES};
 pub use peaks_valleys::PeaksAndValleysStrategy;
 pub use rock_hardness::RockHardnessStrategy;
 pub use tectonic::TectonicPlatesStrategy;

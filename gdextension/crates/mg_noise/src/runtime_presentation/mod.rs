@@ -602,13 +602,15 @@ mod tests {
         // Day-side landforms regenerated again when biomes began reading real
         // elevation and slope (spec 013): these chunks were dune waste and
         // are now flat plain. The night-side landform regenerated when the
-        // noise moved onto the sphere (spec 014, stage 1). Light is the angle
-        // from the south pole (stage 2), half at the equator (stage 6), so
-        // the chunk just north of the equator is day-side margin.
+        // noise moved onto the sphere (spec 014, stage 1). With the sun 45°
+        // up from the south pole at the map's centre (spec 015), the three
+        // chunks are the anti-stellar point at the map's edge, a chunk just
+        // sunward of the terminator in the middle of the map, and the
+        // sub-stellar point.
 
-        // Top row of the map: deep night, a frozen coastal shelf.
-        let nightside = build_reference_summary(256.0, 0.0);
-        assert_eq!(nightside.planet_zone, PlanetZone::FrozenCoast);
+        // Opposite the sun: the map's edge, 45° north.
+        let nightside = build_reference_summary(0.0, 128.0);
+        assert_eq!(nightside.planet_zone, PlanetZone::DeepNightIce);
         assert_eq!(nightside.atmosphere_class, AtmosphereClass::BlackIceDark);
         assert_eq!(nightside.water_state, SurfaceWaterState::None);
         assert_eq!(nightside.landform_class, LandformClass::FlatPlain);
@@ -616,35 +618,33 @@ mod tests {
             nightside.surface_palette_class,
             SurfacePaletteClass::BlackIceRock
         );
-        assert!(nightside.average_light_level < 0.01);
+        assert!(nightside.average_light_level < 0.05);
         assert!(nightside.average_temperature < -40.0);
 
-        let dayside_margin = build_reference_summary(400.0, 250.0);
-        assert_eq!(dayside_margin.planet_zone, PlanetZone::DryDaysideMargin);
+        // A quarter of the way from the terminator to the sun, in the middle
+        // of the map: the scorch belt.
+        let dayside = build_reference_summary(512.0, 200.0);
+        assert_eq!(dayside.planet_zone, PlanetZone::ScorchBelt);
+        assert_eq!(dayside.atmosphere_class, AtmosphereClass::HarshAmberHaze);
+        assert_eq!(dayside.water_state, SurfaceWaterState::None);
+        assert_eq!(dayside.landform_class, LandformClass::FlatPlain);
         assert_eq!(
-            dayside_margin.atmosphere_class,
-            AtmosphereClass::DryTwilight
-        );
-        assert_eq!(dayside_margin.water_state, SurfaceWaterState::None);
-        assert_eq!(dayside_margin.landform_class, LandformClass::FlatPlain);
-        assert_eq!(
-            dayside_margin.surface_palette_class,
+            dayside.surface_palette_class,
             SurfacePaletteClass::ScorchedStone
         );
-        assert!(dayside_margin.average_light_level > 0.45);
+        assert!(dayside.average_light_level > 0.75);
 
-        let inferno = build_reference_summary(500.0, 450.0);
+        // Under the sun: a dried sea bed.
+        let inferno = build_reference_summary(512.0, 384.0);
         assert_eq!(inferno.planet_zone, PlanetZone::SubstellarInferno);
         assert_eq!(inferno.atmosphere_class, AtmosphereClass::BlastedRadiance);
-        // A dried sea bed under the sun, since spec 014 stage 1.
         assert_eq!(inferno.water_state, SurfaceWaterState::EvaporiteBasin);
         assert_eq!(inferno.landform_class, LandformClass::Basin);
         assert_eq!(
             inferno.surface_palette_class,
             SurfacePaletteClass::ScorchedStone
         );
-        assert!(inferno.interestingness_score > 0.03);
-        assert!(inferno.average_light_level > 0.9);
+        assert!(inferno.average_light_level > 0.95);
         assert!(inferno.average_temperature > 100.0);
     }
 
