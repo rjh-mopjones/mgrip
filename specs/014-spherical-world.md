@@ -1,6 +1,6 @@
 # Spec 014 - A Spherical World
 
-**Status:** Implemented, stages 0 to 6. Open questions remain below.
+**Status:** Implemented, stages 0 to 6, then superseded in part by spec 015: the latitude-longitude generation grid pinwheels at the poles and a sun at the pole stripes the map. The geometry module, light as an angle from the sun, areas and great circles stand; the grid and the sun's place are spec 015's.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (shared macro data), Spec 013 (uplift terrain)
 **Supersedes:** the cylinder (`wrap.rs`), the light formula in `light_level.rs`, the "terminus is an arc" invariant, `mg_life::Grid`
