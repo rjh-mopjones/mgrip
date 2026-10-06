@@ -11,6 +11,7 @@ pub mod strategy;
 pub mod terrain_query;
 pub mod terrain_render;
 pub mod visualization;
+pub mod wind;
 pub mod wrap;
 
 pub use biome_map::{

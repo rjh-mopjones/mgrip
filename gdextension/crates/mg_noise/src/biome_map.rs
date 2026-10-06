@@ -28,6 +28,15 @@ use crate::visualization::NoiseLayer;
 
 pub const SEA_LEVEL: f64 = -0.01;
 
+/// A cell with at least this much sand on it (see `BiomeMap::sand`) is a
+/// sand sea.
+const SAND_SEA_FROM: f64 = 0.45;
+
+/// Whether a tile is ice lying on water or land.
+pub fn tile_is_ice(tile: TileType) -> bool {
+    matches!(tile, TileType::White | TileType::IceSheet | TileType::Glacier)
+}
+
 pub fn tile_has_fluid_surface(tile: TileType) -> bool {
     matches!(
         tile,
@@ -358,6 +367,9 @@ pub struct BiomeMap {
 
     pub drainage_area: Vec<u32>,
     pub sediment: Vec<f64>,
+    /// How much wind-blown sand lies on each cell, from 0 (bare) to 1 (a
+    /// sand sea). See `wind.rs`.
+    pub sand: Vec<f64>,
 
     #[serde(skip)]
     pub river_network: Option<Arc<RiverNetwork>>,
@@ -400,6 +412,7 @@ impl BiomeMap {
             soil_type: vec![0.0; n],
             drainage_area: vec![0; n],
             sediment: vec![0.0; n],
+            sand: vec![0.0; n],
             river_network: None,
             fine_heights: None,
             world_width,
@@ -776,6 +789,34 @@ impl BiomeMap {
                 derived::derive_soil_type(biome, map.erosion[i], map.rock_hardness[i]);
         }
 
+        // The wind gathers sand where it slackens; where the sand lies thick
+        // is a sand sea, whatever lay there before (macro only).
+        if run_erosion {
+            let is_water: Vec<bool> = map
+                .biomes
+                .iter()
+                .map(|&biome| tile_has_fluid_surface(biome) || tile_is_ice(biome))
+                .collect();
+            let wind = crate::wind::surface_wind(&map.light_level, &map.heightmap, tile_w, tile_h);
+            map.sand = crate::wind::drifted_sand(
+                &wind,
+                &map.heightmap,
+                &map.sediment,
+                &map.light_level,
+                &is_water,
+                tile_w,
+                tile_h,
+            );
+            for i in 0..tile_w * tile_h {
+                if map.sand[i] >= SAND_SEA_FROM && !is_water[i] {
+                    map.biomes[i] = TileType::Erg;
+                } else if map.biomes[i] == TileType::Erg {
+                    // Sand seas are where the wind leaves sand, nowhere else.
+                    map.biomes[i] = TileType::Desert;
+                }
+            }
+        }
+
         // Apply polar ice cap override
         apply_polar_ice_cap(
             &mut map.biomes,
@@ -1041,6 +1082,23 @@ impl BiomeMap {
                     peaks * mountain_intensity * mountain_detail_gain
                 };
                 let mut hm = (macro_hm + mountain_detail).clamp(-1.0, 1.0);
+                // Where the wind has left a sand sea, the ground is sand and
+                // stands in dunes.
+                let sand = if macro_map.sand.is_empty() {
+                    0.0
+                } else {
+                    macro_map.sample_field_at(&macro_map.sand, wx, wy)
+                };
+                let dry_land = !tile_has_fluid_surface(self.biomes[idx]) && !tile_is_ice(self.biomes[idx]);
+                // (The bed of a dried sea is dry land too, and holds the most.)
+                if dry_land {
+                    if sand >= SAND_SEA_FROM {
+                        self.biomes[idx] = TileType::Erg;
+                    } else if self.biomes[idx] == TileType::Erg {
+                        self.biomes[idx] = TileType::Desert;
+                    }
+                    hm += crate::wind::dune_height(sand, wx, wy, world_size_x / (tile_w - 1) as f64);
+                }
                 if apply_micro_detail {
                     hm = derived::derive_micro_heightmap(hm, wx, wy, &detail_noise);
                 }

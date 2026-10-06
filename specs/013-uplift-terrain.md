@@ -336,7 +336,40 @@ own.
    erosion; nothing is drawn as a glacier. Fjords are few, because most of
    the night-side coast faces a frozen sea, where a fjord cannot be told
    from the ice around it.
-5. **To do: wind.** A wind field and a sand budget; salt where water ends.
+5. **Done: wind and sand** (`wind.rs`).
+   - **Wind.** At the surface the air runs from the dark side to the light
+     side. Rising ground turns it aside. It is fast where the ground stands
+     above the land for 8 world units around, and slack where it lies
+     below: 0.1 to 1.6 of a steady wind.
+   - **Sand.** A desert cell gives up a little sand each step, more the
+     more rock erosion has loosened there, and most from the bed of a dried
+     sea. Each step the wind moves up to 0.8 of a cell's loose sand one
+     cell downwind, less the slacker it is. Sand blown onto water or ice is
+     gone, and outside the desert a quarter of it is lost each step, held
+     and buried by damp ground. After 120 steps what is left lies where the
+     wind slackens: basins and the lee of high ground.
+   - **Sand seas.** A cell with at least 0.45 of a full load of sand is a
+     sand sea (the Erg biome), whatever it was, and nothing else is: the
+     sand seas the old biome rules drew are plain desert now. The scale is
+     set so that about an eighth of the desert qualifies and half of it
+     holds almost none. Most lie on the beds of dried seas, which give up
+     the most sand and are the lowest ground. The macro map keeps the sand
+     as a layer and the macro pack carries it (format MGMP05).
+   - **Dunes.** Where sand lies thicker than 0.3, tiles and chunks raise
+     the ground in dunes, up to 8 blocks high and about 90 blocks apart,
+     long and gentle on the windward side, short on the lee. Their crests
+     run across the wind, as arcs around the sub-stellar point, swinging
+     and breaking as real crests do. They are a function of position, so
+     neighbouring chunks agree, and they fade out on grids too coarse to
+     draw them, which would otherwise show false stripes.
+
+   Seed 42: sand sea is 4.9% of the world.
+
+   Not done: salt as its own deposit. Dried seas and lakes that would dry
+   out are already salt flat by the sea's own rule; nothing new is laid
+   down where a river ends. Dune crests follow the wind's general
+   direction, not the local wind turned by terrain. The sandbox does not
+   show wind or sand.
 
 Two more, asked for on 2026-10-06:
 

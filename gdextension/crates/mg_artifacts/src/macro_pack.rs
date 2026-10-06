@@ -21,7 +21,7 @@ use mg_noise::{generate_macro_probe, BiomeMap, RiverCourse};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-const MAGIC: &[u8; 6] = b"MGMP04";
+const MAGIC: &[u8; 6] = b"MGMP05";
 /// Largest probe difference still counted as the same generator. Allows for
 /// maths library differences between native and web builds.
 const PROBE_TOLERANCE: f32 = 1.0e-4;
@@ -43,6 +43,7 @@ pub struct MacroPack {
     rivers: Vec<f32>,
     temperature: Vec<f32>,
     aridity: Vec<f32>,
+    sand: Vec<f32>,
     biomes: Vec<TileType>,
     fine_heights: Option<PackedHeights>,
     river_courses: Vec<RiverCourse>,
@@ -128,6 +129,7 @@ impl MacroPack {
             rivers: narrowed(&map.rivers),
             temperature: narrowed(&map.temperature),
             aridity: narrowed(&map.aridity),
+            sand: narrowed(&map.sand),
             biomes: map.biomes.clone(),
             fine_heights: map.fine_heights.as_ref().map(PackedHeights::from_heights),
             river_courses: map
@@ -161,6 +163,7 @@ impl MacroPack {
         map.rivers = widened(&self.rivers);
         map.temperature = widened(&self.temperature);
         map.aridity = widened(&self.aridity);
+        map.sand = widened(&self.sand);
         map.biomes = self.biomes.clone();
         map.fine_heights = self.fine_heights.as_ref().map(PackedHeights::to_heights);
         map

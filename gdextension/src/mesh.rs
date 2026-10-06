@@ -550,7 +550,9 @@ mod tests {
             soil_type: vec![0.0; len],
             drainage_area: vec![0; len],
             sediment: vec![0.0; len],
+            sand: vec![0.0; len],
             river_network: None,
+            fine_heights: None,
             world_width: 1024.0,
             world_height: 512.0,
         }

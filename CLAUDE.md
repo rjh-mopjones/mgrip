@@ -188,6 +188,8 @@ What cuts the land depends on the zone (`erosion_sim.rs`): rivers in the
 terminus; ice on the night side, which flows down its own surface, widens
 valleys and can dig below the sea; flood-cut canyons in the desert. Lakes
 are hollows that hold water, kept as a water level beside the heightmap.
+Wind (`wind.rs`) carries desert sand to where it slackens: sand seas are
+placed by that, not by a noise layer, and the ground there stands in dunes.
 Ground below sea level is sea, wherever it came from. All of it has sliders
 in the sandbox; change a default there first, then copy it into the code.
 
