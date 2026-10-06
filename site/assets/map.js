@@ -386,6 +386,7 @@ function renderLegend() {
 		worldMap.roadKinds.forEach((kind, index) => {
 			parts.push(swatch(ROAD_STYLES[index].rgb, kind));
 		});
+		parts.push(swatch(BRIDGE_RGB, "Bridge or ford"));
 	}
 	if (!rawLayer && shown.has("Trade")) {
 		parts.push(
@@ -1064,6 +1065,9 @@ const ROAD_STYLES = [
 	{ from: 6, width: 1, rgb: [70, 58, 96], dash: [4, 3] },
 ];
 const RIVER_RGB = [80, 130, 180];
+const BRIDGE_RGB = [60, 44, 30];
+/// Bridges show from this detail (CSS pixels per chunk).
+const BRIDGES_FROM_DETAIL = 6;
 const RIVER_BANK_RGB = [30, 52, 84];
 /// A river is drawn at least this many CSS pixels wide, so it shows from afar.
 const RIVER_MIN_WIDTH_PX = 1;
@@ -1108,6 +1112,7 @@ function prepareNetwork(network) {
 			...unwrappedLine(road.slice(1), 2, 0.5),
 		})),
 		rivers: network.rivers.map((river) => unwrappedLine(river, 3, 0)),
+		bridges: network.bridges ?? [],
 		trade: network.trade.map(([from, to, value]) => ({
 			value,
 			...unwrappedLine(
@@ -1212,6 +1217,24 @@ function drawRoads() {
 		}
 	}
 	labelContext.setLineDash([]);
+
+	// Where a road crosses a river: a bridge or a ford.
+	if (detail() >= BRIDGES_FROM_DETAIL) {
+		const half = 3 * ratio;
+		labelContext.fillStyle = cssColour(BRIDGE_RGB);
+		labelContext.strokeStyle = cssColour([255, 255, 255], 0.9);
+		labelContext.lineWidth = ratio;
+		for (const [chunkX, chunkY] of worldMap.network.bridges) {
+			const y = screenRow(chunkY + 0.5);
+			if (y < -20 || y > canvas.height + 20) continue;
+			for (const x of screenColumns(chunkX + 0.5)) {
+				labelContext.beginPath();
+				labelContext.rect(x - half, y - half / 2, half * 2, half);
+				labelContext.fill();
+				labelContext.stroke();
+			}
+		}
+	}
 }
 
 // Straight lines from each settlement to its market. Schematic: a line may

@@ -99,6 +99,12 @@ impl TerrainQuery for MockTerrain {
     fn slope_at(&self, _x: usize, _y: usize) -> f64 {
         0.0
     }
+    fn sediment_at(&self, _x: usize, _y: usize) -> f64 {
+        0.0
+    }
+    fn sand_at(&self, _x: usize, _y: usize) -> f64 {
+        0.0
+    }
     fn is_ocean(&self, x: usize, y: usize) -> bool {
         self.in_bounds(x, y) && self.ocean[y * self.width + x]
     }

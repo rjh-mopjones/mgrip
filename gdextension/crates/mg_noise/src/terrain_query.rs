@@ -100,4 +100,11 @@ impl TerrainQuery for BiomeMap {
     fn is_river(&self, x: usize, y: usize) -> bool {
         self.river_at(x, y) > 0.0
     }
+    fn sediment_at(&self, x: usize, y: usize) -> f64 {
+        let most = self.sediment.iter().copied().fold(0.0, f64::max);
+        if most <= 0.0 { 0.0 } else { cell(self, &self.sediment, x, y) / most }
+    }
+    fn sand_at(&self, x: usize, y: usize) -> f64 {
+        cell(self, &self.sand, x, y)
+    }
 }

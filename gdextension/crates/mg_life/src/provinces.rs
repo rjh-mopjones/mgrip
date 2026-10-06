@@ -20,7 +20,7 @@ use std::collections::{BTreeSet, BinaryHeap, VecDeque};
 /// Province seeds are at least this far apart in the most habitable land.
 const MIN_SEED_RADIUS_WU: f64 = 2.0;
 /// Province seeds are this far apart in barren land.
-const MAX_SEED_RADIUS_WU: f64 = 38.0;
+const MAX_SEED_RADIUS_WU: f64 = 32.0;
 /// Barren land is treated as at least this habitable, so it still gets provinces.
 const SEEDING_HABITABILITY_FLOOR: f64 = 0.02;
 /// Safety bound only; seeding normally stops when no more seeds fit.
@@ -38,6 +38,9 @@ const COAST_SEARCH_RADIUS_WU: f64 = 0.375;
 const MAJOR_RIVER_SIZE: f64 = 0.4;
 /// Each stage derives its own random stream from `civ_seed`.
 const PROVINCE_SEED_OFFSET: u32 = 2;
+/// Stepping from one drainage basin into another costs this many times as
+/// much as a step within one.
+const WATERSHED_CROSSING_COST: f32 = 4.0;
 
 const NEIGHBOURS_4: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
@@ -90,7 +93,7 @@ pub fn generate_provinces(
         civ_seed.wrapping_add(PROVINCE_SEED_OFFSET),
     );
     let (mut province_ids, adjacency) =
-        tessellate_provinces(terrain, &seeds, &analysis.navigation_cost, grid);
+        tessellate_provinces(terrain, &seeds, &analysis.navigation_cost, &analysis.basins, grid);
     attach_unreached_land(terrain, &mut province_ids, grid);
     let provinces = bake_province_attributes(
         terrain,
@@ -189,13 +192,15 @@ fn seed_provinces(
 
 /// Grow every seed outward at once (Dijkstra). Each land cell joins the
 /// province that reaches it most cheaply, where easy terrain is cheap to
-/// cross. Ocean stays 0.
+/// cross and a watershed is dear, so provinces fill drainage basins and
+/// their borders fall on the ridges between. Ocean stays 0.
 ///
 /// Returns province ids per cell and the adjacency list indexed by province id.
 fn tessellate_provinces(
     terrain: &dyn TerrainQuery,
     seeds: &[(usize, usize)],
     navigation_cost: &[f32],
+    basins: &[u32],
     grid: Grid,
 ) -> (Vec<u16>, Vec<Vec<u16>>) {
     let (width, height) = (terrain.width(), terrain.height());
@@ -243,7 +248,8 @@ fn tessellate_provinces(
             }
 
             let ease = navigation_cost[neighbour].max(MIN_NAVIGATION_EASE);
-            let step_cost = (1000.0 / ease) as u32;
+            let watershed = if basins[neighbour] != basins[cell] { WATERSHED_CROSSING_COST } else { 1.0 };
+            let step_cost = (1000.0 * watershed / ease) as u32;
             frontier.push((Reverse(cost + step_cost), neighbour as u32, province_id));
         }
     }

@@ -17,13 +17,14 @@ const SETTLEMENT_MIN_SPACING_WU: f64 = 7.5;
 /// Provinces smaller than this (in square world units) hold one settlement.
 const TINY_PROVINCE_AREA_WU2: f64 = 3.125;
 // Province habitability needed for its main settlement to reach each size.
-// Calibrated on seed 42 (`inspect layer-stats`): province mean habitability
-// there has median 0.53, upper quartile 0.74 and 90th percentile 0.78.
-const CITY_MIN_HABITABILITY: f32 = 0.78;
+// Calibrated on seed 42 (`inspect layer-stats`) after the land was grown
+// from uplift (spec 013): province mean habitability there has median 0.49,
+// upper quartile 0.64 and 90th percentile 0.69.
+const CITY_MIN_HABITABILITY: f32 = 0.70;
 /// A province on a major river needs less to hold a city.
-const RIVER_CITY_MIN_HABITABILITY: f32 = 0.70;
-const TOWN_MIN_HABITABILITY: f32 = 0.55;
-const VILLAGE_MIN_HABITABILITY: f32 = 0.30;
+const RIVER_CITY_MIN_HABITABILITY: f32 = 0.64;
+const TOWN_MIN_HABITABILITY: f32 = 0.50;
+const VILLAGE_MIN_HABITABILITY: f32 = 0.28;
 /// Cells at or below this habitability never hold a settlement.
 const MIN_SITE_HABITABILITY: f32 = 0.01;
 
@@ -69,13 +70,13 @@ pub fn place_settlements(
     let width = province_map.width;
     let min_spacing_cells = SETTLEMENT_MIN_SPACING_WU * grid.cells_per_world_unit;
 
-    // Candidate cells per province, best habitability first. The sort is
-    // stable, so equally habitable cells keep scan order.
+    // Candidate cells per province, most appealing first: habitable, and
+    // by preference at a confluence, a river mouth or a shore. The sort is
+    // stable, so equal cells keep scan order.
     let mut candidates: Vec<Vec<(f32, usize)>> = vec![Vec::new(); province_map.provinces.len()];
     for (cell, &province_id) in province_map.province_ids.iter().enumerate() {
-        let habitability = analysis.habitability[cell];
-        if province_id != 0 && habitability > MIN_SITE_HABITABILITY {
-            candidates[(province_id - 1) as usize].push((habitability, cell));
+        if province_id != 0 && analysis.habitability[cell] > MIN_SITE_HABITABILITY {
+            candidates[(province_id - 1) as usize].push((analysis.site_appeal[cell], cell));
         }
     }
     for cells in &mut candidates {
@@ -165,7 +166,7 @@ fn best_sites(
 
 /// Size of a province's main settlement, the one on its best site. A faction's
 /// capital is always a metropolis. Otherwise it follows the province's mean
-/// habitability, which on this world runs from about 0.15 to 0.8: the top
+/// habitability, which on this world runs from about 0.1 to 0.77: the top
 /// tenth of provinces hold a city, the upper half a town.
 fn main_settlement_size(province: &Province, is_capital: bool) -> SizeClass {
     let habitability = province.habitability;
@@ -248,12 +249,12 @@ mod tests {
             main_settlement_size(&province(habitability, 500), is_capital)
         };
         assert_eq!(main(0.5, true), SizeClass::Metropolis);
-        assert_eq!(main(0.8, false), SizeClass::City);
-        assert_eq!(main(0.72, false), SizeClass::Town);
+        assert_eq!(main(0.7, false), SizeClass::City);
+        assert_eq!(main(0.64, false), SizeClass::Town);
         assert_eq!(main(0.4, false), SizeClass::Village);
         assert_eq!(main(0.2, false), SizeClass::Outpost);
 
-        let mut on_major_river = province(0.72, 500);
+        let mut on_major_river = province(0.64, 500);
         on_major_river.is_river_junction = true;
         assert_eq!(main_settlement_size(&on_major_river, false), SizeClass::City);
     }
