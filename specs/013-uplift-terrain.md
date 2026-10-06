@@ -1,6 +1,6 @@
 # Spec 013 - Terrain From Uplift and Erosion
 
-**Status:** In progress. Stage 0 (sandbox), stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) stage 2 (ice, uplift ceilings, terminal lakes) and most of stage 5 (land on a finer grid, river channels) done. Stages 3, 4 and 6 not started.
+**Status:** In progress. Stage 0 (sandbox), stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) stage 2 (ice, uplift ceilings, terminal lakes, then revisited: lakes, canyons, ice flow, wind, rim sea), most of stage 5 (land on a finer grid, river channels) and stage 6 (LifeGen on the land) done. Stages 3 and 4 (climate coupling, biomes from physical fields) not started.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (drainage, river courses)
 **Supersedes:** the noise heightmap, the noise-driven biome inputs, and the "every river reaches the sea" invariant
@@ -400,6 +400,47 @@ Two more, asked for on 2026-10-06:
 Not yet done under 2: closed basins. A lake that loses all its water still
 routes it towards its rim, not its floor, so it has no true shore; the
 river-stub terminal lakes remain for rivers that dry out.
+
+## Stage 6 as built
+
+LifeGen reads the land it is given, through `TerrainQuery`, which now also
+answers `sediment_at` (rock carried away, as a share of the most anywhere)
+and `sand_at`.
+
+- **Provinces fill drainage basins.** Each land cell's basin is found by
+  steepest descent on the heightmap (`compute_basins`). When provinces grow
+  from their seeds, a step into another basin costs four times a step within
+  one, so borders settle on the watersheds between.
+- **Habitability** reads the real land: lowland and upland (to 0.45 and
+  0.85) are fine to live on, the high country is not; the deepest soil is
+  where rivers have carried most rock (`sediment_at`, 12% of the score); a
+  sand sea takes 60% off. Weights: temperature 32, water 26, elevation 18,
+  stability 12, fertility 12.
+- **Settlements stand where people build.** Sites are chosen by appeal:
+  habitability plus a bonus at a river mouth (0.3), a confluence (0.25), a
+  riverside (0.1) or a shore (0.12). All four lore states with river or
+  harbour capitals (Corazon, Furrow, Tidewall, Vestara) now have their
+  capital on a river; Tidewall's is on the coast too.
+- **Roads form a network** (issue #5). Links are routed one at a time,
+  highways first, and ground already carrying a road is easy (0.95), so
+  later roads run along earlier ones and merge into trunks and branches.
+  Crossing a river costs six times the ground, so roads cross at few
+  points; each crossing is recorded as a bridge or ford, exported, and
+  drawn on the map. Each town gets one extra link, not two.
+- **Recalibrated** to the new land: a city at province habitability 0.70
+  (0.64 on a major river), a town at 0.50, a village at 0.28; claimable
+  land at 0.22; seed radii to 32 world units.
+
+Seed 42, civ seed 1: 1224 provinces (44 with a major river); 64 factions,
+all 19 lore states placed and within size; 35% of land claimed, 35%
+unclaimed, 29% uninhabited; 3746 settlements (64 capitals, 54 cities, 392
+towns); 4406 roads with 160 river crossings; 3624 trade flows.
+
+Not done: provinces are still seeded by habitability, so their shapes are
+part basin and part Voronoi; passes are not found as such, roads simply
+take the cheapest line over a ridge; fertility is read from where rock was
+removed, not where it was laid down (there is no deposition in the model);
+nothing in the Godot runtime reads any of it.
 
 ## Costs
 

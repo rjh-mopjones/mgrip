@@ -29,6 +29,14 @@ pub struct AnalysisGrids {
     pub navigation_cost: Vec<f32>,
     /// Geological resource potential, 0.0 to 1.0.
     pub resource_desirability: Vec<f32>,
+    /// The drainage basin each land cell lies in: the sea cell its water
+    /// reaches, or the lowest cell of a basin that reaches none. Ocean is
+    /// `u32::MAX`. Watersheds are where neighbouring cells differ.
+    pub basins: Vec<u32>,
+    /// How good a place a cell is for a settlement: habitability, with a
+    /// bonus at the places people build at, a river's confluence, its
+    /// mouth, a shore. 0.0 to 1.0.
+    pub site_appeal: Vec<f32>,
 }
 
 /// Compute all stage 1 grids. `grid` describes the resolution and shape of the
@@ -38,12 +46,15 @@ pub fn compute_analysis_grids(
     grid: Grid,
 ) -> AnalysisGrids {
     let river_distance = compute_river_distance_field(terrain, grid);
+    let habitability = compute_habitability(terrain, &river_distance, grid);
     AnalysisGrids {
         width: terrain.width(),
         height: terrain.height(),
-        habitability: compute_habitability(terrain, &river_distance, grid),
+        site_appeal: compute_site_appeal(terrain, &habitability, grid),
+        habitability,
         navigation_cost: compute_navigation_cost(terrain, &river_distance, grid),
         resource_desirability: compute_resource_desirability(terrain),
+        basins: compute_basins(terrain, grid),
         river_distance,
     }
 }
@@ -168,27 +179,35 @@ pub fn compute_habitability(
             let water_score =
                 (terrain.humidity_at(x, y) * 0.5 + river_bonus + drainage_score).min(1.0);
 
+            // The land is grown from uplift (spec 013): half of it stands
+            // above 0.38 and a tenth above 0.86. Lowland and upland are fine
+            // to live on; the high country is not.
             let elevation = terrain.heightmap_at(x, y);
             let elevation_score = if elevation < 0.0 {
                 0.2
-            } else if elevation <= 0.3 {
+            } else if elevation <= 0.45 {
                 1.0
-            } else if elevation <= 0.6 {
-                1.0 - (elevation - 0.3) / 0.3 * 0.5
+            } else if elevation <= 0.85 {
+                1.0 - (elevation - 0.45) / 0.4 * 0.6
             } else {
-                0.3 * (1.0 - elevation)
+                0.4 * (1.0 - (elevation - 0.85) / 0.15).max(0.0)
             };
 
-            let slope_penalty =
-                (reference_slope(terrain, x, y, grid) * 5.0).min(1.0);
+            let slope_penalty = (reference_slope(terrain, x, y, grid) * 5.0).min(1.0);
             let tectonic_penalty = (terrain.tectonic_at(x, y) * 0.5).min(0.5);
             let stability_score = (1.0 - slope_penalty - tectonic_penalty).max(0.0);
 
-            let composite = temperature_score * 0.35
-                + water_score * 0.30
-                + elevation_score * 0.20
-                + stability_score * 0.15;
-            row[x] = composite.clamp(0.0, 1.0) as f32;
+            // Rivers lay down what they carry: the most worn country has the
+            // deepest soil. A sand sea has none.
+            let fertility_score = (terrain.sediment_at(x, y) * 2.0).min(1.0);
+            let sand_penalty = 1.0 - terrain.sand_at(x, y) * SAND_SEA_HABITABILITY_LOSS;
+
+            let composite = temperature_score * 0.32
+                + water_score * 0.26
+                + elevation_score * 0.18
+                + stability_score * 0.12
+                + fertility_score * 0.12;
+            row[x] = (composite * sand_penalty).clamp(0.0, 1.0) as f32;
         }
     });
 
@@ -239,6 +258,118 @@ pub fn compute_navigation_cost(
     });
 
     scores
+}
+
+/// A full sand sea takes this share off a cell's habitability.
+const SAND_SEA_HABITABILITY_LOSS: f64 = 0.6;
+/// Bonuses to site appeal, added to habitability.
+const CONFLUENCE_APPEAL: f32 = 0.25;
+const RIVER_MOUTH_APPEAL: f32 = 0.3;
+const SHORE_APPEAL: f32 = 0.12;
+const RIVERSIDE_APPEAL: f32 = 0.1;
+
+/// Where people build: on a river, most of all where two rivers meet or a
+/// river meets the sea, and along a shore.
+pub fn compute_site_appeal(terrain: &dyn TerrainQuery, habitability: &[f32], grid: Grid) -> Vec<f32> {
+    let (width, height) = (terrain.width(), terrain.height());
+    let is_water = |x: i32, y: i32| -> bool {
+        if y < 0 || y >= height as i32 {
+            return false;
+        }
+        grid.step_x(0, x, width).is_some_and(|x| terrain.is_ocean(x as usize, y as usize))
+    };
+    let is_river = |x: i32, y: i32| -> bool {
+        if y < 0 || y >= height as i32 {
+            return false;
+        }
+        grid.step_x(0, x, width).is_some_and(|x| terrain.is_river(x as usize, y as usize))
+    };
+    (0..width * height)
+        .map(|cell| {
+            let (x, y) = ((cell % width) as i32, (cell / width) as i32);
+            if habitability[cell] <= 0.0 {
+                return 0.0;
+            }
+            let neighbours = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)];
+            let water_beside = neighbours.iter().any(|&(dx, dy)| is_water(x + dx, y + dy));
+            let rivers_beside = neighbours.iter().filter(|&&(dx, dy)| is_river(x + dx, y + dy)).count();
+            let on_river = is_river(x, y);
+            let bonus = if on_river && water_beside {
+                RIVER_MOUTH_APPEAL
+            } else if on_river && rivers_beside >= 3 {
+                CONFLUENCE_APPEAL
+            } else if on_river {
+                RIVERSIDE_APPEAL
+            } else if water_beside {
+                SHORE_APPEAL
+            } else {
+                0.0
+            };
+            (habitability[cell] + bonus).min(1.0)
+        })
+        .collect()
+}
+
+/// The drainage basin of every land cell: follow the steepest descent over
+/// the heightmap until it reaches the sea or a cell with nowhere lower to
+/// go, and label the cell with where it ended. Ocean is `u32::MAX`.
+pub fn compute_basins(terrain: &dyn TerrainQuery, grid: Grid) -> Vec<u32> {
+    let (width, height) = (terrain.width(), terrain.height());
+    let total = width * height;
+    // Where each cell's water goes next, or itself if nowhere.
+    let next: Vec<u32> = (0..total)
+        .map(|cell| {
+            let (x, y) = (cell % width, cell / width);
+            if terrain.is_ocean(x, y) {
+                return u32::MAX;
+            }
+            let here = terrain.heightmap_at(x, y);
+            let mut lowest = (cell as u32, here);
+            for (dx, dy) in [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)] {
+                let ny = y as i32 + dy;
+                let Some(nx) = grid.step_x(x, dx, width) else { continue };
+                if ny < 0 || ny >= height as i32 {
+                    continue;
+                }
+                let (nx, ny) = (nx as usize, ny as usize);
+                let there = if terrain.is_ocean(nx, ny) { f64::NEG_INFINITY } else { terrain.heightmap_at(nx, ny) };
+                let distance = if dx != 0 && dy != 0 { std::f64::consts::SQRT_2 } else { 1.0 };
+                let fall = (here - there) / distance;
+                if fall > here - lowest.1 && there < lowest.1 {
+                    lowest = ((ny * width + nx) as u32, there);
+                }
+            }
+            lowest.0
+        })
+        .collect();
+    let mut basin = vec![u32::MAX; total];
+    for start in 0..total {
+        if next[start] == u32::MAX || basin[start] != u32::MAX {
+            continue;
+        }
+        // Walk down, remembering the way, until a labelled cell or an end.
+        let mut path = vec![start];
+        let mut cell = start;
+        let label = loop {
+            let down = next[cell] as usize;
+            if next[cell] == u32::MAX || down == cell {
+                break cell as u32;
+            }
+            if basin[down] != u32::MAX {
+                break basin[down];
+            }
+            let (x, y) = (down % width, down / width);
+            if terrain.is_ocean(x, y) {
+                break down as u32;
+            }
+            path.push(down);
+            cell = down;
+        };
+        for cell in path {
+            basin[cell] = label;
+        }
+    }
+    basin
 }
 
 /// Geological resource potential, 0.0 to 1.0:

@@ -441,6 +441,15 @@ Resulting land-cell distributions (p5 / median / p95): habitability
 0.20 / 0.36 / 0.75, navigation cost 0.09 / 0.29 / 0.85, resource
 desirability 0.25 / 0.34 / 0.55.
 
+## Stage 6 of spec 013: LifeGen on the grown land
+
+Spec 013 changed the land and then this crate's reading of it: provinces
+fill drainage basins, settlements prefer river mouths, confluences and
+shores, roads share routes and cross rivers at recorded bridges, and
+habitability reads sediment and sand. The rules and figures are in
+`specs/013-uplift-terrain.md`, "Stage 6 as built"; the per-stage results
+above predate it.
+
 ## Figures after the erosion rework (spec 012)
 
 The per-stage results above were measured before rivers were limited to

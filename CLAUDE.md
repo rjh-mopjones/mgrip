@@ -21,6 +21,10 @@ cell per chunk).
   `gdextension/data/lifegen_names.ron`. Change names there, not in code
 - A "major river" is read from the macro river layer, whose value is the
   river's relative size (`TerrainQuery::river_at`)
+- Provinces fill drainage basins (`compute_basins`); settlements are placed
+  by site appeal (river mouths, confluences, shores); roads are routed one
+  at a time over shared ground and record their river crossings. See
+  `specs/013`, "Stage 6 as built", before changing any of it
 - Every stage takes an `mg_life::Grid` (resolution + whether the grid is a
   ring). Measure distances and step between columns through it, never with
   raw `x` arithmetic, so the east-west seam is handled in one place

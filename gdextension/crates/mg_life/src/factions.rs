@@ -21,7 +21,7 @@ const CAPITAL_MIN_HABITABILITY: f32 = 0.35;
 /// A province must be at least this habitable to be claimed at all. On seed 42
 /// about a tenth of provinces fall below it: the sub-stellar desert and the
 /// deepest night.
-const CLAIMABLE_MIN_HABITABILITY: f32 = 0.25;
+const CLAIMABLE_MIN_HABITABILITY: f32 = 0.22;
 /// Provinces above this habitability count towards the number of factions.
 const COUNTED_MIN_HABITABILITY: f32 = 0.15;
 const CAPITAL_RIVER_BONUS: f32 = 0.2;

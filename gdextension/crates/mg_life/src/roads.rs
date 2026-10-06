@@ -10,7 +10,6 @@
 
 use crate::grid::Grid;
 use crate::settlements::{Settlement, SizeClass};
-use rayon::prelude::*;
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
 
@@ -20,7 +19,14 @@ const EXTRA_CAPITAL_LINK_MAX_WU: f64 = 187.5;
 /// Towns and larger link to nearby towns and larger within this distance...
 const TOWN_LINK_MAX_WU: f64 = 37.5;
 /// ...up to this many extra links each.
-const TOWN_EXTRA_LINKS: usize = 2;
+const TOWN_EXTRA_LINKS: usize = 1;
+/// Ground that already carries a road is at least this easy to travel, so
+/// later roads run along earlier ones and merge into a network instead of
+/// each taking its own line.
+const ROAD_EASE: f32 = 0.95;
+/// Crossing a river costs this much more than the ground would, over and
+/// above the river's own hard going, so roads cross at few points.
+const RIVER_CROSSING_COST: f32 = 6.0;
 /// A highway is routed through towns lying this close to its straight line...
 const WAYPOINT_CORRIDOR_WU: f64 = 25.0;
 /// ...that are at least this far from either end...
@@ -62,6 +68,8 @@ pub struct Road {
     pub path: Vec<(usize, usize)>,
     /// Travel cost of the full route: distance in cells weighted by terrain.
     pub cost: f32,
+    /// Cells where the road crosses a river: a bridge or a ford at each.
+    pub crossings: Vec<(usize, usize)>,
 }
 
 /// A cell position that may lie beyond the grid's east or west edge. Routes
@@ -70,10 +78,16 @@ pub struct Road {
 type Unwrapped = (i64, i64);
 
 /// Build the road network. `navigation_cost` is the stage 1 grid: 0.0
-/// impassable, 1.0 trivial. Deterministic; uses no seed.
+/// impassable, 1.0 trivial; `river_distance` is its distance to the nearest
+/// river, in cells. Deterministic; uses no seed.
+///
+/// Roads are routed one at a time, highways first, and ground that already
+/// carries a road is easy, so later roads join earlier ones: the result is
+/// a network of trunks and branches, not a tangle of separate lines.
 pub fn build_roads(
     settlements: &[Settlement],
     navigation_cost: &[f32],
+    river_distance: &[f32],
     width: usize,
     height: usize,
     grid: Grid,
@@ -81,38 +95,55 @@ pub fn build_roads(
     if settlements.len() < 2 {
         return Vec::new();
     }
-    let links = choose_links(settlements, grid);
+    let mut links = choose_links(settlements, grid);
+    links.sort_by_key(|&(a, b, kind)| (kind, a, b));
     let padding = (SEARCH_PADDING_WU * grid.cells_per_world_unit).ceil() as i64;
     let tolerance = SIMPLIFY_TOLERANCE_WU * grid.cells_per_world_unit;
+    let is_river = |cell: usize| river_distance[cell] < 1.0;
+    // A river is hard to cross, and harder still away from a road already
+    // crossing it. The ease grid is updated as roads are built.
+    let mut ease: Vec<f32> = navigation_cost
+        .iter()
+        .enumerate()
+        .map(|(cell, &ease)| if is_river(cell) { ease / RIVER_CROSSING_COST } else { ease })
+        .collect();
 
-    links
-        .par_iter()
-        .filter_map(|&(a, b, kind)| {
-            let (from, to) = (&settlements[a], &settlements[b]);
-            if grid.distance(from.position, to.position)
-                > MAX_ROAD_LENGTH_WU * grid.cells_per_world_unit
-            {
-                return None;
+    let mut roads = Vec::with_capacity(links.len());
+    for (a, b, kind) in links {
+        let (from, to) = (&settlements[a], &settlements[b]);
+        if grid.distance(from.position, to.position) > MAX_ROAD_LENGTH_WU * grid.cells_per_world_unit {
+            continue;
+        }
+        let start = (from.position.0 as i64, from.position.1 as i64);
+        let goal = (
+            start.0 + grid.dx(from.position.0, to.position.0) as i64,
+            to.position.1 as i64,
+        );
+        let bounds = SearchBounds::around(start, goal, padding, width, height, grid);
+        let Some((path, cost)) = find_route(start, goal, &ease, width, bounds) else {
+            continue;
+        };
+        let on_grid = |&(x, y): &Unwrapped| (x.rem_euclid(width as i64) as usize, y as usize);
+        let mut crossings = Vec::new();
+        for cell in path.iter().map(on_grid) {
+            let index = cell.1 * width + cell.0;
+            if is_river(index) && navigation_cost[index] > 0.0 {
+                crossings.push(cell);
             }
-            let start = (from.position.0 as i64, from.position.1 as i64);
-            let goal = (
-                start.0 + grid.dx(from.position.0, to.position.0) as i64,
-                to.position.1 as i64,
-            );
-            let bounds = SearchBounds::around(start, goal, padding, width, height, grid);
-            let (path, cost) = find_route(start, goal, navigation_cost, width, bounds)?;
-            Some(Road {
-                from_settlement: from.id,
-                to_settlement: to.id,
-                kind,
-                path: simplify_path(&path, tolerance)
-                    .into_iter()
-                    .map(|(x, y)| (x.rem_euclid(width as i64) as usize, y as usize))
-                    .collect(),
-                cost,
-            })
-        })
-        .collect()
+            if navigation_cost[index] > 0.0 {
+                ease[index] = ease[index].max(ROAD_EASE);
+            }
+        }
+        roads.push(Road {
+            from_settlement: from.id,
+            to_settlement: to.id,
+            kind,
+            path: simplify_path(&path, tolerance).iter().map(on_grid).collect(),
+            cost,
+            crossings,
+        });
+    }
+    roads
 }
 
 fn unwrapped_distance(a: Unwrapped, b: Unwrapped) -> f64 {
@@ -143,7 +174,7 @@ fn road_kind(a: &Settlement, b: &Settlement) -> RoadKind {
 /// `settlements`:
 /// 1. a minimum spanning tree over all settlements, so everything connects;
 /// 2. a spanning tree over capitals, plus one extra nearby capital each;
-/// 3. up to two extra links from each town or larger to nearby ones;
+/// 3. one extra link from each town or larger to the nearest other;
 /// 4. highways split to pass through towns along their way.
 fn choose_links(settlements: &[Settlement], grid: Grid) -> Vec<(usize, usize, RoadKind)> {
     let positions: Vec<(usize, usize)> = settlements.iter().map(|s| s.position).collect();
@@ -537,7 +568,7 @@ mod tests {
             settlement(1, (2, 5), SizeClass::Village),
             settlement(2, (17, 5), SizeClass::Village),
         ];
-        let roads = build_roads(&settlements, &vec![1.0; 20 * 10], 20, 10, FLAT);
+        let roads = build_roads(&settlements, &vec![1.0; 20 * 10], &vec![f32::MAX; 20 * 10], 20, 10, FLAT);
 
         assert_eq!(roads.len(), 1);
         assert_eq!(roads[0].path.first(), Some(&(2, 5)));
@@ -554,8 +585,8 @@ mod tests {
         ];
         let open_ground = vec![1.0; 100 * 10];
 
-        let flat = build_roads(&settlements, &open_ground, 100, 10, FLAT);
-        let ring = build_roads(&settlements, &open_ground, 100, 10, Grid::ring(1.0, 100));
+        let flat = build_roads(&settlements, &open_ground, &vec![f32::MAX; 100 * 10], 100, 10, FLAT);
+        let ring = build_roads(&settlements, &open_ground, &vec![f32::MAX; 100 * 10], 100, 10, Grid::ring(1.0, 100));
 
         assert!((flat[0].cost - 95.0).abs() < 0.01);
         assert!((ring[0].cost - 5.0).abs() < 0.01);
@@ -573,7 +604,7 @@ mod tests {
         ];
         let cells = grid_with_wall(100, 10, 0, None);
 
-        assert!(build_roads(&settlements, &cells, 100, 10, Grid::ring(1.0, 100)).is_empty());
+        assert!(build_roads(&settlements, &cells, &vec![f32::MAX; 100 * 10], 100, 10, Grid::ring(1.0, 100)).is_empty());
     }
 
     #[test]
@@ -598,7 +629,7 @@ mod tests {
         ];
         let cells = grid_with_wall(20, 10, 10, None);
 
-        assert!(build_roads(&settlements, &cells, 20, 10, FLAT).is_empty());
+        assert!(build_roads(&settlements, &cells, &vec![f32::MAX; 20 * 10], 20, 10, FLAT).is_empty());
     }
 
     #[test]
@@ -612,7 +643,7 @@ mod tests {
                 )
             })
             .collect();
-        let roads = build_roads(&settlements, &vec![1.0; 40 * 20], 40, 20, FLAT);
+        let roads = build_roads(&settlements, &vec![1.0; 40 * 20], &vec![f32::MAX; 40 * 20], 40, 20, FLAT);
 
         let mut reached = BTreeSet::from([1u32]);
         loop {
@@ -679,4 +710,29 @@ mod tests {
         assert_eq!(simplify_path(&straight, 0.4), vec![(0, 3), (9, 3)]);
         assert_eq!(simplify_path(&bent, 0.4), bent.to_vec());
     }
+
+    #[test]
+    fn later_roads_run_along_earlier_ones_and_rivers_are_crossed_where_a_road_is() {
+        // Two villages south of a town, across a river running along row 5.
+        let settlements = vec![
+            settlement(1, (10, 2), SizeClass::Town),
+            settlement(2, (8, 8), SizeClass::Village),
+            settlement(3, (12, 8), SizeClass::Village),
+        ];
+        let (width, height) = (20, 10);
+        let river_distance: Vec<f32> = (0..width * height)
+            .map(|cell: usize| (cell / width).abs_diff(5) as f32)
+            .collect();
+
+        let roads = build_roads(&settlements, &vec![1.0; width * height], &river_distance, width, height, FLAT);
+
+        assert!(!roads.is_empty());
+        let crossings: std::collections::BTreeSet<(usize, usize)> =
+            roads.iter().flat_map(|road| road.crossings.iter().copied()).collect();
+        // Both villages reach the town over the river, by one crossing: the
+        // second road to cross followed the first.
+        assert!(roads.iter().filter(|road| !road.crossings.is_empty()).count() >= 1);
+        assert_eq!(crossings.len(), 1, "{crossings:?}");
+    }
+
 }

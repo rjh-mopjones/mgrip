@@ -1210,6 +1210,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
     let roads = mg_life::build_roads(
         &settlements,
         &analysis.navigation_cost,
+        &analysis.river_distance,
         map.width,
         map.height,
         grid,
@@ -1401,6 +1402,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     let roads = mg_life::build_roads(
         &settlements,
         &analysis.navigation_cost,
+        &analysis.river_distance,
         province_map.width,
         province_map.height,
         grid,
@@ -1446,6 +1448,13 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
                     .chain(road.path.iter().flat_map(|&(x, y)| [x, y]))
                     .collect::<Vec<_>>()
             })
+            .collect::<Vec<_>>(),
+        // [x, y] of every river crossing: a bridge or a ford
+        "bridges": roads
+            .iter()
+            .flat_map(|road| road.crossings.iter().map(|&(x, y)| [x, y]))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>(),
         // [index of the source settlement, index of its market, value]
         "trade": trade_flows

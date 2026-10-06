@@ -121,6 +121,7 @@ mod tests {
             kind: RoadKind::Trail,
             path: vec![],
             cost: 1.0,
+            crossings: vec![],
         }
     }
 
