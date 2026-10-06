@@ -289,6 +289,8 @@ function renderPage(page: {
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Public+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/assets/site.css">
+<script>try{const t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch{}</script>
+<script src="/assets/theme.js" defer></script>
 ${scripts}
 </head>
 <body>
@@ -296,6 +298,7 @@ ${scripts}
   <nav class="nav" aria-label="Site">
     <strong>Margin's Grip</strong>
     ${navLinks}
+    <button type="button" class="plain theme-toggle" id="themeToggle">Dark</button>
   </nav>
   <main>
 ${page.body}

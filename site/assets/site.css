@@ -11,6 +11,29 @@
 	--gutter: clamp(16px, 4vw, 40px);
 	color-scheme: light;
 }
+/* Dark: the same sheet by lamplight. Follows the OS unless the toggle has set a theme. */
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--bg: #151b25;
+		--paper: #0e1219;
+		--grid: #1b222d;
+		--text: #dde4ee;
+		--muted: #97a5b8;
+		--line: #3b4858;
+		--accent: #8db1f3;
+		color-scheme: dark;
+	}
+}
+:root[data-theme="dark"] {
+	--bg: #151b25;
+	--paper: #0e1219;
+	--grid: #1b222d;
+	--text: #dde4ee;
+	--muted: #97a5b8;
+	--line: #3b4858;
+	--accent: #8db1f3;
+	color-scheme: dark;
+}
 * {
 	box-sizing: border-box;
 }
@@ -89,6 +112,17 @@ a {
 .nav a[aria-current="page"] {
 	color: var(--accent);
 	font-weight: 600;
+}
+.theme-toggle {
+	padding: 2px 8px;
+	border-color: var(--line);
+	color: var(--muted);
+	font-size: 0.8125rem;
+	font-weight: 400;
+}
+.theme-toggle:hover {
+	border-color: var(--text);
+	color: var(--text);
 }
 main {
 	padding: 28px var(--gutter) 64px;
@@ -386,7 +420,7 @@ dialog {
 	color: var(--text);
 }
 dialog::backdrop {
-	background: rgba(20, 35, 59, 0.6);
+	background: rgba(8, 12, 20, 0.65);
 }
 .play-head {
 	display: flex;
