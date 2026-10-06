@@ -590,7 +590,8 @@ function tileScreenRect(tile) {
 	if (!rect) return null;
 	// Edges bow outwards between the sampled points; allow for it.
 	const slack =
-		4 * window.devicePixelRatio + (rect[2] - rect[0] + rect[3] - rect[1]) * 0.05;
+		4 * window.devicePixelRatio +
+		(rect[2] - rect[0] + rect[3] - rect[1]) * 0.05;
 	return [
 		Math.floor(rect[0] - slack),
 		Math.floor(rect[1] - slack),
@@ -1288,11 +1289,19 @@ const SETTLEMENT_STYLES = [
 /// Settlement names are this many CSS pixels high, largest size first.
 const SETTLEMENT_NAME_SIZES = [13, 12, 11, 10, 10, 10];
 // Indexed like `road_kinds` in network.json. `width` is in CSS pixels.
+// Highways and roads are cased: a darker line under the fill, so they read
+// over any ground. Trails are a bare dashed line. Widths are in CSS pixels
+// at the detail they first show, and grow a little as the map zooms in.
 const ROAD_STYLES = [
-	{ from: 0, width: 1.5, rgb: [255, 255, 255] },
-	{ from: 3, width: 1.2, rgb: [240, 200, 144] },
+	{ from: 0, width: 1.6, rgb: [255, 255, 255], casing: [62, 50, 40] },
+	{ from: 3, width: 1.2, rgb: [240, 200, 144], casing: [62, 50, 40] },
 	{ from: 6, width: 1, rgb: [70, 58, 96], dash: [4, 3] },
 ];
+/// How much wider than its fill a road's casing is, in CSS pixels.
+const ROAD_CASING_EXTRA = 1.4;
+/// Roads widen by this share of their width per doubling of detail past
+/// the detail they first show at, up to twice their width.
+const ROAD_WIDTH_GROWTH = 0.35;
 const RIVER_RGB = [80, 130, 180];
 const BRIDGE_RGB = [60, 44, 30];
 /// Bridges show from this detail (CSS pixels per chunk).
@@ -1433,14 +1442,10 @@ function drawRoads() {
 	const ratio = window.devicePixelRatio;
 	labelContext.lineCap = "round";
 	labelContext.lineJoin = "round";
-	for (let kind = ROAD_STYLES.length - 1; kind >= 0; kind--) {
-		const style = ROAD_STYLES[kind];
-		if (detail() < style.from) continue;
-		labelContext.strokeStyle = cssColour(style.rgb, 0.9);
-		labelContext.lineWidth = style.width * ratio;
-		labelContext.setLineDash(
-			(style.dash ?? []).map((length) => length * ratio),
-		);
+	const strokeKind = (kind, colour, width, dash) => {
+		labelContext.strokeStyle = colour;
+		labelContext.lineWidth = width * ratio;
+		labelContext.setLineDash(dash.map((length) => length * ratio));
 		for (const road of worldMap.network.roads) {
 			if (road.kind !== kind) continue;
 			forEachVisibleLap(road.box, (toScreen) => {
@@ -1448,6 +1453,33 @@ function drawRoads() {
 				labelContext.stroke();
 			});
 		}
+	};
+	const widthOf = (style) => {
+		const doublings = Math.log2(
+			Math.max(1, detail() / Math.max(1, style.from)),
+		);
+		return style.width * Math.min(2, 1 + ROAD_WIDTH_GROWTH * doublings);
+	};
+	// Casings first, under every fill, so roads join cleanly where they meet.
+	for (let kind = ROAD_STYLES.length - 1; kind >= 0; kind--) {
+		const style = ROAD_STYLES[kind];
+		if (detail() < style.from || !style.casing) continue;
+		strokeKind(
+			kind,
+			cssColour(style.casing, 0.9),
+			widthOf(style) + ROAD_CASING_EXTRA,
+			[],
+		);
+	}
+	for (let kind = ROAD_STYLES.length - 1; kind >= 0; kind--) {
+		const style = ROAD_STYLES[kind];
+		if (detail() < style.from) continue;
+		strokeKind(
+			kind,
+			cssColour(style.rgb, 0.95),
+			widthOf(style),
+			style.dash ?? [],
+		);
 	}
 	labelContext.setLineDash([]);
 
@@ -1791,7 +1823,8 @@ labelCanvas.addEventListener("pointermove", (event) => {
 	draw();
 });
 labelCanvas.addEventListener("pointerup", (event) => {
-	const chunk = press && !press.dragged && chunkUnder(event.offsetX, event.offsetY);
+	const chunk =
+		press && !press.dragged && chunkUnder(event.offsetX, event.offsetY);
 	if (chunk) {
 		moveSpawn(chunk.x, chunk.y);
 		selectProvince(provinceUnder(event.offsetX, event.offsetY));
