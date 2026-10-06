@@ -488,10 +488,14 @@ says where the player stands ("Miststone, Corazon   nearest: Violetta
 load: a post with its name at each settlement, taller for a larger one;
 roads as strips over the terrain along the straight stretches of their
 simplified paths, clipped to each chunk; a slab where a road crosses a
-river. Strips sample the surface every 16 blocks, so over rough ground
-they cut through ridges rather than follow them; and a road's straight
-stretch between two distant path points is not the route the road finder
-took. Both wait on routing roads within a chunk.
+river. Within a chunk each stretch is routed over the chunk's own
+heights, on a grid of 32 cells a side, with climbing dear (a step costs
+`run * (1 + 6 * rise / run)^2`), so roads follow valleys and go round
+hills at block scale; the ends are kept exactly, so neighbouring chunks
+meet. The strip is a mesh laid 0.6 blocks over the surface, sampled every
+4 blocks, so it is still partly hidden where the voxel ground steps up
+between samples. Cutting the road into the voxels themselves is a
+chunk-mesh change, not done.
 
 Not done: provinces are still seeded by habitability, so their shapes are
 part basin and part Voronoi; passes are not found as such, roads simply

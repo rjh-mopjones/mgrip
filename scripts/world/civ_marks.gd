@@ -20,9 +20,16 @@ const ROAD_COLOURS := {
 	"Highway": Color(0.93, 0.90, 0.82), "Road": Color(0.78, 0.68, 0.52), "Trail": Color(0.45, 0.38, 0.33),
 }
 ## A road strip follows the surface sampled every this many blocks.
-const ROAD_SAMPLE_BLOCKS := 16
+const ROAD_SAMPLE_BLOCKS := 4
+## Roads are routed through the chunk on a grid of this many cells a side
+## (16 blocks each), over the chunk's own heights.
+const ROUTE_CELLS := 32
+## How dear climbing is: a step rises `rise` blocks over `run` blocks and
+## costs `run * (1 + ROUTE_SLOPE_COST * rise / run)^2`. At 1.0 a 1-in-1
+## slope costs four times level ground; a road would rather go round.
+const ROUTE_SLOPE_COST := 6.0
 ## Marks float this far above the surface so they are not buried in it.
-const ABOVE_SURFACE := 0.4
+const ABOVE_SURFACE := 0.6
 ## Chunks this many away from the player, and closer, get marks.
 const MARK_RADIUS_CHUNKS := 2
 
@@ -128,7 +135,106 @@ func _add_road(holder: Node3D, chunk: Vector2i, road: Dictionary) -> void:
 		return
 	var kind: String = road.get("kind", "Trail")
 	var width: float = ROAD_WIDTHS.get(kind, 2.5)
-	_add_strip(holder, clipped[0], clipped[1], width, _flat_material(ROAD_COLOURS.get(kind, Color.GRAY)))
+	var route := _route_in_chunk(clipped[0], clipped[1], origin, side)
+	_add_strip(holder, route, width, _flat_material(ROAD_COLOURS.get(kind, Color.GRAY)))
+
+## The way a road takes through the chunk from where it enters to where it
+## leaves: the cheapest path over the chunk's own heights on a coarse grid,
+## where climbing is dear, so the road follows valleys and goes round
+## hills. The two ends are kept exactly, so neighbouring chunks meet.
+func _route_in_chunk(enter: Vector3, leave: Vector3, origin: Vector3, side: float) -> Array:
+	var cell := side / float(ROUTE_CELLS)
+	var nodes := ROUTE_CELLS + 1
+	var to_node := func(p: Vector3) -> Vector2i:
+		return Vector2i(
+			clampi(int(round((p.x - origin.x) / cell)), 0, ROUTE_CELLS),
+			clampi(int(round((p.z - origin.z) / cell)), 0, ROUTE_CELLS),
+		)
+	var at := func(n: Vector2i) -> Vector3:
+		var x := origin.x + n.x * cell
+		var z := origin.z + n.y * cell
+		return Vector3(x, _surface_at(x, z), z)
+	var start: Vector2i = to_node.call(enter)
+	var goal: Vector2i = to_node.call(leave)
+	if start == goal:
+		return [enter, leave]
+
+	# Dijkstra over the grid. Small enough (33 x 33) for a plain array scan.
+	var best := PackedFloat32Array()
+	best.resize(nodes * nodes)
+	best.fill(INF)
+	var came_from := PackedInt32Array()
+	came_from.resize(nodes * nodes)
+	came_from.fill(-1)
+	var done := PackedByteArray()
+	done.resize(nodes * nodes)
+	var heights := PackedFloat32Array()
+	heights.resize(nodes * nodes)
+	for i in range(nodes * nodes):
+		var node_position: Vector3 = at.call(Vector2i(i % nodes, i / nodes))
+		heights[i] = node_position.y
+	var index := func(n: Vector2i) -> int: return n.y * nodes + n.x
+	best[index.call(start)] = 0.0
+	var open: Array = [[0.0, index.call(start)]]
+	var goal_index: int = index.call(goal)
+	while not open.is_empty():
+		# Pop the cheapest.
+		var cheapest := 0
+		for i in range(1, open.size()):
+			if open[i][0] < open[cheapest][0]:
+				cheapest = i
+		var popped: Array = open.pop_at(cheapest)
+		var current: int = popped[1]
+		if done[current]:
+			continue
+		done[current] = 1
+		if current == goal_index:
+			break
+		var cx := current % nodes
+		var cy := current / nodes
+		for dy: int in [-1, 0, 1]:
+			for dx: int in [-1, 0, 1]:
+				if dx == 0 and dy == 0:
+					continue
+				var nx: int = cx + dx
+				var ny: int = cy + dy
+				if nx < 0 or nx >= nodes or ny < 0 or ny >= nodes:
+					continue
+				var next: int = ny * nodes + nx
+				if done[next]:
+					continue
+				var run: float = cell * (1.414 if dx != 0 and dy != 0 else 1.0)
+				var rise: float = abs(heights[next] - heights[current])
+				var grade := 1.0 + ROUTE_SLOPE_COST * rise / run
+				var cost: float = best[current] + run * grade * grade
+				if cost < best[next]:
+					best[next] = cost
+					came_from[next] = current
+					open.append([cost, next])
+
+	var route := [leave]
+	var node := goal_index
+	while came_from[node] != -1:
+		node = came_from[node]
+		if node != index.call(start):
+			route.append(at.call(Vector2i(node % nodes, node / nodes)))
+	route.append(enter)
+	route.reverse()
+	return _smoothed(route)
+
+## Chaikin's corner cutting, once, keeping the ends: takes the grid's
+## corners off the route.
+func _smoothed(points: Array) -> Array:
+	if points.size() < 3:
+		return points
+	var out := [points[0]]
+	for i in range(points.size() - 1):
+		var a: Vector3 = points[i]
+		var b: Vector3 = points[i + 1]
+		out.append(a.lerp(b, 0.25))
+		out.append(a.lerp(b, 0.75))
+	out.append(points[points.size() - 1])
+	return out
 
 ## The part of the line a to b inside the box (Liang-Barsky), or [] if none.
 func _clip_to_box(a: Vector3, b: Vector3, min_x: float, min_z: float, max_x: float, max_z: float) -> Array:
@@ -152,19 +258,32 @@ func _clip_to_box(a: Vector3, b: Vector3, min_x: float, min_z: float, max_x: flo
 			return []
 	return [a.lerp(b, t0), a.lerp(b, t1)]
 
-func _add_strip(holder: Node3D, from: Vector3, to: Vector3, width: float, material: Material) -> void:
-	var length := Vector2(to.x - from.x, to.z - from.z).length()
-	if length < 1.0:
+## A strip of `width` blocks along `points`, laid on the surface in pieces
+## short enough to follow it.
+func _add_strip(holder: Node3D, points: Array, width: float, material: Material) -> void:
+	var samples: Array = []
+	for i in range(points.size() - 1):
+		var from: Vector3 = points[i]
+		var to: Vector3 = points[i + 1]
+		var length := Vector2(to.x - from.x, to.z - from.z).length()
+		var pieces: int = max(1, int(ceil(length / ROAD_SAMPLE_BLOCKS)))
+		for k in range(pieces):
+			samples.append(from.lerp(to, float(k) / float(pieces)))
+	samples.append(points[points.size() - 1])
+	if samples.size() < 2:
 		return
-	var pieces: int = max(1, int(ceil(length / ROAD_SAMPLE_BLOCKS)))
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var across := Vector3(-(to.z - from.z), 0.0, to.x - from.x).normalized() * width * 0.5
 	var previous_left := Vector3.ZERO
 	var previous_right := Vector3.ZERO
-	for i in range(pieces + 1):
-		var t := float(i) / float(pieces)
-		var p := from.lerp(to, t)
+	for i in range(samples.size()):
+		var p: Vector3 = samples[i]
+		# Across the road: perpendicular to the direction through this sample.
+		var ahead: Vector3 = samples[min(i + 1, samples.size() - 1)] - samples[max(i - 1, 0)]
+		var across := Vector3(-ahead.z, 0.0, ahead.x)
+		if across.length() < 0.001:
+			across = Vector3(1.0, 0.0, 0.0)
+		across = across.normalized() * width * 0.5
 		var y := _surface_at(p.x, p.z) + ABOVE_SURFACE
 		var left := Vector3(p.x, y, p.z) - across
 		var right := Vector3(p.x, y, p.z) + across
