@@ -20,9 +20,9 @@ const TINY_PROVINCE_AREA_WU2: f64 = 3.125;
 // Calibrated on seed 42 (`inspect layer-stats`) after the land was grown
 // from uplift (spec 013): province mean habitability there has median 0.49,
 // upper quartile 0.64 and 90th percentile 0.69.
-const CITY_MIN_HABITABILITY: f32 = 0.70;
+const CITY_MIN_HABITABILITY: f32 = 0.72;
 /// A province on a major river needs less to hold a city.
-const RIVER_CITY_MIN_HABITABILITY: f32 = 0.64;
+const RIVER_CITY_MIN_HABITABILITY: f32 = 0.66;
 const TOWN_MIN_HABITABILITY: f32 = 0.50;
 const VILLAGE_MIN_HABITABILITY: f32 = 0.28;
 /// Cells at or below this habitability never hold a settlement.
@@ -249,12 +249,12 @@ mod tests {
             main_settlement_size(&province(habitability, 500), is_capital)
         };
         assert_eq!(main(0.5, true), SizeClass::Metropolis);
-        assert_eq!(main(0.7, false), SizeClass::City);
+        assert_eq!(main(0.74, false), SizeClass::City);
         assert_eq!(main(0.64, false), SizeClass::Town);
         assert_eq!(main(0.4, false), SizeClass::Village);
         assert_eq!(main(0.2, false), SizeClass::Outpost);
 
-        let mut on_major_river = province(0.64, 500);
+        let mut on_major_river = province(0.67, 500);
         on_major_river.is_river_junction = true;
         assert_eq!(main_settlement_size(&on_major_river, false), SizeClass::City);
     }

@@ -1,5 +1,6 @@
 pub mod biome_map;
 pub mod biome_splines;
+pub mod climate;
 pub mod derived;
 pub mod drainage;
 pub mod landscape;

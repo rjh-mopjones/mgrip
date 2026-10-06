@@ -81,10 +81,6 @@ pub fn generate_macro_map(seed: u32) -> BiomeMap {
     )
 }
 
-/// Whether sea would stay liquid at a place is judged for water this deep
-/// (as deep as a strait is cut).
-const RIM_SEA_JUDGED_AT_DEPTH: f64 = 0.07;
-
 /// The sea's freezing and drying lines wander by up to this much light level
 /// either way: about ten world units on the ground.
 const SEA_MARGIN_DRIFT: f64 = 0.06;
@@ -580,20 +576,22 @@ impl BiomeMap {
             let stays_liquid: Vec<bool> = (0..tile_w * tile_h)
                 .map(|i| {
                     let (wx, wy) = (px_to_wx(i % tile_w), py_to_wy(i / tile_w));
-                    // Judged as shallow sea would be, whatever is there now.
-                    let at_sea = derived::derive_temperature(
-                        map.light_level[i],
-                        SEA_LEVEL,
-                        map.humidity[i],
-                        SEA_LEVEL,
-                    );
-                    splines.sea_is_liquid(
-                        SEA_LEVEL - RIM_SEA_JUDGED_AT_DEPTH,
-                        at_sea,
-                        map.tectonic[i],
-                        map.light_level[i],
-                        sea_margin_drift(wx, wy),
-                    )
+                    // Judged as a strait would be, whatever is there now, in
+                    // both the driest and the most humid air the climate
+                    // pass may leave over it: humid air reads warmer, and a
+                    // sea must neither freeze in the one nor dry in the other.
+                    let drift = sea_margin_drift(wx, wy);
+                    [0.0, 1.0].into_iter().all(|humidity| {
+                        let at_sea =
+                            derived::derive_temperature(map.light_level[i], SEA_LEVEL, humidity, SEA_LEVEL);
+                        splines.sea_is_liquid(
+                            SEA_LEVEL - crate::rim_sea::STRAIT_DEPTH,
+                            at_sea,
+                            map.tectonic[i],
+                            map.light_level[i],
+                            drift,
+                        )
+                    })
                 })
                 .collect();
             crate::rim_sea::open_rim_sea(
@@ -634,12 +632,67 @@ impl BiomeMap {
                 height: tile_h,
             };
             let landscape = grow_landscape(&inputs);
-            // Rivers are read from a finer copy of the land, so they follow
-            // valleys narrower than a macro cell.
-            if run_rivers {
-                fine_land = Some(refine_landscape(&inputs, &landscape.heightmap));
-            }
             map.heightmap = landscape.heightmap;
+
+            // ── Climate from the land ─────────────────────────────────────
+            // With the mountains grown, the air can be followed over them:
+            // temperature falls with height, and moisture off the liquid sea
+            // is carried by the wind and rained out on windward slopes. The
+            // humidity noise is replaced by that rain, and everything after
+            // (the rivers' run-off, aridity, biomes, LifeGen) reads it.
+            for i in 0..tile_w * tile_h {
+                map.temperature[i] = derived::derive_temperature(
+                    map.light_level[i],
+                    map.heightmap[i],
+                    map.humidity[i],
+                    map.continentalness[i],
+                );
+            }
+            let splines = BiomeSplines::new(SEA_LEVEL);
+            let is_liquid_sea: Vec<bool> = (0..tile_w * tile_h)
+                .map(|i| {
+                    map.heightmap[i] < SEA_LEVEL
+                        && splines.sea_is_liquid(
+                            map.heightmap[i],
+                            map.temperature[i],
+                            map.tectonic[i],
+                            map.light_level[i],
+                            sea_margin_drift(px_to_wx(i % tile_w), py_to_wy(i / tile_w)),
+                        )
+                })
+                .collect();
+            let wind = crate::wind::surface_wind(&map.light_level, &map.heightmap, tile_w, tile_h);
+            let rain = crate::climate::rainfall(
+                &wind,
+                &crate::climate::Land {
+                    heightmap: &map.heightmap,
+                    temperature: &map.temperature,
+                    is_liquid_sea: &is_liquid_sea,
+                    width: tile_w,
+                    height: tile_h,
+                },
+            );
+            map.humidity = (0..tile_w * tile_h)
+                .map(|i| {
+                    crate::climate::humidity_from_rain(rain[i], map.light_level[i])
+                })
+                .collect();
+
+            // Rivers are read from a finer copy of the land, so they follow
+            // valleys narrower than a macro cell. Its run-off is the rain.
+            if run_rivers {
+                let inputs = LandscapeInputs {
+                    continentalness: &map.continentalness,
+                    peaks_valleys: &map.peaks_valleys,
+                    tectonic: &map.tectonic,
+                    rock_hardness: &map.rock_hardness,
+                    light_level: &map.light_level,
+                    humidity: &map.humidity,
+                    width: tile_w,
+                    height: tile_h,
+                };
+                fine_land = Some(refine_landscape(&inputs, &map.heightmap));
+            }
             macro_water_level = landscape.water_level;
             map.drainage_area = landscape
                 .drainage
@@ -756,12 +809,14 @@ impl BiomeMap {
 
         for i in 0..tile_w * tile_h {
             let drift = sea_margin_drift(px_to_wx(i % tile_w), py_to_wy(i / tile_w));
+            // Biomes read the land and its climate, not the noise layers: the
+            // peaks-and-valleys layer takes no part.
             let biome = splines.evaluate_with_light(
                 map.heightmap[i],
                 map.temperature[i],
                 map.tectonic[i],
                 map.erosion[i],
-                map.peaks_valleys[i],
+                0.0,
                 map.humidity[i],
                 map.aridity[i],
                 map.rock_hardness[i],
@@ -1058,7 +1113,7 @@ impl BiomeMap {
                         temp,
                         tect,
                         eros,
-                        peaks,
+                        0.0,
                         humid,
                         arid,
                         rock,

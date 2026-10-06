@@ -1,6 +1,6 @@
 # Spec 013 - Terrain From Uplift and Erosion
 
-**Status:** In progress. Stage 0 (sandbox), stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) stage 2 (ice, uplift ceilings, terminal lakes, then revisited: lakes, canyons, ice flow, wind, rim sea), most of stage 5 (land on a finer grid, river channels) and stage 6 (LifeGen on the land) done. Stages 3 and 4 (climate coupling, biomes from physical fields) not started.
+**Status:** In progress. Stage 0 (sandbox), stage 1 (uplift terrain in the generator, rivers only, stopgap biomes) stage 2 (ice, uplift ceilings, terminal lakes, then revisited: lakes, canyons, ice flow, wind, rim sea), most of stage 5 (land on a finer grid, river channels) stage 6 (LifeGen on the land) and stages 3 and 4 (climate from the land, biomes without the humidity and peaks noise) done. The chain is complete; what remains is listed under each stage.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (drainage, river courses)
 **Supersedes:** the noise heightmap, the noise-driven biome inputs, and the "every river reaches the sea" invariant
@@ -400,6 +400,50 @@ Two more, asked for on 2026-10-06:
 Not yet done under 2: closed basins. A lake that loses all its water still
 routes it towards its rim, not its floor, so it has no true shore; the
 river-stub terminal lakes remain for rivers that dry out.
+
+## Stages 3 and 4 as built
+
+Climate (`climate.rs`) runs once the land is grown, and everything after
+reads it: the rivers' run-off, aridity, biomes, LifeGen.
+
+- **Temperature** falls with height (`derive_temperature`, unchanged), now
+  of the grown land.
+- **Moisture** is given to the air by liquid sea, in proportion to how warm
+  it is (nothing below -10 C, full above 20 C), and carried by the surface
+  wind (`wind.rs`: dark side to light, turned by rising ground). Each step
+  it is shared between the two downwind neighbours, with 45% spread to all
+  eight, as sea air reaches a shore upwind of the sea too.
+- **Rain** falls as a share of the air's moisture each step: 0.3% over
+  level ground, plus 100% per unit of height the air is forced up on its
+  way to the next cell, doubled over frozen ground (snow), and a quarter
+  over air above 80 C. The air holds at most three sea cells' worth; where
+  winds converge the excess falls at once. 700 steps, then smoothed over 10
+  world units, since the wind here blows straight and real plumes spread.
+- **Humidity** is the square root of rain over 0.12 (so a little rain
+  counts for a lot and the wet coast does not saturate everything near
+  it), with a floor on the dark side standing for the snow of the high
+  return flow this model does not follow (8% of full, fading out by light
+  0.34). On seed 42 the terminus averages 0.45, the shore upwind of the
+  sea 0.39 and downwind 0.48.
+- **Biomes** no longer read the peaks-and-valleys layer; with humidity from
+  rain and height, slope and flatness from the land, the only noise they
+  still read is rock hardness and the tectonic layer, which are geology.
+- **The rim sea** is judged in both the driest and the most humid air the
+  climate pass may leave over it (humid air reads 5 C warmer), and straits
+  are cut 0.1 deep, below the shallows a hot sea dries out from (0.08).
+  Without both, a strait on the day-side margin dried into a salt flat
+  after it was cut and the ring broke.
+
+Rain shadows show: windward slopes are wet, the ground behind a range dry.
+The world is drier than under the humidity noise: rivers fall from 273
+courses to 165, and provinces with a major river from 44 to 27. Settlement
+thresholds were raised a little (city at 0.72, 0.66 on a major river).
+
+Not done: the erosion rounds still use the humidity noise for their run-off
+(the land is grown before there are mountains to make weather with), so
+valleys are not yet cut where the rain now falls; one more erosion round on
+the climate's rain would do it. There is no seasonal or diurnal variation,
+by the nature of the world.
 
 ## Stage 6 as built
 
