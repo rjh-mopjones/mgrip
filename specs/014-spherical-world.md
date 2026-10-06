@@ -1,6 +1,6 @@
 # Spec 014 - A Spherical World
 
-**Status:** Proposed
+**Status:** In progress. Stage 0 (the geometry module) done.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (shared macro data), Spec 013 (uplift terrain)
 **Supersedes:** the cylinder (`wrap.rs`), the light formula in `light_level.rs`, the "terminus is an arc" invariant, `mg_life::Grid`
@@ -138,8 +138,10 @@ exactly. The warps displace the point on the sphere before the angle is
 measured, so the terminus stays ragged. The zone tables are unchanged.
 
 `wind.rs` `dune_height` measures its own Euclidean distance from the sun;
-it reads light or `angle` instead. Everything else (humidity, temperature,
-run-off, ice, rim sea) is a function of light already and does not change.
+it reads light or `angle` instead. Temperature, run-off, ice and the rim
+sea are functions of light already and do not change. Humidity is rain
+(spec 013 stages 3 and 4, `climate.rs`), carried by the wind, and moves
+onto the sphere with the wind in the next section.
 
 Two places use the row as a stand-in for night and day: `rivers.rs` forces
 buried ice in the top fifth of rows and dry wadi in the bottom fifth. They
@@ -162,6 +164,13 @@ say so in latitude, which is now the same thing.
   sand no longer piles up on rows 0 and 511. Surface wind is the gradient of
   light projected onto the tangent plane: from the anti-stellar point
   towards the sub-stellar point, along meridians, deflected by noise.
+- `climate.rs`: moisture is carried downwind with its own D8 neighbour
+  that clamps `y`; it uses the sphere's neighbours, so air crosses the
+  poles rather than piling up on the edge rows. Moisture is an amount per
+  cell; when it moves between rows of different widths it is scaled by the
+  ratio of cell areas, so a plume does not concentrate as the cells shrink
+  towards a pole. Its blurs (relief, rain smoothing) reach a distance in
+  world units, as the erosion blurs do.
 - Lakes (`sea_bodies`, `water_levels`): minimum sizes in square world
   units, filled through the sphere's neighbours.
 - `rivers.rs`: accumulation ratio as a share of the planet's area; width
@@ -249,12 +258,12 @@ Each stage leaves the generator working and the map renderable.
 
 | # | Stage | Visible result |
 |---|---|---|
-| 0 | `mg_core::sphere` with tests; `wrap.rs` and `Grid` callers moved onto it | nothing changes on the map; the seam samplers agree |
-| 1 | 3D noise on the sphere | no east-west seam anywhere; the poles are coherent |
+| 0 | `mg_core::sphere` with tests | nothing changes on the map |
+| 1 | 3D noise on the sphere; `wrap.rs` goes | no east-west seam anywhere; the poles are coherent |
 | 2 | light from the sphere | the terminus is the equator ring; zones re-measured |
 | 3 | area-aware drainage, erosion, ice, wind, lakes, rivers | flow crosses the poles; nothing piles up on the edge rows |
 | 4 | tectonics on the sphere | plates and belts continuous across the poles |
-| 5 | LifeGen on the sphere | province areas in square world units; no polar over-seeding |
+| 5 | LifeGen on the sphere; `Grid` goes | province areas in square world units; no polar over-seeding |
 | 6 | exports, map, sandbox, runtime edges, CLAUDE.md | the globe has no pinch |
 
 Stage 0 tests: `cell_area` sums to the sphere's area; `angle` between a cell
