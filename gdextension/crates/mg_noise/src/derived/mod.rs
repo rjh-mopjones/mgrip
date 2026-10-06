@@ -69,7 +69,8 @@ pub fn derive_micro_heightmap(
     let mut max_amp = 0.0;
 
     for _ in 0..8 {
-        value += detail_noise.get([wx * freq, wy * freq]) * amp;
+        // On the sphere, so a chunk at the seam matches its neighbour.
+        value += detail_noise.get(mg_core::Sphere::MARGIN.noise_point_at(wx, wy, freq)) * amp;
         max_amp += amp;
         amp *= 0.5;
         freq *= 2.0;

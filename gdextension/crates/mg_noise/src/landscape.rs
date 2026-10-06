@@ -168,8 +168,7 @@ fn crest(wx: f64, wy: f64, shift: f64) -> f64 {
     let (mut sum, mut weight, mut total) = (0.0, 1.0, 0.0);
     for octave in 0..CREST_OCTAVES {
         let frequency = 2f64.powi(octave as i32) / CREST_SPACING_WU;
-        let [cx, cz, cy] =
-            crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
+        let [cx, cz, cy] = mg_core::Sphere::MARGIN.noise_point_at(wx, wy, frequency);
         sum += weight * (1.0 - noise.get([cx + shift, cz + shift, cy]).abs());
         total += weight;
         weight *= 0.5;

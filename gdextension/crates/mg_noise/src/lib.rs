@@ -13,7 +13,6 @@ pub mod terrain_query;
 pub mod terrain_render;
 pub mod visualization;
 pub mod wind;
-pub mod wrap;
 
 pub use biome_map::{
     generate_macro_map, generate_macro_probe, generate_map_tile, sample_field_bilinear,

@@ -1,6 +1,6 @@
 # Spec 014 - A Spherical World
 
-**Status:** In progress. Stage 0 (the geometry module) done.
+**Status:** In progress. Stage 0 (the geometry module) and stage 1 (noise on the sphere) done.
 **Priority:** High
 **Depends On:** Spec 010 (macro map), Spec 012 (shared macro data), Spec 013 (uplift terrain)
 **Supersedes:** the cylinder (`wrap.rs`), the light formula in `light_level.rs`, the "terminus is an arc" invariant, `mg_life::Grid`
@@ -116,8 +116,10 @@ the strategies go.
 - `biome_map.rs:457-488`: the chunk-frequency layers that only wrap at
   frequency 1 are anchored over anyway; they sample the sphere too.
 
-3D noise costs about twice what 2D does. The macro pass is about 35 s
-today; budget 60 s.
+3D noise costs about twice what 2D does, but noise is a small share of
+the macro pass. Measured on seed 42 with the climate pass included: 64 s
+before, 62 s after. (The 35 s in spec 013 predates the climate pass.)
+Budget: no slower than before.
 
 ### Tectonics
 

@@ -159,7 +159,7 @@ fn neighbours(cell: usize, width: usize, height: usize) -> impl Iterator<Item = 
             if neighbour_y < 0 || neighbour_y >= height as i32 {
                 return None;
             }
-            let neighbour_x = crate::wrap::wrap_grid_x(x + dx, width) as usize;
+            let neighbour_x = (x + dx).rem_euclid(width as i32) as usize;
             Some((neighbour_y as usize * width + neighbour_x, distance))
         })
 }

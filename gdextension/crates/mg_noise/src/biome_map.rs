@@ -103,9 +103,7 @@ pub fn sea_margin_drift(wx: f64, wy: f64) -> f64 {
     let (mut sum, mut weight, mut total) = (0.0, 1.0, 0.0);
     for octave in 0..SEA_MARGIN_OCTAVES {
         let frequency = 2f64.powi(octave as i32) / SEA_MARGIN_BEND_WU;
-        let [cx, cz, cy] =
-            crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
-        sum += weight * noise.get([cx, cz, cy]);
+        sum += weight * noise.get(mg_core::Sphere::MARGIN.noise_point_at(wx, wy, frequency));
         total += weight;
         weight *= 0.55;
     }
@@ -266,7 +264,7 @@ pub fn sample_field_smooth(
     if field.is_empty() || width == 0 || height == 0 {
         return 0.0;
     }
-    let fx = crate::wrap::wrap_x(wx, world_width) * width as f64 / world_width;
+    let fx = wx.rem_euclid(world_width) * width as f64 / world_width;
     let fy = (wy.clamp(0.0, world_height) * height as f64 / world_height).min((height - 1) as f64);
     let (x0, y0) = (fx.floor(), fy.floor());
     let (tx, ty) = (fx - x0, fy - y0);
@@ -286,7 +284,7 @@ pub fn sample_field_smooth(
         // North and south edges are clamped; the map joins east to west.
         let y = (y0 as i32 + row as i32 - 1).clamp(0, height as i32 - 1) as usize;
         for (column, weight_x) in weights_x.iter().enumerate() {
-            let x = crate::wrap::wrap_grid_x(x0 as i32 + column as i32 - 1, width) as usize;
+            let x = (x0 as i32 + column as i32 - 1).rem_euclid(width as i32) as usize;
             value += field[y * width + x] * weight_x * weight_y;
         }
     }
@@ -307,7 +305,7 @@ pub fn sample_field_bilinear(
     }
     debug_assert_eq!(field.len(), width * height);
 
-    let wrapped_x = crate::wrap::wrap_x(wx, world_width);
+    let wrapped_x = wx.rem_euclid(world_width);
     let fx = wrapped_x * width as f64 / world_width;
     let clamped_y = wy.clamp(0.0, world_height);
     let fy = (clamped_y * height as f64 / world_height).min((height - 1) as f64);
@@ -317,8 +315,8 @@ pub fn sample_field_bilinear(
     let tx = fx - x0f;
     let ty = fy - y0f;
 
-    let x0 = crate::wrap::wrap_grid_x(x0f as i32, width) as usize;
-    let x1 = crate::wrap::wrap_grid_x(x0f as i32 + 1, width) as usize;
+    let x0 = (x0f as i32).rem_euclid(width as i32) as usize;
+    let x1 = (x0f as i32 + 1).rem_euclid(width as i32) as usize;
     let y0_i = (y0f as i32).max(0);
     let y1_i = (y0_i + 1).min(height as i32 - 1);
     let y0 = y0_i as usize;
@@ -463,23 +461,12 @@ impl BiomeMap {
         // coordinates and always wrap. They define the identity of a place and must be
         // stable regardless of freq_scale or LOD.
         // Tier 2 (detail) layers use scaled coordinates and only wrap at macro scale.
-        let detail_wrap = freq_scale == 1.0;
-        let cont_strat = ContinentalnessStrategy::new_wrapping(
-            seed.wrapping_add(SEED_CONTINENTALNESS),
-            world_width,
-        );
+        // Every layer samples its noise on the sphere, at any scale.
+        let cont_strat = ContinentalnessStrategy::new(seed.wrapping_add(SEED_CONTINENTALNESS));
         let tect_strat =
             TectonicPlatesStrategy::new_wrapping(seed.wrapping_add(SEED_TECTONIC), world_width);
-        let humid_strat = if detail_wrap {
-            HumidityStrategy::new_wrapping(seed.wrapping_add(SEED_HUMIDITY), world_width)
-        } else {
-            HumidityStrategy::new(seed.wrapping_add(SEED_HUMIDITY))
-        };
-        let rock_strat = if detail_wrap {
-            RockHardnessStrategy::new_wrapping(seed.wrapping_add(SEED_ROCK_HARDNESS), world_width)
-        } else {
-            RockHardnessStrategy::new(seed.wrapping_add(SEED_ROCK_HARDNESS))
-        };
+        let humid_strat = HumidityStrategy::new(seed.wrapping_add(SEED_HUMIDITY));
+        let rock_strat = RockHardnessStrategy::new(seed.wrapping_add(SEED_ROCK_HARDNESS));
         let light_strat = LightLevelStrategy::new(
             seed.wrapping_add(SEED_LIGHT_LEVEL),
             0.5,
@@ -487,14 +474,7 @@ impl BiomeMap {
             world_width,
             world_height,
         );
-        let pv_strat = if detail_wrap {
-            PeaksAndValleysStrategy::new_wrapping(
-                seed.wrapping_add(SEED_PEAKS_VALLEYS),
-                world_width,
-            )
-        } else {
-            PeaksAndValleysStrategy::new(seed.wrapping_add(SEED_PEAKS_VALLEYS))
-        };
+        let pv_strat = PeaksAndValleysStrategy::new(seed.wrapping_add(SEED_PEAKS_VALLEYS));
         let detail_noise = OpenSimplex::new(seed.wrapping_add(SEED_MICRO_DETAIL));
 
         // Pixel → world coordinate mapping
@@ -1255,7 +1235,7 @@ impl BiomeMap {
         if self.heightmap.is_empty() {
             return 0.0;
         }
-        let wrapped_x = crate::wrap::wrap_x(wx, self.world_width);
+        let wrapped_x = wx.rem_euclid(self.world_width);
         let x = (wrapped_x.round() as usize).min(self.width - 1);
         let y = (wy.clamp(0.0, self.world_height - 1.0).round() as usize).min(self.height - 1);
         self.heightmap[y * self.width + x]
@@ -1299,7 +1279,7 @@ impl BiomeMap {
         if self.biomes.is_empty() {
             return TileType::Sea;
         }
-        let wrapped_x = crate::wrap::wrap_x(wx, self.world_width);
+        let wrapped_x = wx.rem_euclid(self.world_width);
         let px = ((wrapped_x / self.world_width * self.width as f64) as usize).min(self.width - 1);
         let py = ((wy.clamp(0.0, self.world_height) / self.world_height * self.height as f64)
             as usize)

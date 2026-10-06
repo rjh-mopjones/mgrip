@@ -336,7 +336,7 @@ fn widen_valleys(
             if beside_y < 0 || beside_y >= land.height as i32 {
                 continue;
             }
-            let beside_x = crate::wrap::wrap_grid_x(x + dx, land.width) as usize;
+            let beside_x = (x + dx).rem_euclid(land.width as i32) as usize;
             let beside = beside_y as usize * land.width + beside_x;
             if !land.is_base_level[beside] && ground[beside] > ground[cell] {
                 ground[beside] -= pull * reaches(beside) * (ground[beside] - ground[cell]);

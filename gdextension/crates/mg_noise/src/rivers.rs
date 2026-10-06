@@ -145,8 +145,9 @@ fn meander_path(path: &[(f64, f64)], amplitude_wu: f64) -> Vec<(f64, f64)> {
         // High freq (0.18) = ~5.5 wu wavelength → short wiggles that break
         // up the D8 staircase pattern. Second harmonic at 40% strength so
         // it adds texture without dominating the sweep.
-        let low = noise.get([wx * 0.05, wy * 0.05]);
-        let high = noise.get([wx * 0.18 + 100.0, wy * 0.18 + 100.0]);
+        let low = noise.get(mg_core::Sphere::MARGIN.noise_point_at(wx, wy, 0.05));
+        let [hx, hy, hz] = mg_core::Sphere::MARGIN.noise_point_at(wx, wy, 0.18);
+        let high = noise.get([hx + 100.0, hy + 100.0, hz]);
         let noise_value = low + high * 0.4;
         // Taper at endpoints so confluences stay anchored.
         let from_start = i.min(endpoint_taper) as f64 / endpoint_taper as f64;
@@ -1019,7 +1020,7 @@ fn path_to_open_water(
             continue;
         }
         for (dx, dy) in D8_OFFSETS {
-            let x = crate::wrap::wrap_grid_x((cell % width) as i32 + dx, width) as usize;
+            let x = ((cell % width) as i32 + dx).rem_euclid(width as i32) as usize;
             let y = (cell / width) as i32 + dy;
             if y < 0 || y >= height as i32 {
                 continue;
@@ -1080,7 +1081,7 @@ fn stretches_below_sea(
             let cell = stretch[next];
             next += 1;
             for (dx, dy) in D8_OFFSETS {
-                let x = crate::wrap::wrap_grid_x((cell % width) as i32 + dx, width) as usize;
+                let x = ((cell % width) as i32 + dx).rem_euclid(width as i32) as usize;
                 let y = (cell / width) as i32 + dy;
                 if y < 0 || y >= height as i32 {
                     continue;
@@ -1136,7 +1137,7 @@ fn build_river_tree(
         let x = idx % width;
         let y = idx / width;
         let (dx, dy) = D8_OFFSETS[flow_dir[idx] as usize];
-        let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
+        let nx = (x as i32 + dx).rem_euclid(width as i32) as usize;
         let ny = y as i32 + dy;
         if ny >= 0 && (ny as usize) < height {
             let nidx = ny as usize * width + nx;
@@ -1193,7 +1194,7 @@ fn build_river_tree(
             let x = current % width;
             let y = current / width;
             let (dx, dy) = D8_OFFSETS[flow_dir[current] as usize];
-            let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
+            let nx = (x as i32 + dx).rem_euclid(width as i32) as usize;
             let ny = y as i32 + dy;
             if ny < 0 || ny >= height as i32 {
                 break;
@@ -1269,7 +1270,7 @@ fn build_river_tree(
             let x = cur_idx % width;
             let y = cur_idx / width;
             let (dx, dy) = D8_OFFSETS[flow_dir[cur_idx] as usize];
-            let nx = crate::wrap::wrap_grid_x(x as i32 + dx, width) as usize;
+            let nx = (x as i32 + dx).rem_euclid(width as i32) as usize;
             let ny = y as i32 + dy;
             if ny < 0 || ny >= height as i32 {
                 break;
@@ -1607,9 +1608,9 @@ pub struct RiverCourse {
 fn meander_warp(x: f64, y: f64) -> (f64, f64) {
     use noise::NoiseFn;
     let noise = meander_noise_instance();
-    // Sampled on a cylinder so the warp is continuous across the seam.
+    // Sampled on the sphere so the warp is seamless everywhere.
     let offsets = |frequency: f64, amplitude: f64, shift: f64| {
-        let [cx, cz, cy] = crate::wrap::cylindrical_noise_coords(x, y, frequency, 1.0, WORLD_WIDTH);
+        let [cx, cz, cy] = mg_core::Sphere::MARGIN.noise_point_at(x, y, frequency);
         (
             noise.get([cx + shift, cz, cy]) * amplitude,
             noise.get([cx, cz + shift, cy + shift]) * amplitude,

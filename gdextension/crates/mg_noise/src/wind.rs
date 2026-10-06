@@ -215,8 +215,7 @@ pub fn dune_height(sand: f64, wx: f64, wy: f64, sample_spacing: f64) -> f64 {
     static WANDER: std::sync::OnceLock<noise::OpenSimplex> = std::sync::OnceLock::new();
     let noise = WANDER.get_or_init(|| noise::OpenSimplex::new(0xD0_0E5u32));
     let wander = |frequency: f64, shift: f64| {
-        let [cx, cz, cy] =
-            crate::wrap::cylindrical_noise_coords(wx, wy, frequency, 1.0, WORLD_WIDTH);
+        let [cx, cz, cy] = mg_core::Sphere::MARGIN.noise_point_at(wx, wy, frequency);
         noise.get([cx + shift, cz, cy + shift])
     };
 
