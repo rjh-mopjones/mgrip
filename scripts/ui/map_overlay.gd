@@ -83,10 +83,14 @@ func refresh(
 		current_chunk: Vector2i,
 		active_counts: Dictionary = {},
 		player_yaw: float = 0.0,
-		stream_debug: Dictionary = {}) -> void:
+		stream_debug: Dictionary = {},
+		civ: Dictionary = {}) -> void:
 	_debug_lines = _build_debug_lines(stream_debug)
 	if _hud:
 		_hud.text = _coord_text(player_pos, current_chunk, active_counts, player_yaw)
+		var civ_text := _civ_text(civ)
+		if civ_text != "":
+			_hud.text += "\n" + civ_text
 	if not visible:
 		return
 	_layout(player_pos, current_chunk)
@@ -159,6 +163,32 @@ func _coord_text(p: Vector3, current_chunk: Vector2i, active_counts: Dictionary,
 		_format_active_counts(active_counts),
 		wx,
 		wz,
+	]
+
+## "Mistholm, Corazon   nearest: Violetta (metropolis), 3 chunks" from the
+## civ pack's answer for the player's position. Empty if none is loaded.
+static func _civ_text(civ: Dictionary) -> String:
+	if not civ.get("loaded", false):
+		return ""
+	var place: String
+	match civ.get("state", "sea"):
+		"sea":
+			place = "At sea"
+		"claimed":
+			place = "%s, %s" % [civ.get("province_name", ""), civ.get("state_name", "")]
+		"unclaimed":
+			place = "%s, unclaimed" % civ.get("province_name", "")
+		_:
+			place = "%s, uninhabited" % civ.get("province_name", "")
+	if not civ.has("nearest_settlement"):
+		return place
+	var distance: float = civ.get("nearest_distance_wu", 0.0)
+	var where := "here" if distance < 0.75 else "%d chunks" % int(round(distance))
+	return "%s   nearest: %s (%s), %s" % [
+		place,
+		civ.get("nearest_settlement", ""),
+		String(civ.get("nearest_size", "")).to_lower(),
+		where,
 	]
 
 static func _compass_label(yaw_rad: float) -> String:

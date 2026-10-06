@@ -9,6 +9,8 @@ const DEFAULT_WORLD_Y := 220.0
 @export var world_x: float = DEFAULT_WORLD_X
 @export var world_y: float = DEFAULT_WORLD_Y
 
+const CIV_MARKS := preload("res://scripts/world/civ_marks.gd")
+
 @onready var _terrain_root: Node3D    = $TerrainRoot
 @onready var _sun: DirectionalLight3D = $Sun
 @onready var _world_environment: WorldEnvironment = $WorldEnvironment
@@ -17,6 +19,7 @@ const DEFAULT_WORLD_Y := 220.0
 @onready var _camera: Camera3D = $Player/Head/Camera3D
 
 var _map_overlay: MapOverlay
+var _civ_marks
 var _world_environment_controller = null
 var _chunk_metrics = null
 var _chunk_streamer = null
@@ -126,8 +129,11 @@ func _process(_delta: float) -> void:
 				"prewarm_target": _chunk_streamer.prewarm_target_chunk(),
 				"horizon": _chunk_streamer.horizon_runtime_state(),
 				"window": _chunk_streamer.loaded_chunk_window(current_chunk),
-			}
+			},
+			_civ_here(current_chunk),
 		)
+	if _civ_marks:
+		_civ_marks.update(current_chunk)
 	_chunk_metrics.update_runtime_state(
 		_chunk_streamer.active_counts_by_lod(),
 		_chunk_streamer.pending_count(),
@@ -136,6 +142,15 @@ func _process(_delta: float) -> void:
 	_chunk_metrics.maybe_print_summary()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+## Who holds the ground under the player, from the civ pack.
+func _civ_here(current_chunk: Vector2i) -> Dictionary:
+	var local_block := GenerationManager.scene_block_to_local_block(_player.position.x, _player.position.z)
+	var world_origin := GenerationManager.chunk_coord_to_world_origin(current_chunk)
+	return GenerationManager.civ_at(
+		world_origin.x + float(local_block.x) / float(GenerationManager.BLOCKS_PER_CHUNK),
+		world_origin.y + float(local_block.y) / float(GenerationManager.BLOCKS_PER_CHUNK),
+	)
 
 func _consume_launch_world_origin() -> Vector2:
 	var fallback_origin := Vector2(world_x, world_y)
@@ -166,6 +181,9 @@ func _setup_map(chunk) -> void:
 	add_child(_map_overlay)
 	_map_overlay.setup(chunk.biome_map, _anchor_chunk, chunk.chunk_coord)
 	_map_overlay.attach_hud.call_deferred(self)
+	_civ_marks = CIV_MARKS.new()
+	add_child(_civ_marks)
+	_civ_marks.setup(self, _anchor_chunk)
 
 func _setup_environment_controller(chunk) -> void:
 	_world_environment_controller = WorldEnvironmentControllerScript.new()
@@ -202,12 +220,18 @@ func _place_player(chunk) -> void:
 			chunk_origin.z + cz + 0.5,
 		)
 
+## Height of the surface at a scene block, from whichever chunk is loaded
+## there. A chunk at a lower LOD holds fewer height samples than it has
+## blocks; the nearest sample is used.
 func sample_surface_height(block_x: int, block_z: int) -> float:
 	var chunk = _loaded_chunk_for_scene_block(block_x, block_z)
 	if chunk == null or chunk.heights.is_empty():
 		return 0.0
 	var block := GenerationManager.scene_block_to_local_block(block_x, block_z)
-	return float(chunk.heights[block.y * VoxelMeshBuilder.CHUNK_SIZE + block.x]) + 1.0
+	var samples_across := int(round(sqrt(float(chunk.heights.size()))))
+	var sample_x := mini(block.x * samples_across / VoxelMeshBuilder.CHUNK_SIZE, samples_across - 1)
+	var sample_z := mini(block.y * samples_across / VoxelMeshBuilder.CHUNK_SIZE, samples_across - 1)
+	return float(chunk.heights[sample_z * samples_across + sample_x]) + 1.0
 
 func nearest_land_block(block_x: int, block_z: int) -> Vector2:
 	var chunk_coord := GenerationManager.scene_block_to_chunk_coord(_anchor_chunk, block_x, block_z)

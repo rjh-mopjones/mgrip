@@ -480,6 +480,19 @@ all 19 lore states placed and within size; 35% of land claimed, 35%
 unclaimed, 29% uninhabited; 3746 settlements (64 capitals, 54 cities, 392
 towns); 4406 roads with 160 river crossings; 3624 trade flows.
 
+**In the game.** `margins_grip export civ-pack` writes what LifeGen made
+(province per chunk, states, settlements with names, roads, river
+crossings; 0.2 MB) and the game loads it beside the macro pack. The HUD
+says where the player stands ("Miststone, Corazon   nearest: Violetta
+(metropolis), 3 chunks") and `civ_marks.gd` marks the ground as chunks
+load: a post with its name at each settlement, taller for a larger one;
+roads as strips over the terrain along the straight stretches of their
+simplified paths, clipped to each chunk; a slab where a road crosses a
+river. Strips sample the surface every 16 blocks, so over rough ground
+they cut through ridges rather than follow them; and a road's straight
+stretch between two distant path points is not the route the road finder
+took. Both wait on routing roads within a chunk.
+
 Not done: provinces are still seeded by habitability, so their shapes are
 part basin and part Voronoi; passes are not found as such, roads simply
 take the cheapest line over a ridge; fertility is read from where rock was

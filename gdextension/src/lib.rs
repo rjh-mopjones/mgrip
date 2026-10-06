@@ -7,7 +7,7 @@
 mod mesh;
 
 use godot::prelude::*;
-use mg_artifacts::MacroPack;
+use mg_artifacts::{CivPack, MacroPack};
 use mg_noise::{
     generate_macro_map, AtmosphereClass, BiomeMap, LandformClass, PlanetZone, RiverCourse,
     RuntimeChunkPresentation, RuntimeChunkPresentationBundle, RuntimeChunkPresentationGrids,
@@ -25,6 +25,9 @@ use std::time::Instant;
 /// supplied. Nothing here reads the filesystem, so native and web builds get
 /// their macro data the same way.
 static MACRO_SEMANTICS: Mutex<Option<Arc<MacroSemantics>>> = Mutex::new(None);
+/// What LifeGen made of the world, if a civ pack was loaded. The runtime
+/// reads it for the HUD and for marks on the ground; it never generates it.
+static CIVILISATION: Mutex<Option<Arc<CivPack>>> = Mutex::new(None);
 
 struct MacroSemantics {
     macro_map: BiomeMap,
@@ -497,6 +500,104 @@ impl IRefCounted for MgTerrainGen {
 
 #[godot_api]
 impl MgTerrainGen {
+    /// Supply what LifeGen made of the world from a civ pack (the bytes of a
+    /// file written by `margins_grip export civ-pack`). Returns true if the
+    /// pack was accepted; a pack for another seed is ignored.
+    #[func]
+    pub fn prepare_civ(&self, seed: i64, pack_bytes: PackedByteArray) -> bool {
+        if pack_bytes.is_empty() {
+            return false;
+        }
+        let pack = match CivPack::from_bytes(pack_bytes.as_slice()) {
+            Ok(pack) => pack,
+            Err(error) => {
+                godot_warn!("Ignoring civ pack: {error}");
+                return false;
+            }
+        };
+        if pack.seed != seed as u32 {
+            godot_warn!("Ignoring civ pack: it is for seed {}, not {seed}", pack.seed);
+            return false;
+        }
+        *CIVILISATION.lock().unwrap() = Some(Arc::new(pack));
+        true
+    }
+
+    /// Who holds the ground at a world position, from the civ pack:
+    /// `{loaded, province, province_name, state, state_name, nearest_settlement,
+    /// nearest_size, nearest_distance_wu, nearest_chunk}`. `state` is
+    /// "claimed", "unclaimed", "uninhabited" or "sea".
+    #[func]
+    pub fn civ_at(&self, world_x: f64, world_y: f64) -> Dictionary {
+        let mut result = Dictionary::new();
+        result.set("loaded", false);
+        let Some(civ) = CIVILISATION.lock().unwrap().clone() else {
+            return result;
+        };
+        result.set("loaded", true);
+        let x = (world_x.floor() as i64).rem_euclid(civ.width as i64) as usize;
+        let y = (world_y.floor().max(0.0) as usize).min(civ.height as usize - 1);
+        match civ.province_at(x, y) {
+            Some(province) => {
+                result.set("province", civ.province_ids[y * civ.width as usize + x] as i64);
+                result.set("province_name", province.name.as_str());
+                result.set("state", province.state.as_str());
+                let state_name = if province.faction == 0 {
+                    String::new()
+                } else {
+                    civ.factions[(province.faction - 1) as usize].name.clone()
+                };
+                result.set("state_name", state_name.as_str());
+            }
+            None => {
+                result.set("province", 0);
+                result.set("state", "sea");
+            }
+        }
+        if let Some((settlement, distance)) = civ.nearest_settlement(world_x, world_y) {
+            result.set("nearest_settlement", settlement.name.as_str());
+            result.set("nearest_size", settlement.size.as_str());
+            result.set("nearest_distance_wu", distance);
+            result.set("nearest_chunk", Vector2i::new(settlement.x as i32, settlement.y as i32));
+        }
+        result
+    }
+
+    /// What stands in a chunk, for marking the ground: `{settlements: [{name,
+    /// size}], roads: [{kind, from, to}], bridge}`. Each road entry is a
+    /// straight stretch of road passing through the chunk, between the
+    /// chunks `from` and `to` (Vector2i; `to` may lie past the map's edge
+    /// where the stretch crosses the seam). `bridge` is whether a road
+    /// crosses a river here.
+    #[func]
+    pub fn civ_in_chunk(&self, chunk_x: i64, chunk_y: i64) -> Dictionary {
+        let mut result = Dictionary::new();
+        let mut settlements = VariantArray::new();
+        let mut roads = VariantArray::new();
+        let mut bridge = false;
+        if let Some(civ) = CIVILISATION.lock().unwrap().clone() {
+            let here = (chunk_x.rem_euclid(civ.width as i64) as u16, chunk_y as u16);
+            for settlement in civ.settlements.iter().filter(|s| (s.x, s.y) == here) {
+                let mut entry = Dictionary::new();
+                entry.set("name", settlement.name.as_str());
+                entry.set("size", settlement.size.as_str());
+                settlements.push(&entry.to_variant());
+            }
+            for (road, from, to) in civ.roads_through(here.0, here.1) {
+                let mut entry = Dictionary::new();
+                entry.set("kind", road.kind.as_str());
+                entry.set("from", Vector2i::new(from.0 as i32, from.1 as i32));
+                entry.set("to", Vector2i::new(to.0 as i32, to.1 as i32));
+                roads.push(&entry.to_variant());
+            }
+            bridge = civ.roads.iter().any(|road| road.crossings.contains(&here));
+        }
+        result.set("settlements", settlements);
+        result.set("roads", roads);
+        result.set("bridge", bridge);
+        result
+    }
+
     /// Supply the macro map for `seed` from a macro pack (the bytes of a file
     /// written by `margins_grip export macro-pack`). Returns true if the pack
     /// was accepted. A pack for another seed, or one made by older generator
