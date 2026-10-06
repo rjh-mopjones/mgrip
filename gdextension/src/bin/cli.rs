@@ -1777,6 +1777,20 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         sea.width() as usize,
         sea.height() as usize,
     );
+    if !rim_sea_unbroken {
+        if let Some(((east_x, east_y), (west_x, west_y))) =
+            mg_noise::rim_sea::rim_sea_reach(&is_sea, sea.width() as usize, sea.height() as usize)
+        {
+            let scale = sea.width() as f64 / map.world_width;
+            eprintln!(
+                "rim sea: the sea on the west edge reaches east to chunk ({:.1}, {:.1}) and west to chunk ({:.1}, {:.1})",
+                east_x as f64 / scale,
+                east_y as f64 / scale,
+                west_x as f64 / scale,
+                west_y as f64 / scale
+            );
+        }
+    }
     sea.save(output_dir.join(SITE_MAP_SEA_IMAGE))
         .unwrap_or_else(|e| fail(format!("saving {SITE_MAP_SEA_IMAGE}: {e}")));
 

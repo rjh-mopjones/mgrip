@@ -196,12 +196,13 @@ impl Base {
         let mut after = before.clone();
         crate::rim_sea::open_rim_sea(&mut after, &stays_liquid, width, height, SEA_LEVEL);
 
-        for cell in 0..grid.cell_count() {
-            let (wx, wy) = grid.world_position(cell);
-            let x = ((wx / wu_per_cell).floor() as usize).min(width - 1);
-            let y = ((wy / wu_per_cell).floor() as usize).min(height - 1);
-            let flat = y * width + x;
+        // Every cell under a cut is lowered to the deepest cut over it. A
+        // strait shallows to its shores, and a cell that took the cut over
+        // its centre alone could miss the channel and leave the strait a
+        // chain of pools.
+        for flat in 0..width * height {
             if after[flat] < before[flat] {
+                let cell = grid.cell_of(points[flat]);
                 self.continentalness[cell] = self.continentalness[cell].min(after[flat]);
             }
         }

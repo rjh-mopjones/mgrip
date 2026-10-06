@@ -146,41 +146,89 @@ fn cheapest_crossing(
 }
 
 /// Whether `is_sea` holds a stretch of sea that goes all the way round the
-/// world: one that can be followed from the west edge to the east edge and
-/// arrives where it set out, across the seam.
+/// world: one that can be followed east across the seam and arrives back
+/// where it set out.
+///
+/// Each stretch is walked with its columns unwrapped, counting how many
+/// times the walk has crossed the seam eastwards. A stretch that reaches a
+/// cell it has already reached by a walk with a different count has gone
+/// round the world.
 pub fn sea_rings_the_world(is_sea: &[bool], width: usize, height: usize) -> bool {
-    // Label each stretch of sea, without stepping across the seam.
-    let mut stretch_of = vec![usize::MAX; width * height];
-    let mut stretches = 0;
+    const UNSEEN: i32 = i32::MIN;
+    let mut crossings = vec![UNSEEN; width * height];
     for first in 0..width * height {
-        if !is_sea[first] || stretch_of[first] != usize::MAX {
+        if !is_sea[first] || crossings[first] != UNSEEN {
             continue;
         }
-        stretch_of[first] = stretches;
+        crossings[first] = 0;
         let mut pending = vec![first];
         while let Some(cell) = pending.pop() {
             let (x, y) = ((cell % width) as i32, (cell / width) as i32);
             for (dx, dy) in D8_OFFSETS {
                 let (next_x, next_y) = (x + dx, y + dy);
-                if next_x < 0 || next_x >= width as i32 || next_y < 0 || next_y >= height as i32 {
+                if next_y < 0 || next_y >= height as i32 {
                     continue;
                 }
-                let next = next_y as usize * width + next_x as usize;
-                if is_sea[next] && stretch_of[next] == usize::MAX {
-                    stretch_of[next] = stretches;
+                let crossed = if next_x < 0 {
+                    -1
+                } else if next_x >= width as i32 {
+                    1
+                } else {
+                    0
+                };
+                let next = next_y as usize * width + next_x.rem_euclid(width as i32) as usize;
+                if !is_sea[next] {
+                    continue;
+                }
+                let count = crossings[cell] + crossed;
+                if crossings[next] == UNSEEN {
+                    crossings[next] = count;
                     pending.push(next);
+                } else if crossings[next] != count {
+                    return true;
                 }
             }
         }
-        stretches += 1;
     }
-    // A ring is a stretch that touches both edges at rows that meet.
-    (0..height).any(|row| {
-        let west = stretch_of[row * width];
-        west != usize::MAX
-            && (row.saturating_sub(1)..=(row + 1).min(height - 1))
-                .any(|east_row| stretch_of[east_row * width + width - 1] == west)
-    })
+    false
+}
+
+/// Where the sea that touches the west edge gets to, going east: the
+/// easternmost cell of that stretch (with the seam unwrapped, so a cell
+/// reached across it counts as `width` further east) and the westernmost,
+/// as `(x, y)`. For saying where a broken rim sea stops.
+pub fn rim_sea_reach(is_sea: &[bool], width: usize, height: usize) -> Option<((i64, usize), (i64, usize))> {
+    let mut unwrapped = vec![i64::MIN; width * height];
+    let mut pending: Vec<usize> = (0..height)
+        .map(|y| y * width)
+        .filter(|&cell| is_sea[cell])
+        .collect();
+    for &cell in &pending {
+        unwrapped[cell] = 0;
+    }
+    let (mut east, mut west) = ((i64::MIN, 0usize), (i64::MAX, 0usize));
+    while let Some(cell) = pending.pop() {
+        let (x, y) = ((cell % width) as i64, cell / width);
+        let here = unwrapped[cell];
+        if here > east.0 {
+            east = (here, y);
+        }
+        if here < west.0 {
+            west = (here, y);
+        }
+        for (dx, dy) in D8_OFFSETS {
+            let (next_x, next_y) = (x + dx as i64, y as i64 + dy as i64);
+            if next_y < 0 || next_y >= height as i64 {
+                continue;
+            }
+            let next = next_y as usize * width + next_x.rem_euclid(width as i64) as usize;
+            if is_sea[next] && unwrapped[next] == i64::MIN {
+                unwrapped[next] = here + dx as i64;
+                pending.push(next);
+            }
+        }
+    }
+    (east.0 != i64::MIN).then_some((east, west))
 }
 
 #[cfg(test)]
@@ -209,6 +257,11 @@ mod tests {
     #[test]
     fn a_sea_broken_by_land_does_not_ring_the_world() {
         assert!(!sea_rings_the_world(&sea(&blocked_rim()), 24, 9));
+        // From the west edge the sea gets east to the land at column 10 and,
+        // across the seam, west to the land's far side at column 13.
+        let ((east_x, east_y), (west_x, west_y)) = rim_sea_reach(&sea(&blocked_rim()), 24, 9).unwrap();
+        assert_eq!((east_x, east_y), (9, 4));
+        assert_eq!((west_x, west_y), (14 - 24, 4));
     }
 
     #[test]
