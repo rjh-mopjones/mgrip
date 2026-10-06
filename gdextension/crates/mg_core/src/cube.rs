@@ -382,6 +382,150 @@ impl CubeGrid {
     }
 }
 
+/// A tangent vector at a point on the sphere, in world units.
+pub type Tangent = Point;
+
+impl CubeGrid {
+    /// The mean cell edge, in world units: the unit that distances and
+    /// areas are counted in when a calibration speaks of "cells".
+    pub fn cell_size(&self) -> f64 {
+        (self.sphere.area() / self.cell_count() as f64).sqrt()
+    }
+
+    /// Mean cells per world unit.
+    pub fn cells_per_world_unit(&self) -> f64 {
+        1.0 / self.cell_size()
+    }
+
+    /// A cell's centre as a world position.
+    pub fn world_position(&self, index: usize) -> (f64, f64) {
+        self.sphere.world_at(self.point(index))
+    }
+
+    /// Distance between two cells, in mean cells.
+    pub fn distance_cells(&self, a: usize, b: usize) -> f64 {
+        self.sphere.distance(self.point(a), self.point(b)) * self.cells_per_world_unit()
+    }
+
+    /// The eight neighbours of a cell with the distance to each in mean
+    /// cells, skipping the gap at a cube corner.
+    pub fn steps(&self, index: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
+        let cells_per_wu = self.cells_per_world_unit();
+        self.neighbours(index)
+            .into_iter()
+            .zip(self.step_distances(index))
+            .filter_map(move |(to, wu)| to.map(|to| (to, wu * cells_per_wu)))
+    }
+
+    /// `field` averaged over a square of `reach` cells each way, run on each
+    /// face padded with its neighbours' cells, so the blur crosses face
+    /// edges. Separable: rows then columns.
+    pub fn blur(&self, field: &[f64], reach: usize) -> Vec<f64> {
+        if reach == 0 {
+            return field.to_vec();
+        }
+        let n = self.n;
+        let wide = n + 2 * reach;
+        let span = (2 * reach + 1) as f64;
+        let mut out = vec![0.0; self.cell_count()];
+        for face in 0..6 {
+            let padded = self.halo(field, face, reach);
+            // Along rows, by running sums.
+            let mut rows = vec![0.0; wide * wide];
+            for row in 0..wide {
+                let mut running = vec![0.0; wide + 1];
+                for column in 0..wide {
+                    running[column + 1] = running[column] + padded[row * wide + column];
+                }
+                for column in reach..wide - reach {
+                    rows[row * wide + column] =
+                        (running[column + reach + 1] - running[column - reach]) / span;
+                }
+            }
+            // Down columns, into the face's own cells.
+            for v in 0..n {
+                for u in 0..n {
+                    let column = u + reach;
+                    let sum: f64 = (0..=2 * reach)
+                        .map(|row| rows[(v + row) * wide + column])
+                        .sum();
+                    out[self.index(face, u, v)] = sum / span;
+                }
+            }
+        }
+        out
+    }
+
+    /// The directions east and south along the ground at a cell.
+    pub fn tangents(&self, index: usize) -> (Tangent, Tangent) {
+        Sphere::tangents(self.point(index))
+    }
+
+    /// How `field` rises per world unit at a cell, as a tangent vector: a
+    /// least-squares fit over the differences to its neighbours.
+    pub fn gradient(&self, field: &[f64], index: usize) -> Tangent {
+        let here = self.point(index);
+        let (east, south) = self.tangents(index);
+        let radius = self.sphere.radius();
+        // Normal equations for g = (ge, gs) in the tangent basis.
+        let (mut aa, mut ab, mut bb, mut ae, mut be) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for to in self.neighbours(index).into_iter().flatten() {
+            let there = self.point(to);
+            let offset = [
+                (there[0] - here[0]) * radius,
+                (there[1] - here[1]) * radius,
+                (there[2] - here[2]) * radius,
+            ];
+            let (de, ds) = (dot(offset, east), dot(offset, south));
+            let rise = field[to] - field[index];
+            aa += de * de;
+            ab += de * ds;
+            bb += ds * ds;
+            ae += de * rise;
+            be += ds * rise;
+        }
+        let det = aa * bb - ab * ab;
+        if det.abs() < 1e-12 {
+            return [0.0, 0.0, 0.0];
+        }
+        let ge = (ae * bb - be * ab) / det;
+        let gs = (be * aa - ae * ab) / det;
+        [
+            east[0] * ge + south[0] * gs,
+            east[1] * ge + south[1] * gs,
+            east[2] * ge + south[2] * gs,
+        ]
+    }
+
+    /// The two neighbours a flow along `direction` (a tangent vector) goes
+    /// to, with the share each gets: the nearest in direction and the next,
+    /// shared by angle, so flow does not run in spokes along eight
+    /// directions.
+    pub fn downstream(&self, index: usize, direction: Tangent) -> [(usize, f64); 2] {
+        let here = self.point(index);
+        let speed = dot(direction, direction).sqrt();
+        if speed < 1e-12 {
+            return [(index, 0.5), (index, 0.5)];
+        }
+        let mut best: [(usize, f64); 2] = [(index, -2.0), (index, -2.0)];
+        for to in self.neighbours(index).into_iter().flatten() {
+            let there = self.point(to);
+            let step = normalised([there[0] - here[0], there[1] - here[1], there[2] - here[2]]);
+            let alignment = dot(step, direction) / speed;
+            if alignment > best[0].1 {
+                best[1] = best[0];
+                best[0] = (to, alignment);
+            } else if alignment > best[1].1 {
+                best[1] = (to, alignment);
+            }
+        }
+        // Shares by how far off each lies: the better aligned gets more.
+        let (a, b) = (best[0].1.acos(), best[1].1.acos());
+        let total = (a + b).max(1e-9);
+        [(best[0].0, b / total), (best[1].0, a / total)]
+    }
+}
+
 fn dot(a: Point, b: Point) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -515,6 +659,45 @@ mod tests {
                 "at ({x}, {y})"
             );
         }
+    }
+
+    #[test]
+    fn a_blur_crosses_face_edges_and_keeps_the_mean() {
+        let cube = grid();
+        let mut field = vec![0.0; cube.cell_count()];
+        let hot = cube.index(0, cube.n - 1, 5);
+        field[hot] = 100.0;
+        let blurred = cube.blur(&field, 1);
+        let east = cube.neighbour(hot, 1, 0).unwrap();
+        assert_ne!(cube.cell(east).0, 0);
+        assert!(blurred[east] > 5.0, "{}", blurred[east]);
+        let total: f64 = blurred.iter().sum();
+        assert!((total - 100.0).abs() < 1e-6, "{total}");
+    }
+
+    #[test]
+    fn the_gradient_of_height_points_north_and_flow_goes_down_it() {
+        let cube = grid();
+        // Height rises with z: the gradient points north everywhere.
+        let field: Vec<f64> = (0..cube.cell_count())
+            .map(|cell| cube.point(cell)[2])
+            .collect();
+        for face in 0..4 {
+            let cell = cube.index(face, 7, 7);
+            let g = cube.gradient(&field, cell);
+            let (_, south) = cube.tangents(cell);
+            assert!(dot(g, south) < 0.0, "face {face}");
+            assert!((dot(g, g).sqrt() - 1.0 / cube.sphere.radius()).abs() < 0.05);
+            // Downhill is south: the two downstream cells both lie south.
+            let downhill = [-g[0], -g[1], -g[2]];
+            for (to, share) in cube.downstream(cell, downhill) {
+                assert!(field[to] < field[cell]);
+                assert!(share >= 0.0 && share <= 1.0);
+            }
+        }
+        assert!((cube.cells_per_world_unit() * cube.cell_size() - 1.0).abs() < 1e-12);
+        let (wx, wy) = cube.world_position(cube.index(0, 7, 7));
+        assert!(wx >= 0.0 && wx < 1024.0 && wy > 0.0 && wy < 512.0);
     }
 
     #[test]
