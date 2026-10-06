@@ -22,6 +22,8 @@ const ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_RATE = 0.0015;
 /// A press that moves further than this many pixels is a drag, not a click.
 const DRAG_THRESHOLD_PX = 4;
+/// Radius of the globe at zoom 1, as a share of the canvas height.
+const GLOBE_RADIUS_AT_ZOOM_1 = 0.46;
 
 const RAMP = [
 	[16, 14, 38],
@@ -102,8 +104,9 @@ let mapMode = MAP_MODES[0];
 let rawLayer = null;
 let hoveredProvince = 0;
 let selectedProvince = 0;
-// Centre of the view in chunk coordinates; zoom 1 fits the whole world.
-const view = { x: 512, y: 256, zoom: 1 };
+// Centre of the view in chunk coordinates; zoom 1 fits the whole world. See
+// "View and projection" for what `globe` changes.
+const view = { x: 512, y: 256, zoom: 1, globe: false };
 
 const canvas = document.getElementById("mapCanvas");
 const labelCanvas = document.getElementById("labelCanvas");
@@ -401,35 +404,199 @@ function renderLegend() {
 	document.getElementById("legend").innerHTML = parts.join("");
 }
 
-// ─── View ────────────────────────────────────────────────────────────────────
+// ─── View and projection ─────────────────────────────────────────────────────
+//
+// The view is the chunk at the middle of the canvas and a zoom. Flat, the map
+// is laid out as a sheet that repeats east to west. As a globe, the sheet is
+// wrapped round a sphere, x round it and y from the night pole to the day
+// pole, seen face-on from the chunk at the middle. (The world is really a
+// cylinder: light is distance from the bottom centre of the sheet, so the
+// day pole is a seam where full day meets the terminus.)
 
-// Canvas pixels per chunk at the current zoom.
-const pixelsPerChunk = () =>
-	(canvas.width / worldMap.meta.chunks_wide) * view.zoom;
+// Canvas pixels per chunk at the current zoom; on the globe, at its middle.
+function pixelsPerChunk() {
+	const wide = worldMap.meta.chunks_wide;
+	if (view.globe) return (Math.PI * 2 * globeRadius()) / wide;
+	return (canvas.width / wide) * view.zoom;
+}
+
+const globeRadius = () => canvas.height * GLOBE_RADIUS_AT_ZOOM_1 * view.zoom;
+
+// Latitude of the chunk at the middle of the globe, in radians.
+const globePitch = () => (0.5 - view.y / worldMap.meta.chunks_high) * Math.PI;
 
 // Keep the view inside the map north to south, and wrap it east to west.
 function constrainView() {
 	const { chunks_wide: wide, chunks_high: high } = worldMap.meta;
 	view.zoom = Math.max(1, Math.min(MAX_ZOOM, view.zoom));
-	const halfHeight = canvas.height / pixelsPerChunk() / 2;
+	const halfHeight = view.globe ? 0 : canvas.height / pixelsPerChunk() / 2;
 	view.y = Math.max(halfHeight, Math.min(high - halfHeight, view.y));
 	view.x = ((view.x % wide) + wide) % wide;
 }
 
-// Chunk coordinates under a point of the canvas, given in CSS pixels.
+// Chunk coordinates under a canvas pixel, or null off the globe. The shader's
+// chunkAtPixel does the same, so what is clicked is what is drawn.
+function chunkAtPixel(pixelX, pixelY) {
+	const { chunks_wide: wide, chunks_high: high } = worldMap.meta;
+	const acrossCanvas = pixelX - canvas.width / 2;
+	const downCanvas = pixelY - canvas.height / 2;
+	if (!view.globe) {
+		return {
+			x: view.x + acrossCanvas / pixelsPerChunk(),
+			y: view.y + downCanvas / pixelsPerChunk(),
+		};
+	}
+	const radius = globeRadius();
+	const [u, v] = [acrossCanvas / radius, -downCanvas / radius];
+	const depthSquared = 1 - u * u - v * v;
+	if (depthSquared < 0) return null;
+	const depth = Math.sqrt(depthSquared);
+	// Undo the tilt that brings the middle chunk's latitude to face the viewer.
+	const pitch = globePitch();
+	const up = v * Math.cos(pitch) + depth * Math.sin(pitch);
+	const forward = depth * Math.cos(pitch) - v * Math.sin(pitch);
+	const latitude = Math.asin(Math.max(-1, Math.min(1, up)));
+	const turn = Math.atan2(u, forward);
+	return {
+		x: view.x + (turn / (Math.PI * 2)) * wide,
+		y: Math.min(high - 0.001, (0.5 - latitude / Math.PI) * high),
+	};
+}
+
+// Where a chunk point lands on the canvas, as [x, y, visible]. On the globe
+// a point can be round the back, out of sight.
+function toScreen(chunkX, chunkY) {
+	const scale = pixelsPerChunk();
+	if (!view.globe) {
+		return [
+			(chunkX - view.x) * scale + canvas.width / 2,
+			(chunkY - view.y) * scale + canvas.height / 2,
+			true,
+		];
+	}
+	const { chunks_wide: wide, chunks_high: high } = worldMap.meta;
+	const turn = ((chunkX - view.x) / wide) * Math.PI * 2;
+	const latitude = (0.5 - chunkY / high) * Math.PI;
+	const across = Math.cos(latitude) * Math.sin(turn);
+	const up = Math.sin(latitude);
+	const forward = Math.cos(latitude) * Math.cos(turn);
+	const pitch = globePitch();
+	const tiltedUp = up * Math.cos(pitch) - forward * Math.sin(pitch);
+	const depth = forward * Math.cos(pitch) + up * Math.sin(pitch);
+	const radius = globeRadius();
+	return [
+		canvas.width / 2 + across * radius,
+		canvas.height / 2 - tiltedUp * radius,
+		depth > 0,
+	];
+}
+
+// Chunk coordinates under a point of the canvas, given in CSS pixels; null
+// off the globe.
 function chunkUnder(cssX, cssY) {
 	const scale = canvas.width / canvas.clientWidth;
-	return {
-		x: view.x + (cssX * scale - canvas.width / 2) / pixelsPerChunk(),
-		y: view.y + (cssY * scale - canvas.height / 2) / pixelsPerChunk(),
-	};
+	return chunkAtPixel(cssX * scale, cssY * scale);
 }
 
 // Province under a point of the canvas (CSS pixels); 0 for sea or off the map.
 function provinceUnder(cssX, cssY) {
 	const chunk = chunkUnder(cssX, cssY);
-	if (chunk.y < 0 || chunk.y >= worldMap.meta.chunks_high) return 0;
+	if (!chunk || chunk.y < 0 || chunk.y >= worldMap.meta.chunks_high) return 0;
 	return provinceAtPoint(chunk.x, chunk.y);
+}
+
+// The chunks in sight, as [left, top, right, bottom] with x unwrapped round
+// the view's middle. Set once per frame.
+let visibleBox = null;
+
+function visibleChunkBox() {
+	const { chunks_wide: wide, chunks_high: high } = worldMap.meta;
+	if (!view.globe) {
+		const halfWidth = canvas.width / pixelsPerChunk() / 2;
+		const halfHeight = canvas.height / pixelsPerChunk() / 2;
+		return [
+			view.x - halfWidth,
+			view.y - halfHeight,
+			view.x + halfWidth,
+			view.y + halfHeight,
+		];
+	}
+	// With the whole globe on the canvas, the facing half is in sight.
+	if (globeRadius() <= canvas.height / 2) {
+		return [
+			view.x - wide / 2,
+			Math.max(0, view.y - high / 2),
+			view.x + wide / 2,
+			Math.min(high, view.y + high / 2),
+		];
+	}
+	// Otherwise sample the canvas and take what the samples span, grown by a
+	// little over their spacing. A pole in sight brings every column with it.
+	const STEPS = 16;
+	let box = null;
+	for (let row = 0; row <= STEPS; row++) {
+		for (let column = 0; column <= STEPS; column++) {
+			const chunk = chunkAtPixel(
+				(canvas.width * column) / STEPS,
+				(canvas.height * row) / STEPS,
+			);
+			if (!chunk) continue;
+			box = box
+				? [
+						Math.min(box[0], chunk.x),
+						Math.min(box[1], chunk.y),
+						Math.max(box[2], chunk.x),
+						Math.max(box[3], chunk.y),
+					]
+				: [chunk.x, chunk.y, chunk.x, chunk.y];
+		}
+	}
+	const margin = (2 * canvas.width) / STEPS / pixelsPerChunk();
+	box = [box[0] - margin, box[1] - margin, box[2] + margin, box[3] + margin];
+	if (box[1] <= 0 || box[3] >= high) {
+		box[0] = view.x - wide / 2;
+		box[2] = view.x + wide / 2;
+	}
+	return [box[0], Math.max(0, box[1]), box[2], Math.min(high, box[3])];
+}
+
+// Canvas rectangle a tile covers, [left, top, right, bottom] in whole pixels,
+// or null if none of it is in sight. Flat, edges are rounded so neighbouring
+// tiles meet exactly; on the globe the shader trims each tile to its chunks.
+function tileScreenRect(tile) {
+	if (!view.globe) {
+		const [left, top] = toScreen(tile.x, tile.y);
+		const [right, bottom] = toScreen(tile.x + tile.span, tile.y + tile.span);
+		return [left, top, right, bottom].map(Math.round);
+	}
+	let rect = null;
+	for (let row = 0; row <= 2; row++) {
+		for (let column = 0; column <= 2; column++) {
+			const [x, y, visible] = toScreen(
+				tile.x + (tile.span * column) / 2,
+				tile.y + (tile.span * row) / 2,
+			);
+			if (!visible) continue;
+			rect = rect
+				? [
+						Math.min(rect[0], x),
+						Math.min(rect[1], y),
+						Math.max(rect[2], x),
+						Math.max(rect[3], y),
+					]
+				: [x, y, x, y];
+		}
+	}
+	if (!rect) return null;
+	// Edges bow outwards between the sampled points; allow for it.
+	const slack =
+		4 * window.devicePixelRatio + (rect[2] - rect[0] + rect[3] - rect[1]) * 0.05;
+	return [
+		Math.floor(rect[0] - slack),
+		Math.floor(rect[1] - slack),
+		Math.ceil(rect[2] + slack),
+		Math.ceil(rect[3] + slack),
+	];
 }
 
 // Zoom by `factor`, keeping the chunk under (cssX, cssY) where it is.
@@ -437,11 +604,24 @@ function zoomAt(factor, cssX, cssY) {
 	const before = chunkUnder(cssX, cssY);
 	view.zoom *= factor;
 	constrainView();
-	const after = chunkUnder(cssX, cssY);
-	view.x += before.x - after.x;
-	view.y += before.y - after.y;
-	constrainView();
+	const after = before && chunkUnder(cssX, cssY);
+	if (after) {
+		view.x += before.x - after.x;
+		view.y += before.y - after.y;
+		constrainView();
+	}
 	draw();
+}
+
+// The sheet's paper colour, for the canvas beyond the map. It follows the
+// theme.
+function paperColour() {
+	const hex = getComputedStyle(document.documentElement)
+		.getPropertyValue("--paper")
+		.trim();
+	if (!/^#[0-9a-f]{6}$/i.test(hex)) return [0.933, 0.945, 0.957];
+	const value = Number.parseInt(hex.slice(1), 16);
+	return [16, 8, 0].map((shift) => ((value >> shift) & 255) / 255);
 }
 
 function resizeCanvas() {
@@ -482,6 +662,9 @@ uniform vec2 uWorld;         // chunks
 uniform vec2 uCentre;        // chunk at the middle of the canvas
 uniform float uPixelsPerChunk;
 uniform float uPixelRatio;
+uniform float uGlobe;        // 1 wraps the map round a sphere
+uniform float uRadius;       // of the globe, in pixels
+uniform vec3 uBackground;    // the canvas beyond the map
 uniform float uProvinceLayer; // 0 hides tints and borders (raw layers)
 uniform float uStateBands;    // 1 draws a darker band inside state borders
 uniform int uHovered;
@@ -489,8 +672,9 @@ uniform int uSelected;
 
 out vec4 colour;
 
+const float PI = 3.14159265;
+const float TAU = 6.28318531;
 const vec3 BORDER = vec3(0.063, 0.055, 0.149);
-const vec3 OFF_MAP = vec3(0.933, 0.945, 0.957);
 // How strongly the hillshade lightens and darkens the land.
 const float RELIEF_STRENGTH = 0.9;
 // The sea is lighter within this many chunks of land.
@@ -551,14 +735,53 @@ int ownerOf(int province) {
 	return unpackId(texelFetch(uProvinces, ivec2(province, 1), 0));
 }
 
+// Chunk under a canvas pixel, with z = 0 where the pixel is off the globe.
+// Flat, the map is a sheet; as a globe it is wrapped round a sphere, x round
+// it and y pole to pole, tilted so the middle chunk faces the viewer. The
+// chunk's x is unwrapped round the middle, so it runs continuously across
+// the face. chunkAtPixel in map.js does the same.
+vec3 chunkAtPixel(vec2 pixel) {
+	vec2 fromMiddle = pixel - uCanvas * 0.5;
+	if (uGlobe < 0.5) return vec3(uCentre + fromMiddle / uPixelsPerChunk, 1.0);
+	vec2 onDisc = vec2(fromMiddle.x, -fromMiddle.y) / uRadius;
+	float depthSquared = 1.0 - dot(onDisc, onDisc);
+	if (depthSquared < 0.0) return vec3(0.0);
+	float depth = sqrt(depthSquared);
+	float pitch = (0.5 - uCentre.y / uWorld.y) * PI;
+	float up = onDisc.y * cos(pitch) + depth * sin(pitch);
+	float forward = depth * cos(pitch) - onDisc.y * sin(pitch);
+	float latitude = asin(clamp(up, -1.0, 1.0));
+	float turn = atan(onDisc.x, forward);
+	return vec3(
+		uCentre.x + turn / TAU * uWorld.x,
+		min(uWorld.y - 0.001, (0.5 - latitude / PI) * uWorld.y),
+		1.0
+	);
+}
+
+// Province under another pixel, or the fallback where that pixel is off the globe.
+int provinceNear(vec2 pixel, vec2 offset, int fallback) {
+	vec3 hit = chunkAtPixel(pixel + offset);
+	return hit.z > 0.5 ? provinceAt(hit.xy) : fallback;
+}
+
 void main() {
 	vec2 pixel = vec2(gl_FragCoord.x, uCanvas.y - gl_FragCoord.y);
-	vec2 chunk = uCentre + (pixel - uCanvas * 0.5) / uPixelsPerChunk;
-	if (chunk.y < 0.0 || chunk.y >= uWorld.y) {
-		colour = vec4(OFF_MAP, 1.0);
+	vec3 hit = chunkAtPixel(pixel);
+	vec2 chunk = hit.xy;
+	if (hit.z < 0.5 || chunk.y < 0.0 || chunk.y >= uWorld.y) {
+		colour = vec4(uBackground, 1.0);
 		return;
 	}
-	vec3 shade = texture(uBase, (chunk - uBaseOrigin) / uBaseSize).rgb;
+	// Where the pixel falls in the base image. The whole-world image repeats
+	// east to west; a tile covers a patch and leaves the pixels outside it.
+	float across = mod(chunk.x - uBaseOrigin.x, uWorld.x);
+	if (across >= uBaseSize.x || chunk.y < uBaseOrigin.y || chunk.y >= uBaseOrigin.y + uBaseSize.y) {
+		discard;
+	}
+	bool wholeWorld = uBaseSize.x >= uWorld.x;
+	vec2 inBase = vec2(wholeWorld ? chunk.x - uBaseOrigin.x : across, chunk.y - uBaseOrigin.y);
+	vec3 shade = texture(uBase, inBase / uBaseSize).rgb;
 
 	int province = provinceAt(chunk);
 	if (province == 0 && uProvinceLayer > 0.0) {
@@ -597,14 +820,14 @@ void main() {
 		float outlineHits = 0.0;
 		float bandHits = 0.0;
 		for (int direction = 0; direction < 8; direction++) {
-			vec2 reach = RING[direction] * uPixelRatio / uPixelsPerChunk;
-			int thin = provinceAt(chunk + reach * 0.6);
+			vec2 reach = RING[direction] * uPixelRatio;
+			int thin = provinceNear(pixel, reach * 0.6, province);
 			if (thin != province) provinceHits += 1.0;
-			int thick = provinceAt(chunk + reach * 1.2);
+			int thick = provinceNear(pixel, reach * 1.2, province);
 			if (thick != province && (thick == 0 || ownerOf(thick) != owner)) stateHits += 1.0;
-			if (province == uSelected && provinceAt(chunk + reach * 2.0) != province) outlineHits += 1.0;
+			if (province == uSelected && provinceNear(pixel, reach * 2.0, province) != province) outlineHits += 1.0;
 			if (uStateBands > 0.0 && owner != 0) {
-				int beyond = provinceAt(chunk + reach * STATE_BAND_PIXELS);
+				int beyond = provinceNear(pixel, reach * STATE_BAND_PIXELS, province);
 				if (beyond == 0 || ownerOf(beyond) != owner) bandHits += 1.0;
 			}
 		}
@@ -616,6 +839,12 @@ void main() {
 		shade = mix(shade, vec3(1.0), min(outlineHits / 3.0, 1.0));
 	}
 
+	if (uGlobe > 0.5) {
+		// The globe's edge, softened over a pixel or two.
+		float rim = length((pixel - uCanvas * 0.5) / uRadius);
+		float inside = 1.0 - smoothstep(1.0 - 1.5 * uPixelRatio / uRadius, 1.0, rim);
+		shade = mix(uBackground, shade, inside);
+	}
 	colour = vec4(shade, 1.0);
 }`;
 
@@ -814,6 +1043,9 @@ function createRenderer() {
 			gl.uniform2f(uniform("uCentre"), view.x, view.y);
 			gl.uniform1f(uniform("uPixelsPerChunk"), pixelsPerChunk());
 			gl.uniform1f(uniform("uPixelRatio"), window.devicePixelRatio);
+			gl.uniform1f(uniform("uGlobe"), view.globe ? 1 : 0);
+			gl.uniform1f(uniform("uRadius"), view.globe ? globeRadius() : 1);
+			gl.uniform3f(uniform("uBackground"), ...paperColour());
 			gl.uniform1f(uniform("uProvinceLayer"), showProvinces ? 1 : 0);
 			gl.uniform1i(uniform("uHovered"), hoveredProvince);
 			gl.uniform1i(uniform("uSelected"), selectedProvince);
@@ -823,16 +1055,13 @@ function createRenderer() {
 			gl.drawArrays(gl.TRIANGLES, 0, 3);
 
 			// Tiles carry their own relief shading. Each is drawn by the same
-			// shader, confined to the part of the canvas it covers. Edges are
-			// rounded to whole pixels so neighbouring tiles meet exactly.
-			const scale = pixelsPerChunk();
-			const column = (x) => Math.round((x - view.x) * scale + canvas.width / 2);
-			const row = (y) => Math.round((y - view.y) * scale + canvas.height / 2);
+			// shader, confined to the part of the canvas it covers.
 			gl.enable(gl.SCISSOR_TEST);
 			gl.uniform1f(uniform("uBaseShaded"), 1);
 			for (const tile of tiles) {
-				const [left, right] = [column(tile.x), column(tile.x + tile.span)];
-				const [top, bottom] = [row(tile.y), row(tile.y + tile.span)];
+				const rect = tileScreenRect(tile);
+				if (!rect) continue;
+				const [left, top, right, bottom] = rect;
 				gl.scissor(left, canvas.height - bottom, right - left, bottom - top);
 				gl.bindTexture(gl.TEXTURE_2D, tile.texture);
 				gl.uniform2f(uniform("uBaseOrigin"), tile.x, tile.y);
@@ -896,18 +1125,18 @@ function tileLevelForView() {
 function tilesInView(level) {
 	const { chunks_wide: wide, chunks_high: high } = worldMap.meta;
 	const span = tileSpan(level);
-	const halfWidth = canvas.width / pixelsPerChunk() / 2;
-	const halfHeight = canvas.height / pixelsPerChunk() / 2;
 	const columns = wide / span;
-	const firstRow = Math.max(0, Math.floor((view.y - halfHeight) / span));
-	const lastRow = Math.min(
-		high / span - 1,
-		Math.floor((view.y + halfHeight) / span),
+	const [left, top, right, bottom] = visibleBox;
+	const firstRow = Math.max(0, Math.floor(top / span));
+	const lastRow = Math.min(high / span - 1, Math.floor(bottom / span));
+	const firstColumn = Math.floor(left / span);
+	// Each column once, even where the whole way round is in sight.
+	const lastColumn = Math.min(
+		Math.floor(right / span),
+		firstColumn + columns - 1,
 	);
 	const tiles = [];
 	for (let row = firstRow; row <= lastRow; row++) {
-		const firstColumn = Math.floor((view.x - halfWidth) / span);
-		const lastColumn = Math.floor((view.x + halfWidth) / span);
 		for (let column = firstColumn; column <= lastColumn; column++) {
 			const worldColumn = ((column % columns) + columns) % columns;
 			tiles.push({
@@ -1124,41 +1353,44 @@ function prepareNetwork(network) {
 	};
 }
 
-// Calls `drawAt(toScreen)` once for each place a line is on screen: the map
-// repeats east to west, so that can be more than once. `toScreen` maps a
-// point in chunks to canvas pixels.
+// Calls `drawAt(toScreen)` for each place a line is in sight: flat, the map
+// repeats east to west, so that can be more than once; the globe shows each
+// place once. `toScreen` maps a point in chunks to [x, y, visible].
 function forEachVisibleLap(box, drawAt) {
 	const wide = worldMap.meta.chunks_wide;
-	const scale = pixelsPerChunk();
-	const halfWidth = canvas.width / scale / 2;
-	const halfHeight = canvas.height / scale / 2;
-	if (box[3] < view.y - halfHeight || box[1] > view.y + halfHeight) return;
+	const [left, top, right, bottom] = visibleBox;
+	if (box[3] < top || box[1] > bottom) return;
 	for (const lap of [-2, -1, 0, 1, 2]) {
 		const shift = lap * wide;
-		if (
-			box[2] + shift < view.x - halfWidth ||
-			box[0] + shift > view.x + halfWidth
-		)
-			continue;
-		drawAt(([x, y]) => [
-			(x + shift - view.x) * scale + canvas.width / 2,
-			(y - view.y) * scale + canvas.height / 2,
-		]);
+		if (box[2] + shift < left || box[0] + shift > right) continue;
+		drawAt(([x, y]) => toScreen(x + shift, y));
+		if (view.globe) return;
 	}
 }
 
-// Trace a line through `points`, rounding its corners.
+// Trace a line through `points`, rounding its corners. Where it passes out
+// of sight it is broken, and picked up again where it comes back.
 function tracePath(points, toScreen) {
 	const screen = points.map(toScreen);
 	labelContext.beginPath();
-	labelContext.moveTo(screen[0][0], screen[0][1]);
-	for (let index = 1; index < screen.length - 1; index++) {
-		const [x, y] = screen[index];
-		const [nextX, nextY] = screen[index + 1];
-		labelContext.quadraticCurveTo(x, y, (x + nextX) / 2, (y + nextY) / 2);
-	}
-	const last = screen.at(-1);
-	labelContext.lineTo(last[0], last[1]);
+	let tracing = false;
+	screen.forEach(([x, y, visible], index) => {
+		if (!visible) {
+			tracing = false;
+			return;
+		}
+		if (!tracing) {
+			labelContext.moveTo(x, y);
+			tracing = true;
+			return;
+		}
+		const next = screen[index + 1];
+		if (next?.[2]) {
+			labelContext.quadraticCurveTo(x, y, (x + next[0]) / 2, (y + next[1]) / 2);
+		} else {
+			labelContext.lineTo(x, y);
+		}
+	});
 }
 
 function drawRivers() {
@@ -1178,8 +1410,9 @@ function drawRivers() {
 				// One stroke per stretch, as wide as the river is there.
 				for (let index = 0; index + 1 < river.points.length; index++) {
 					const [from, to] = [river.points[index], river.points[index + 1]];
-					const [fromX, fromY] = toScreen(from);
-					const [toX, toY] = toScreen(to);
+					const [fromX, fromY, fromVisible] = toScreen(from);
+					const [toX, toY, toVisible] = toScreen(to);
+					if (!fromVisible || !toVisible) continue;
 					const water = Math.max(
 						RIVER_MIN_WIDTH_PX * ratio,
 						(from[2] + to[2]) * pixelsPerChunk(),
@@ -1225,9 +1458,7 @@ function drawRoads() {
 		labelContext.strokeStyle = cssColour([255, 255, 255], 0.9);
 		labelContext.lineWidth = ratio;
 		for (const [chunkX, chunkY] of worldMap.network.bridges) {
-			const y = screenRow(chunkY + 0.5);
-			if (y < -20 || y > canvas.height + 20) continue;
-			for (const x of screenColumns(chunkX + 0.5)) {
+			for (const [x, y] of screenPoints(chunkX + 0.5, chunkY + 0.5)) {
 				labelContext.beginPath();
 				labelContext.rect(x - half, y - half / 2, half * 2, half);
 				labelContext.fill();
@@ -1254,21 +1485,19 @@ function drawTrade() {
 	}
 }
 
-// Canvas x positions at which chunk column `chunkX` is visible: the map
-// repeats east to west, so it can appear more than once.
-function screenColumns(chunkX) {
+// Canvas positions at which a chunk point shows: none when it is out of
+// sight, and flat more than one where the map repeats east to west.
+function screenPoints(chunkX, chunkY) {
 	const wide = worldMap.meta.chunks_wide;
-	const scale = pixelsPerChunk();
-	const columns = [];
-	for (const lap of [-1, 0, 1]) {
-		const x = (chunkX + lap * wide - view.x) * scale + canvas.width / 2;
-		if (x > -20 && x < canvas.width + 20) columns.push(x);
+	const points = [];
+	for (const lap of view.globe ? [0] : [-1, 0, 1]) {
+		const [x, y, visible] = toScreen(chunkX + lap * wide, chunkY);
+		const onCanvas =
+			x > -20 && x < canvas.width + 20 && y > -20 && y < canvas.height + 20;
+		if (visible && onCanvas) points.push([x, y]);
 	}
-	return columns;
+	return points;
 }
-
-const screenRow = (chunkY) =>
-	(chunkY - view.y) * pixelsPerChunk() + canvas.height / 2;
 
 // Text with a dark halo, so it reads over any map colour.
 function drawLabel(text, x, y, size, alpha = 1) {
@@ -1304,9 +1533,7 @@ function drawSettlements() {
 		labelContext.lineWidth = ratio;
 		for (const [chunkX, chunkY, settlementSize, , name] of settlements) {
 			if (settlementSize !== size) continue;
-			const y = screenRow(chunkY + 0.5);
-			if (y < -20 || y > canvas.height + 20) continue;
-			for (const x of screenColumns(chunkX + 0.5)) {
+			for (const [x, y] of screenPoints(chunkX + 0.5, chunkY + 0.5)) {
 				labelContext.beginPath();
 				if (style.square) {
 					labelContext.rect(x - radius, y - radius, radius * 2, radius * 2);
@@ -1359,8 +1586,7 @@ function drawStateNames() {
 		const size = Math.max(11 * ratio, Math.min(30 * ratio, span * 0.2));
 		labelContext.font = `600 ${size}px "Public Sans", system-ui, sans-serif`;
 		const halfWidth = labelContext.measureText(faction.name).width / 2;
-		const y = screenRow(at.y);
-		for (const x of screenColumns(at.x)) {
+		for (const [x, y] of screenPoints(at.x, at.y)) {
 			const box = [
 				x - halfWidth,
 				y - size * 0.6,
@@ -1376,8 +1602,7 @@ function drawStateNames() {
 
 function drawSpawnPin() {
 	const ratio = window.devicePixelRatio;
-	const y = screenRow(spawn.y + 0.5);
-	for (const x of screenColumns(spawn.x + 0.5)) {
+	for (const [x, y] of screenPoints(spawn.x + 0.5, spawn.y + 0.5)) {
 		labelContext.beginPath();
 		labelContext.arc(x, y, 7 * ratio, 0, Math.PI * 2);
 		labelContext.lineWidth = 5 * ratio;
@@ -1408,6 +1633,7 @@ function draw() {
 	drawQueued = true;
 	requestAnimationFrame(() => {
 		drawQueued = false;
+		visibleBox = visibleChunkBox();
 		renderer.draw({
 			baseImage: rawLayer ?? TERRAIN_IMAGE,
 			showProvinces: !rawLayer,
@@ -1565,8 +1791,8 @@ labelCanvas.addEventListener("pointermove", (event) => {
 	draw();
 });
 labelCanvas.addEventListener("pointerup", (event) => {
-	if (press && !press.dragged) {
-		const chunk = chunkUnder(event.offsetX, event.offsetY);
+	const chunk = press && !press.dragged && chunkUnder(event.offsetX, event.offsetY);
+	if (chunk) {
 		moveSpawn(chunk.x, chunk.y);
 		selectProvince(provinceUnder(event.offsetX, event.offsetY));
 	}
@@ -1604,6 +1830,20 @@ document.getElementById("zoomReset").addEventListener("click", () => {
 	constrainView();
 	draw();
 });
+const viewToggle = document.getElementById("viewToggle");
+function showGlobe(globe) {
+	view.globe = globe;
+	viewToggle.setAttribute("aria-pressed", String(globe));
+	if (!worldMap) return;
+	constrainView();
+	draw();
+}
+viewToggle.addEventListener("click", () => showGlobe(!view.globe));
+// ?view=globe opens the page on the globe.
+showGlobe(new URLSearchParams(location.search).get("view") === "globe");
+// The canvas beyond the map takes the page's colour, so it follows the theme.
+document.getElementById("themeToggle")?.addEventListener("click", draw);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
 
 mapFrame.addEventListener("keydown", (event) => {
 	if (!renderer) return;

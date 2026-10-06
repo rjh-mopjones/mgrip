@@ -303,6 +303,12 @@ entry to `MAP_MODES`; do not bake a new image for it. Rivers, roads, trade
 and settlements are drawn as vectors from `network.json`, with what shows
 depending on zoom (`MAP_FEATURES`, `SETTLEMENT_STYLES`, `ROAD_STYLES`).
 
+The map can also be shown as a globe (`view.globe`, `?view=globe`): the same
+shader with a sphere in `chunkAtPixel`, and every overlay placed through
+`toScreen`, which says when a point is round the back. Keep both projections
+in that one place. The world is a cylinder, so on the globe the day pole is
+a seam where full day meets the terminus; that is accepted, not a bug.
+
 Zoomed in, the map lays sharper terrain tiles over the whole-world image.
 They are rendered in the browser, on demand, by `gdextension/crates/mg_web`
 (the game's generator compiled to WebAssembly) from `world.mgmacro`, the

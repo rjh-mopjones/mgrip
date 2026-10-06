@@ -1,5 +1,5 @@
 <h1>Map</h1>
-<p>Click a province to select it and set the spawn point there. Drag to pan; the map wraps east to west. Scroll to zoom. North is the night side, south is the day side.</p>
+<p>Click a province to select it and set the spawn point there. Drag to pan; the map wraps east to west. Scroll to zoom. North is the night side, south is the day side. Globe wraps the same map round a sphere; the world is really a cylinder, so the day pole is a seam.</p>
 <div class="spawn" aria-live="polite">
   <dl>
     <div><dt>Spawn chunk</dt><dd id="spawnChunk"></dd></div>
@@ -26,6 +26,7 @@
     <button id="zoomIn" type="button" aria-label="Zoom in">+</button>
     <button id="zoomOut" type="button" aria-label="Zoom out">&minus;</button>
     <button id="zoomReset" type="button">Reset</button>
+    <button id="viewToggle" type="button" aria-pressed="false">Globe</button>
   </div>
   <div class="map-hover" id="mapHover" hidden></div>
   <section class="province-panel" id="provincePanel" aria-live="polite" hidden>

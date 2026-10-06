@@ -349,6 +349,11 @@ button.plain {
 	background: var(--bg);
 	color: var(--text);
 }
+.map-zoom button[aria-pressed="true"] {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: var(--bg);
+}
 .layers:has(#mapModes) {
 	margin-bottom: 10px;
 }
