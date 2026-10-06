@@ -29,12 +29,14 @@ const LOD2_USE_EDGE_SKIRTS := true
 ## written by `margins_grip export macro-pack`. Without one the macro map is
 ## generated on first use, which takes several seconds.
 const MACRO_PACK_PATH_FORMAT := "res://data/macro/seed_%d.mgmacro"
+const CIV_PACK_PATH_FORMAT := "res://data/civ/seed_%d.mgciv"
 
 var _gen: MgTerrainGen
 
 func _ready() -> void:
 	_gen = MgTerrainGen.new()
 	_load_macro_pack()
+	_load_civ_pack()
 
 func _load_macro_pack() -> void:
 	var pack_path := MACRO_PACK_PATH_FORMAT % GameState.world_seed
@@ -43,6 +45,26 @@ func _load_macro_pack() -> void:
 	if _gen.prepare_macro(GameState.world_seed, FileAccess.get_file_as_bytes(pack_path)):
 		print("Macro pack loaded: ", pack_path)
 
+
+func _load_civ_pack() -> void:
+	var pack_path := CIV_PACK_PATH_FORMAT % GameState.world_seed
+	if not FileAccess.file_exists(pack_path):
+		return
+	if _gen.prepare_civ(GameState.world_seed, FileAccess.get_file_as_bytes(pack_path)):
+		print("Civ pack loaded: ", pack_path)
+
+## Who holds the ground at a world position (province, state, nearest
+## settlement), from the civ pack. `{loaded: false}` when none is loaded.
+func civ_at(world_x: float, world_y: float) -> Dictionary:
+	if _gen == null:
+		return {"loaded": false}
+	return _gen.civ_at(world_x, world_y)
+
+## Settlements and roads in a chunk, from the civ pack, for marking the ground.
+func civ_in_chunk(chunk_coord: Vector2i) -> Dictionary:
+	if _gen == null:
+		return {"settlements": [], "roads": [], "bridge": false}
+	return _gen.civ_in_chunk(chunk_coord.x, chunk_coord.y)
 
 ## Sample the macro `BiomeMap` at a single world-space point for agent
 ## observation, compare tooling, or any read-only macro truth query. Returns

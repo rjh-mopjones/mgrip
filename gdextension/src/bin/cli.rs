@@ -117,6 +117,18 @@ enum ExportKind {
         /// Output file (e.g. data/macro/seed_42.mgmacro)
         output: String,
     },
+    /// Run LifeGen on a layers artifact and write what it made (provinces,
+    /// states, settlements, roads) as one file the game loads at startup
+    CivPack {
+        /// Output file (e.g. data/civ/seed_42.mgciv)
+        output: String,
+        /// Layers artifact tag (default: newest with a macromap.png)
+        #[arg(long)]
+        layers_tag: Option<String>,
+        /// LifeGen seed, independent of the terrain seed
+        #[arg(long, default_value_t = 1)]
+        civ_seed: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -264,6 +276,11 @@ fn main() {
                 civ_seed,
             } => run_export_site_map(Path::new(&output_dir), layers_tag.as_deref(), civ_seed),
             ExportKind::MacroPack { seed, output } => run_export_macro_pack(seed, Path::new(&output)),
+            ExportKind::CivPack {
+                output,
+                layers_tag,
+                civ_seed,
+            } => run_export_civ_pack(Path::new(&output), layers_tag.as_deref(), civ_seed),
         },
         Commands::Generate { kind } => match kind {
             GenerateKind::Layers { seed, tag } => run_generate_layers(seed, &tag),
@@ -1260,6 +1277,128 @@ fn run_inspect_layer_stats(layers_tag: &str) {
     }
 }
 
+// ─── export civ-pack ─────────────────────────────────────────────────────────
+
+/// Everything LifeGen makes of a macro map, run in order.
+struct Civilisation {
+    province_map: mg_life::ProvinceMap,
+    faction_map: mg_life::FactionMap,
+    settlements: Vec<mg_life::Settlement>,
+    roads: Vec<mg_life::Road>,
+    names: mg_life::Names,
+}
+
+fn run_lifegen(map: &BiomeMap, analysis: &mg_life::AnalysisGrids, grid: mg_life::Grid, civ_seed: u32) -> Civilisation {
+    let province_map = mg_life::generate_provinces(map, analysis, grid, civ_seed);
+    let faction_map = mg_life::generate_factions(&province_map, &authored_states(), grid, civ_seed);
+    let settlements = mg_life::place_settlements(&province_map, &faction_map, analysis, grid);
+    let roads = mg_life::build_roads(
+        &settlements,
+        &analysis.navigation_cost,
+        &analysis.river_distance,
+        province_map.width,
+        province_map.height,
+        grid,
+    );
+    let names = mg_life::generate_names(&province_map, &faction_map, &settlements, &name_parts(), civ_seed);
+    Civilisation { province_map, faction_map, settlements, roads, names }
+}
+
+fn civ_pack(seed: u32, civ_seed: u32, civ: &Civilisation) -> mg_artifacts::CivPack {
+    let Civilisation { province_map, faction_map, settlements, roads, names } = civ;
+    mg_artifacts::CivPack {
+        seed,
+        civ_seed,
+        width: province_map.width as u32,
+        height: province_map.height as u32,
+        province_ids: province_map.province_ids.clone(),
+        provinces: province_map
+            .provinces
+            .iter()
+            .map(|province| mg_artifacts::CivProvince {
+                name: names.provinces[(province.id - 1) as usize].clone(),
+                faction: faction_map.faction_of_province(province.id),
+                state: match faction_map.political_states[(province.id - 1) as usize] {
+                    mg_life::PoliticalState::Claimed { .. } => "claimed",
+                    mg_life::PoliticalState::Unclaimed => "unclaimed",
+                    mg_life::PoliticalState::Uninhabited => "uninhabited",
+                }
+                .to_string(),
+                habitability: province.habitability,
+            })
+            .collect(),
+        factions: faction_map
+            .factions
+            .iter()
+            .map(|faction| mg_artifacts::CivFaction {
+                name: names.factions[(faction.id - 1) as usize].clone(),
+                capital_name: names.provinces[(faction.capital_province - 1) as usize].clone(),
+                authored: faction.name.is_some(),
+            })
+            .collect(),
+        settlements: settlements
+            .iter()
+            .map(|settlement| mg_artifacts::CivSettlement {
+                name: names.settlements[(settlement.id - 1) as usize].clone(),
+                x: settlement.position.0 as u16,
+                y: settlement.position.1 as u16,
+                size: format!("{:?}", settlement.size_class),
+                province: settlement.province_id,
+            })
+            .collect(),
+        roads: roads
+            .iter()
+            .map(|road| mg_artifacts::CivRoad {
+                kind: format!("{:?}", road.kind),
+                path: road.path.iter().map(|&(x, y)| (x as u16, y as u16)).collect(),
+                crossings: road.crossings.iter().map(|&(x, y)| (x as u16, y as u16)).collect(),
+            })
+            .collect(),
+    }
+}
+
+fn run_export_civ_pack(output: &Path, layers_tag: Option<&str>, civ_seed: u32) {
+    let fail = |message: String| -> ! {
+        eprintln!("error: {message}");
+        std::process::exit(1);
+    };
+    let started = Instant::now();
+    let store = ArtifactStore::new().unwrap_or_else(|e| fail(format!("artifact store: {e}")));
+    let tag = match layers_tag {
+        Some(tag) => tag.to_string(),
+        None => find_newest_layer_image(&store, "macromap.png")
+            .map(|(tag, ..)| tag)
+            .unwrap_or_else(|| fail("no layers artifact with macromap.png found".to_string())),
+    };
+    let manifest = store
+        .load_layer_manifest(&tag)
+        .unwrap_or_else(|e| fail(format!("layers artifact '{tag}' not found: {e}")));
+    let (map, _) = store
+        .load_layers_data(&tag)
+        .unwrap_or_else(|e| fail(format!("could not load layers data for '{tag}': {e}")));
+    let grid = macro_grid(&map);
+    let analysis = mg_life::compute_analysis_grids(&map, grid);
+    let civ = run_lifegen(&map, &analysis, grid, civ_seed);
+    let pack = civ_pack(manifest.seed, civ_seed, &civ);
+    let bytes = pack.to_bytes().unwrap_or_else(|e| fail(e));
+    if let Some(directory) = output.parent() {
+        fs::create_dir_all(directory)
+            .unwrap_or_else(|e| fail(format!("creating {}: {e}", directory.display())));
+    }
+    fs::write(output, &bytes).unwrap_or_else(|e| fail(format!("writing {}: {e}", output.display())));
+    println!(
+        "civ pack for seed {} (civ seed {civ_seed}) written to {}: {} provinces, {} states, {} settlements, {} roads, {:.1} MB, {:.1}s (layers '{tag}')",
+        manifest.seed,
+        output.display(),
+        pack.provinces.len(),
+        pack.factions.len(),
+        pack.settlements.len(),
+        pack.roads.len(),
+        bytes.len() as f64 / 1_048_576.0,
+        started.elapsed().as_secs_f64()
+    );
+}
+
 // ─── export site-map ─────────────────────────────────────────────────────────
 
 /// Site map images are halved until they are no wider than this.
@@ -1395,18 +1534,8 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     // LifeGen stages 2 to 6 (spec 011). Provinces and factions go out as data
     // (the map page colours them itself), and so do settlements, roads and
     // trade (it draws them as lines and markers).
-    let province_map = mg_life::generate_provinces(&map, &analysis, grid, civ_seed);
-    let faction_map =
-        mg_life::generate_factions(&province_map, &authored_states(), grid, civ_seed);
-    let settlements = mg_life::place_settlements(&province_map, &faction_map, &analysis, grid);
-    let roads = mg_life::build_roads(
-        &settlements,
-        &analysis.navigation_cost,
-        &analysis.river_distance,
-        province_map.width,
-        province_map.height,
-        grid,
-    );
+    let Civilisation { province_map, faction_map, settlements, roads, names } =
+        run_lifegen(&map, &analysis, grid, civ_seed);
     let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
 
     relief_image(&map, &province_map.province_ids)
@@ -1419,14 +1548,6 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         mg_noise::rim_sea::sea_rings_the_world(&is_sea, sea.width() as usize, sea.height() as usize);
     sea.save(output_dir.join(SITE_MAP_SEA_IMAGE))
         .unwrap_or_else(|e| fail(format!("saving {SITE_MAP_SEA_IMAGE}: {e}")));
-
-    let names = mg_life::generate_names(
-        &province_map,
-        &faction_map,
-        &settlements,
-        &name_parts(),
-        civ_seed,
-    );
 
     // Lines the map page draws itself, so they stay sharp at any zoom. All
     // coordinates are in chunks.

@@ -16,11 +16,13 @@
 //!         └── micro_biome.bin
 //! ```
 
+mod civ_pack;
 mod error;
 mod macro_pack;
 mod manifest;
 mod store;
 
+pub use civ_pack::{CivFaction, CivPack, CivProvince, CivRoad, CivSettlement};
 pub use error::ArtifactError;
 pub use macro_pack::MacroPack;
 pub use manifest::{LayerManifest, LevelManifest};

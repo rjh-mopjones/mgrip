@@ -3,4 +3,5 @@ gdextension/target/
 __pycache__/
 site/dist/
 data/macro/
+data/civ/
 site/node_modules/

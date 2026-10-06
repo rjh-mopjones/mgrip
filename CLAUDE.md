@@ -31,13 +31,24 @@ cell per chunk).
 - Orders and nomads are not represented
 - Calibration is open; read the spec's open questions before relying on the
   numbers
-- Nothing in the Godot runtime reads LifeGen data yet
+- The game reads LifeGen through a civ pack (`data/civ/seed_<seed>.mgciv`,
+  gitignored, written by `margins_grip export civ-pack`), loaded beside
+  the macro pack. It gives the HUD its province, state and nearest
+  settlement, and `scripts/world/civ_marks.gd` marks settlements, roads
+  and bridges on the ground. Regenerate it after any LifeGen or terrain
+  change; a pack for another seed is ignored. Marks, not buildings: there
+  are still no settlement, road or bridge assets
 
 ## Quick reference
 
 Build Rust extension:
 ```sh
 cargo build --release --manifest-path gdextension/Cargo.toml
+```
+
+Civ pack (LifeGen for the game; needs a layers artifact):
+```sh
+./gdextension/target/release/margins_grip export civ-pack data/civ/seed_42.mgciv
 ```
 
 Run the project:
@@ -75,7 +86,7 @@ python3 tools/test_fly_swim.py [--windowed]
 | `project.godot` | Project entry, input map, autoload wiring |
 | `scenes/` | Runtime scenes (`main_menu.tscn`, `world.tscn`, `map_selector.tscn`) |
 | `scripts/autoload/` | Singletons: `game_state.gd`, `generation_manager.gd`, `flythrough.gd`, `agent_runtime.gd` |
-| `scripts/world/` | Terrain runtime, chunk streaming (`world.gd`, `chunk_streamer.gd`) |
+| `scripts/world/` | Terrain runtime, chunk streaming (`world.gd`, `chunk_streamer.gd`), LifeGen marks (`civ_marks.gd`) |
 | `scripts/player/` | Player controller (`fps_controller.gd`) |
 | `scripts/ui/` | Map overlay, chunk preview renderer |
 | `gdextension/` | Rust workspace for terrain generation and mesh data |
@@ -93,6 +104,7 @@ python3 tools/test_fly_swim.py [--windowed]
 - `chunk_streamer.gd` — chunk lifecycle, LOD, prewarm, horizon streaming, collision
 - `fps_controller.gd` — player movement, scripted motion seam, fly/swim states
 - `agent_runtime.gd` — developer-only agent session, action dispatch, observation API
+- `civ_marks.gd` — marks on the ground for settlements, roads and bridges, from the civ pack; reads terrain only through `world.gd`
 - `mg_life` (Rust crate) — LifeGen; reads terrain only through `mg_core::TerrainQuery`
 
 Build on these seams. Do not create parallel ownership paths.
