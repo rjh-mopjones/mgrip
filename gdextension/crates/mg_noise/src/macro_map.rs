@@ -152,7 +152,9 @@ impl Base {
     /// the cube's cells.
     fn open_rim_sea(&mut self) {
         let grid = &self.grid;
-        let (width, height) = (4 * grid.n, 2 * grid.n);
+        // Finer than the smallest cube cell (at a corner, about three
+        // quarters of the mean), so every cell under a strait is cut.
+        let (width, height) = (6 * grid.n, 3 * grid.n);
         let wu_per_cell = WORLD_WIDTH / width as f64;
         let position = |cell: usize| {
             (
@@ -203,6 +205,15 @@ impl Base {
         for flat in 0..width * height {
             if after[flat] < before[flat] {
                 let cell = grid.cell_of(points[flat]);
+                self.continentalness[cell] = self.continentalness[cell].min(after[flat]);
+            }
+        }
+        for cell in 0..grid.cell_count() {
+            let (wx, wy) = grid.world_position(cell);
+            let x = ((wx / wu_per_cell).floor() as usize).min(width - 1);
+            let y = ((wy / wu_per_cell).floor() as usize).min(height - 1);
+            let flat = y * width + x;
+            if after[flat] < before[flat] {
                 self.continentalness[cell] = self.continentalness[cell].min(after[flat]);
             }
         }
