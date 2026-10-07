@@ -1670,9 +1670,10 @@ fn write_polar_faces(
             .into_par_iter()
             .flat_map_iter(|pixel| {
                 let (i, j) = ((pixel % size) as f64 + 0.5, (pixel / size) as f64 + 0.5);
-                // The face's angles at this pixel, as the cube lays them.
+                // The face's angles at this pixel, as the cube lays them:
+                // columns with alpha increasing, rows with beta decreasing.
                 let angle = |k: f64| (k / size as f64 * 2.0 - 1.0) * std::f64::consts::FRAC_PI_4;
-                let point = mg_core::CubeGrid::point_on_face(face, angle(i), angle(j));
+                let point = mg_core::CubeGrid::point_on_face(face, angle(i), -angle(j));
                 let (wx, wy) = sphere.world_at(point);
                 sample(wx, wy).map(|value| value.round().clamp(0.0, 255.0) as u8)
             })

@@ -61,7 +61,7 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    pub fn new(macro_map: &BiomeMap, seed: u32) -> Self {
+    pub fn new(macro_map: &BiomeMap, _seed: u32) -> Self {
         let grid = CubeGrid::margin(MACRO_CUBE_N / SHRINK);
         let (width, height) = (4 * grid.n, 2 * grid.n);
         let positions: Vec<(f64, f64)> = (0..grid.cell_count())
@@ -94,11 +94,7 @@ impl Sandbox {
                 &sampled(&macro_map.tectonic),
                 &grid,
             ),
-            // The macro pack does not carry light level; it follows from position.
-            light_level: positions
-                .iter()
-                .map(|&(wx, wy)| mg_noise::biome_map::light_level_at(seed, wx, wy))
-                .collect(),
+            light_level: sampled(&macro_map.light_level),
             humidity: sampled(&macro_map.humidity),
             ground: Vec::new(),
             sediment: Vec::new(),

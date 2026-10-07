@@ -21,7 +21,7 @@ use mg_noise::{generate_macro_probe, BiomeMap, RiverCourse};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-const MAGIC: &[u8; 6] = b"MGMP06";
+const MAGIC: &[u8; 6] = b"MGMP07";
 /// Largest probe difference still counted as the same generator. Allows for
 /// maths library differences between native and web builds.
 const PROBE_TOLERANCE: f32 = 1.0e-4;
@@ -43,6 +43,9 @@ pub struct MacroPack {
     rivers: Vec<f32>,
     temperature: Vec<f32>,
     aridity: Vec<f32>,
+    /// Light is part of the world, not of a position: on a seeded world
+    /// (spec 017) it is the flat map's, and tiles take it from here.
+    light_level: Vec<f32>,
     sand: Vec<f32>,
     biomes: Vec<TileType>,
     fine_heights: Option<PackedHeights>,
@@ -124,6 +127,7 @@ impl MacroPack {
             rivers: narrowed(&map.rivers),
             temperature: narrowed(&map.temperature),
             aridity: narrowed(&map.aridity),
+            light_level: narrowed(&map.light_level),
             sand: narrowed(&map.sand),
             biomes: map.biomes.clone(),
             fine_heights: map.fine_heights.as_ref().map(PackedHeights::from_heights),
@@ -158,6 +162,7 @@ impl MacroPack {
         map.rivers = widened(&self.rivers);
         map.temperature = widened(&self.temperature);
         map.aridity = widened(&self.aridity);
+        map.light_level = widened(&self.light_level);
         map.sand = widened(&self.sand);
         map.biomes = self.biomes.clone();
         map.fine_heights = self.fine_heights.as_ref().map(PackedHeights::to_heights);

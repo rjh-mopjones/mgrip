@@ -544,18 +544,16 @@ function cubeCellAt(longitude, latitude) {
 		}
 	});
 	const frame = CUBE_FACES[face];
-	const along = (tangent) =>
-		Math.min(
-			size - 1,
-			Math.max(
-				0,
-				Math.floor(((Math.atan(tangent) / (Math.PI / 4) + 1) / 2) * size),
-			),
-		);
+	// Columns run with the angle increasing, rows with it decreasing, as
+	// the cube lays its cells.
+	const clampCell = (cell) =>
+		Math.min(size - 1, Math.max(0, Math.floor(cell * size)));
+	const alpha = Math.atan(dot(point, frame.right) / nearest);
+	const beta = Math.atan(-dot(point, frame.down) / nearest);
 	return [
 		face,
-		along(dot(point, frame.right) / nearest),
-		along(-dot(point, frame.down) / nearest),
+		clampCell((alpha / (Math.PI / 4) + 1) / 2),
+		clampCell((1 - beta / (Math.PI / 4)) / 2),
 	];
 }
 
@@ -909,7 +907,8 @@ vec4 capPoint(vec2 pixel) {
 	// looking down on the north pole and along -x looking up at the south.
 	float row = latitude > 0.0 ? -point.x : point.x;
 	vec2 angles = vec2(atan(point.y / axis), atan(row / axis));
-	return vec4((angles / (PI / 4.0) + 1.0) * 0.5, latitude, 1.0);
+	// Columns run with the angle increasing, rows with it decreasing.
+	return vec4((angles.x / (PI / 4.0) + 1.0) * 0.5, (1.0 - angles.y / (PI / 4.0)) * 0.5, latitude, 1.0);
 }
 
 vec3 capShade(vec4 cap) {
@@ -948,7 +947,8 @@ vec3 cubeCell(vec2 pixel) {
 		}
 	}
 	vec2 angles = vec2(atan(dot(point, FACE_RIGHT[face]) / nearest), atan(-dot(point, FACE_DOWN[face]) / nearest));
-	return vec3(float(face), (angles / (PI / 4.0) + 1.0) * 0.5 * uCapSize);
+	// Columns run with the angle increasing, rows with it decreasing.
+	return vec3(float(face), (angles.x / (PI / 4.0) + 1.0) * 0.5 * uCapSize, (1.0 - angles.y / (PI / 4.0)) * 0.5 * uCapSize);
 }
 
 int cubeProvinceOfCell(int face, ivec2 cell) {
