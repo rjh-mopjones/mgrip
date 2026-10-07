@@ -139,6 +139,13 @@ impl CubeGrid {
         ])
     }
 
+    /// The point on the unit sphere at angles `(alpha, beta)` on `face`,
+    /// each in (-π/4, π/4): the face's own frame, which an image of the
+    /// face is laid out in.
+    pub fn point_on_face(face: usize, alpha: f64, beta: f64) -> Point {
+        Self::point_at_angles(face, alpha, beta)
+    }
+
     /// A cell's centre on the unit sphere.
     pub fn point(&self, index: usize) -> Point {
         let (face, u, v) = self.cell(index);

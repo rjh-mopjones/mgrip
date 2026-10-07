@@ -1628,39 +1628,61 @@ fn run_lifegen_on_cube(
     )
 }
 
-/// The polar faces of the macro cube (spec 017 stage 3): each face as the
-/// terrain image the flat map is drawn with, and its province ids two
-/// bytes a cell, for the globe to draw the poles from the cube itself.
+/// Pixels a side of a polar face image: about eight per world unit at the
+/// face's middle, the sheet's own detail.
+const SITE_MAP_CAP_IMAGE_SIZE: u32 = 2048;
+
+/// The polar faces of the macro cube (spec 017 stage 3): each as the sheet's
+/// own picture of the world (`macromap.png`, which the tiles drew from the
+/// cube's fine land) resampled onto the face, so the poles are drawn in
+/// exactly the colours and relief the sheet has and the two meet without a
+/// seam; and each face's province ids, two bytes a cell.
 fn write_polar_faces(
     macro_cube: &mg_noise::MacroMap,
-    map: &BiomeMap,
+    macromap: &RgbaImage,
     cube_province_ids: &[u16],
     output_dir: &Path,
 ) -> Result<(), String> {
     let n = macro_cube.grid.n;
-    let hints = mg_noise::NormalizationHints::for_macro_map(map);
+    let sphere = macro_cube.grid.sphere;
+    let (source_w, source_h) = (macromap.width() as f64, macromap.height() as f64);
+    let (px_per_wx, px_per_wy) = (source_w / WORLD_WIDTH, source_h / WORLD_HEIGHT);
+    // The sheet's pixel at a world position, between pixels in straight
+    // lines; the sheet joins east to west.
+    let sample = |wx: f64, wy: f64| -> [f64; 4] {
+        let fx = (wx * px_per_wx - 0.5).rem_euclid(source_w);
+        let fy = (wy * px_per_wy - 0.5).clamp(0.0, source_h - 1.0);
+        let (x0, y0) = (fx.floor() as u32, fy.floor() as u32);
+        let (tx, ty) = (fx - x0 as f64, fy - y0 as f64);
+        let x1 = (x0 + 1) % macromap.width();
+        let y1 = (y0 + 1).min(macromap.height() - 1);
+        let at = |x: u32, y: u32| macromap.get_pixel(x, y).0.map(f64::from);
+        let (a, b, c, d) = (at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1));
+        std::array::from_fn(|channel| {
+            let top = a[channel] + (b[channel] - a[channel]) * tx;
+            let bottom = c[channel] + (d[channel] - c[channel]) * tx;
+            top + (bottom - top) * ty
+        })
+    };
+    let size = SITE_MAP_CAP_IMAGE_SIZE;
     for (face, pole) in [(4usize, "north"), (5usize, "south")] {
-        let cells = face * n * n..(face + 1) * n * n;
-        let mut face_map = BiomeMap::empty(n, n, n as f64, n as f64);
-        let slice = |layer: &[f64]| layer[cells.clone()].to_vec();
-        face_map.heightmap = slice(&macro_cube.heightmap);
-        face_map.biomes = macro_cube.biomes[cells.clone()].to_vec();
-        face_map.temperature = slice(&macro_cube.temperature);
-        face_map.humidity = slice(&macro_cube.humidity);
-        face_map.light_level = slice(&macro_cube.light_level);
-        face_map.aridity = slice(&macro_cube.aridity);
-        face_map.rivers = slice(&macro_cube.rivers);
-        face_map.sand = slice(&macro_cube.sand);
-        face_map.erosion = slice(&macro_cube.erosion);
-        face_map.snowpack = slice(&macro_cube.snowpack);
-        face_map.vegetation_density = slice(&macro_cube.vegetation_density);
-        face_map.continentalness = slice(&macro_cube.continentalness);
-        let image = RgbaImage::from_raw(n as u32, n as u32, mg_noise::render_terrain(&face_map, Some(&hints)))
-            .expect("face render matches its size");
+        let pixels: Vec<u8> = (0..size * size)
+            .into_par_iter()
+            .flat_map_iter(|pixel| {
+                let (i, j) = ((pixel % size) as f64 + 0.5, (pixel / size) as f64 + 0.5);
+                // The face's angles at this pixel, as the cube lays them.
+                let angle = |k: f64| (k / size as f64 * 2.0 - 1.0) * std::f64::consts::FRAC_PI_4;
+                let point = mg_core::CubeGrid::point_on_face(face, angle(i), angle(j));
+                let (wx, wy) = sphere.world_at(point);
+                sample(wx, wy).map(|value| value.round().clamp(0.0, 255.0) as u8)
+            })
+            .collect();
         let file_name = format!("cap-{pole}.png");
-        image
+        RgbaImage::from_raw(size, size, pixels)
+            .expect("face image matches its size")
             .save(output_dir.join(&file_name))
             .map_err(|e| format!("saving {file_name}: {e}"))?;
+        let cells = face * n * n..(face + 1) * n * n;
         let bytes: Vec<u8> = cube_province_ids[cells]
             .iter()
             .flat_map(|id| id.to_le_bytes())
@@ -1960,7 +1982,10 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         .save(output_dir.join("provinces-poles.png"))
         .unwrap_or_else(|e| fail(format!("saving provinces-poles.png: {e}")));
     // The poles themselves, from the cube's polar faces.
-    write_polar_faces(&macro_cube, &map, &lifegen.cube_province_ids, output_dir)
+    let macromap = image::open(store.layer_image_path(&tag, SITE_MAP_TERRAIN_IMAGE))
+        .unwrap_or_else(|e| fail(format!("could not load {SITE_MAP_TERRAIN_IMAGE}: {e}")))
+        .to_rgba8();
+    write_polar_faces(&macro_cube, &macromap, &lifegen.cube_province_ids, output_dir)
         .unwrap_or_else(|e| fail(e));
 
     relief_image(&map, &province_map.province_ids)
