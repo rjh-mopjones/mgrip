@@ -607,7 +607,8 @@ function provinceUnder(cssX, cssY) {
 	if (view.globe && worldMap.cubeProvinces) {
 		const scale = canvas.width / canvas.clientWidth;
 		const lonLat = lonLatAtPixel(cssX * scale, cssY * scale);
-		if (!lonLat) return 0;
+		const chunk = chunkUnder(cssX, cssY);
+		if (!lonLat || !chunk || isSea(chunk.x, chunk.y)) return 0;
 		return cubeProvinceAt(...cubeCellAt(lonLat.longitude, lonLat.latitude));
 	}
 	const chunk = chunkUnder(cssX, cssY);
@@ -961,11 +962,20 @@ int cubeProvinceOfCell(int face, ivec2 cell) {
 // cell's corner that pokes into a neighbouring province goes to it, so
 // borders run diagonally rather than in steps. Neighbours are read within
 // the face; a cell at a face's edge is clamped to it.
-int cubeProvinceAt(vec3 at) {
+// The coast is the sea image's, finer than a cell: sea by it is sea, and
+// land by it in a cell the cube calls sea belongs to a province next door.
+int cubeProvinceAt(vec3 at, vec2 chunk) {
+	if (isSea(chunk)) return 0;
 	int face = int(at.x);
 	ivec2 cell = ivec2(floor(at.yz));
 	int own = cubeProvinceOfCell(face, cell);
-	if (own == 0) return 0;
+	if (own == 0) {
+		for (int direction = 0; direction < 8; direction++) {
+			int beside = cubeProvinceOfCell(face, cell + ivec2(round(RING[direction] * 1.3)));
+			if (beside != 0) return beside;
+		}
+		return 0;
+	}
 	vec2 inCell = fract(at.yz);
 	vec2 toEdge = min(inCell, 1.0 - inCell);
 	if (toEdge.x + toEdge.y >= 0.5) return own;
@@ -986,7 +996,7 @@ bool onCap(vec4 cap) {
 int provinceAtPixel(vec2 pixel, int fallback) {
 	vec3 hit = chunkAtPixel(pixel);
 	if (hit.z < 0.5) return fallback;
-	if (uGlobe > 0.5 && uCaps > 0.5) return cubeProvinceAt(cubeCell(pixel));
+	if (uGlobe > 0.5 && uCaps > 0.5) return cubeProvinceAt(cubeCell(pixel), hit.xy);
 	if (hit.y < 0.0 || hit.y >= uWorld.y) return fallback;
 	return provinceAt(hit.xy);
 }
@@ -1014,7 +1024,7 @@ void main() {
 		return;
 	}
 	vec3 shade;
-	int province = uGlobe > 0.5 && uCaps > 0.5 ? cubeProvinceAt(cubeCell(pixel)) : provinceAt(chunk);
+	int province = uGlobe > 0.5 && uCaps > 0.5 ? cubeProvinceAt(cubeCell(pixel), chunk) : provinceAt(chunk);
 	if (capPixel) {
 		shade = capShade(cap);
 	} else {
