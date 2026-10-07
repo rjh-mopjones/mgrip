@@ -208,6 +208,18 @@ pub struct LandscapeInputs<'a> {
     pub light_level: &'a [f64],
     pub humidity: &'a [f64],
     pub grid: &'a CubeGrid,
+    /// Land the landscape is grown from rather than from flat (spec 017).
+    pub seed: Option<SeedGround<'a>>,
+}
+
+/// Given ground, one height per cell, and how far it holds: 1 where the
+/// land is the seed's, 0 where it is the landscape's own, between where the
+/// two blend. Where it holds fully the coarse pass pins the ground at it;
+/// the fine pass starts from it and erodes on.
+#[derive(Clone, Copy)]
+pub struct SeedGround<'a> {
+    pub heights: &'a [f64],
+    pub hold: &'a [f64],
 }
 
 pub struct Landscape {
@@ -231,6 +243,8 @@ struct Level {
     light_level: Vec<f64>,
     humidity: Vec<f64>,
     grid: CubeGrid,
+    seed_heights: Option<Vec<f64>>,
+    hold: Option<Vec<f64>>,
 }
 
 impl Level {
@@ -243,6 +257,32 @@ impl Level {
             light_level: inputs.light_level.to_vec(),
             humidity: inputs.humidity.to_vec(),
             grid: inputs.grid.clone(),
+            seed_heights: inputs.seed.map(|seed| seed.heights.to_vec()),
+            hold: inputs.seed.map(|seed| seed.hold.to_vec()),
+        }
+    }
+
+    /// `ground` with every cell the seed holds fully put at the seed's height.
+    fn pin(&self, ground: &mut [f64]) {
+        let (Some(heights), Some(hold)) = (&self.seed_heights, &self.hold) else {
+            return;
+        };
+        for cell in 0..ground.len() {
+            if hold[cell] >= 1.0 {
+                ground[cell] = heights[cell];
+            }
+        }
+    }
+
+    /// `ground` drawn towards the seed by how far the seed holds, on land.
+    fn blend_to_seed(&self, ground: &mut [f64], is_sea: &[bool]) {
+        let (Some(heights), Some(hold)) = (&self.seed_heights, &self.hold) else {
+            return;
+        };
+        for cell in 0..ground.len() {
+            if !is_sea[cell] {
+                ground[cell] += (heights[cell] - ground[cell]) * hold[cell];
+            }
         }
     }
 
@@ -257,6 +297,14 @@ impl Level {
             rock_hardness: halve(&self.rock_hardness),
             light_level: halve(&self.light_level),
             humidity: halve(&self.humidity),
+            seed_heights: self.seed_heights.as_deref().map(halve),
+            // A coarse cell holds only if all four of its cells do.
+            hold: self.hold.as_deref().map(|hold| {
+                halve(hold)
+                    .into_iter()
+                    .map(|mean| if mean >= 1.0 { 1.0 } else { mean.min(0.999) })
+                    .collect()
+            }),
             grid: coarse,
         }
     }
@@ -273,6 +321,9 @@ impl Level {
             light_level: double(&self.light_level),
             humidity: double(&self.humidity),
             grid: fine,
+            // The seed is a macro matter; refinement grows freely.
+            seed_heights: None,
+            hold: None,
         }
     }
 
@@ -306,7 +357,16 @@ impl Level {
     }
 
     /// Run `steps` of uplift and erosion on `ground`, draining to `is_sea`.
-    fn erode(&self, ground: &mut Vec<f64>, sediment: &mut [f64], is_sea: &[bool], steps: u32) {
+    /// With `pinned`, the cells the seed holds are put back at its heights
+    /// after every step.
+    fn erode(
+        &self,
+        ground: &mut Vec<f64>,
+        sediment: &mut [f64],
+        is_sea: &[bool],
+        steps: u32,
+        pinned: bool,
+    ) {
         let uplift_share = UpliftSources::new(
             &self.continentalness,
             &self.peaks_valleys,
@@ -339,6 +399,9 @@ impl Level {
         let params = ErosionParams::default();
         for step in 0..steps {
             erosion_step(ground, sediment, &land, &params, step);
+            if pinned {
+                self.pin(ground);
+            }
         }
     }
 }
@@ -353,15 +416,20 @@ pub fn grow_landscape(inputs: &LandscapeInputs) -> Landscape {
 
     let can_halve = grid.n % 2 == 0 && grid.n >= COARSE_MIN_FACE;
     if can_halve {
+        // The coarse pass grows the land from flat; with a seed, the land
+        // the seed holds is pinned at the seed's heights throughout, so the
+        // rest grows against it and drains through it.
         let coarse = fine.halved();
         let coarse_sea = coarse.is_sea();
         let mut coarse_ground = starting_ground(&coarse.continentalness, &coarse_sea);
+        coarse.pin(&mut coarse_ground);
         let mut coarse_sediment = vec![0.0; coarse.grid.cell_count()];
         coarse.erode(
             &mut coarse_ground,
             &mut coarse_sediment,
             &coarse_sea,
             COARSE_STEPS,
+            true,
         );
 
         // Carry the coarse land up. Where the two resolutions disagree about
@@ -374,9 +442,15 @@ pub fn grow_landscape(inputs: &LandscapeInputs) -> Landscape {
                 sediment[cell] = removed[cell];
             }
         }
-        fine.erode(&mut ground, &mut sediment, &is_sea, FINE_STEPS);
+        // The fine pass starts from the seed where it holds and erodes
+        // freely: the knit, which changes a mature landscape little.
+        fine.blend_to_seed(&mut ground, &is_sea);
+        fine.erode(&mut ground, &mut sediment, &is_sea, FINE_STEPS, false);
     } else {
-        fine.erode(&mut ground, &mut sediment, &is_sea, COARSE_STEPS);
+        fine.pin(&mut ground);
+        fine.erode(&mut ground, &mut sediment, &is_sea, COARSE_STEPS, true);
+        fine.blend_to_seed(&mut ground, &is_sea);
+        fine.erode(&mut ground, &mut sediment, &is_sea, FINE_STEPS, false);
     }
 
     for cell in ground.iter_mut() {
@@ -515,7 +589,7 @@ pub fn refine_landscape(
             }
         }
         let mut sediment = vec![0.0; ground.len()];
-        finer.erode(&mut ground, &mut sediment, &is_sea, steps);
+        finer.erode(&mut ground, &mut sediment, &is_sea, steps, false);
         level = finer;
     }
 
@@ -606,6 +680,7 @@ mod tests {
             light_level: &vec![0.4; grid.cell_count()],
             humidity: &even,
             grid: &grid,
+            seed: None,
         });
         (grid, landscape, continentalness)
     }

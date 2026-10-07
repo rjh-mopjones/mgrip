@@ -21,7 +21,9 @@ use crate::biome_splines::BiomeSplines;
 use crate::derived;
 use crate::landscape::{
     flatness_on_cube, grow_landscape, refine_landscape, FineHeights, Landscape, LandscapeInputs,
+    SeedGround,
 };
+use crate::seed_land::SeedLand;
 use crate::rivers::RiverNetwork;
 use crate::strategy::{
     ContinentalnessStrategy, HumidityStrategy, LightLevelStrategy, PeaksAndValleysStrategy,
@@ -47,6 +49,18 @@ pub(crate) const SEED_PEAKS_VALLEYS: u32 = 7;
 /// A cell with at least this much sand on it (see `MacroMap::sand`) is a
 /// sand sea.
 pub const SAND_SEA_FROM: f64 = 0.45;
+
+/// A seeded world (spec 017) holds the seed's land fully up to this
+/// latitude and not at all from `SEED_FADES_OUT_DEGREES`, where the
+/// sphere's own layers stand.
+pub const SEED_HOLDS_TO_DEGREES: f64 = 70.0;
+pub const SEED_FADES_OUT_DEGREES: f64 = 85.0;
+
+/// The seed's heights and how far they hold, one each per cube cell.
+struct Seeding {
+    heights: Vec<f64>,
+    hold: Vec<f64>,
+}
 
 /// The world on the cube, every layer one value per cell.
 pub struct MacroMap {
@@ -143,6 +157,41 @@ impl Base {
         }
     }
 
+    /// The cube's own layers with the flat map's laid over them where the
+    /// seed holds (spec 017): the plates and the land as the flat map had
+    /// them, the sphere's own towards the poles.
+    fn sample_seeded(seed: u32, n: usize, land: &SeedLand) -> (Self, Seeding) {
+        let mut base = Self::sample(seed, n);
+        let grid = &base.grid;
+        let (holds_to, fades_out) = (
+            SEED_HOLDS_TO_DEGREES.to_radians(),
+            SEED_FADES_OUT_DEGREES.to_radians(),
+        );
+        let mut seeding = Seeding {
+            heights: Vec::with_capacity(grid.cell_count()),
+            hold: Vec::with_capacity(grid.cell_count()),
+        };
+        for cell in 0..grid.cell_count() {
+            let latitude = grid.point(cell)[2].clamp(-1.0, 1.0).asin().abs();
+            let fade = ((latitude - holds_to) / (fades_out - holds_to)).clamp(0.0, 1.0);
+            let hold = 1.0 - fade * fade * (3.0 - 2.0 * fade);
+            let (wx, wy) = grid.world_position(cell);
+            let lay = |own: &mut f64, field: &[f64]| {
+                *own += (land.sample(field, wx, wy) - *own) * hold;
+            };
+            lay(&mut base.continentalness[cell], &land.continentalness);
+            lay(&mut base.tectonic[cell], &land.tectonic);
+            lay(&mut base.rock_hardness[cell], &land.rock_hardness);
+            lay(&mut base.peaks_valleys[cell], &land.peaks_valleys);
+            if hold > 0.5 {
+                base.tectonic_plate_ids[cell] = land.nearest(&land.tectonic_plate_ids, wx, wy);
+            }
+            seeding.heights.push(land.sample(&land.heightmap, wx, wy));
+            seeding.hold.push(hold);
+        }
+        (base, seeding)
+    }
+
     /// Join the terminus seas into one that can be sailed right round the
     /// world, before the land is grown, so the straits get coasts like any
     /// other.
@@ -228,6 +277,7 @@ impl Base {
             light_level: &self.light_level,
             humidity: &self.humidity,
             grid: &self.grid,
+            seed: None,
         }
     }
 
@@ -244,11 +294,18 @@ impl Base {
             .collect()
     }
 
-    /// The land grown from flat, with the straits of the rim sea opened
-    /// first.
-    fn grown(mut self) -> (Self, Landscape) {
+    /// The land grown from flat, or from the seed where one is given, with
+    /// the straits of the rim sea opened first.
+    fn grown(mut self, seeding: Option<&Seeding>) -> (Self, Landscape) {
         self.open_rim_sea();
-        let landscape = grow_landscape(&self.landscape_inputs());
+        let inputs = LandscapeInputs {
+            seed: seeding.map(|seeding| SeedGround {
+                heights: &seeding.heights,
+                hold: &seeding.hold,
+            }),
+            ..self.landscape_inputs()
+        };
+        let landscape = grow_landscape(&inputs);
         (self, landscape)
     }
 }
@@ -257,7 +314,7 @@ impl Base {
 /// data stores it; if this build produces a different probe for the same
 /// seed, the generator has changed and the saved data is stale.
 pub fn generate_macro_probe(seed: u32) -> Vec<f32> {
-    let (_, landscape) = Base::sample(seed, PROBE_CUBE_N).grown();
+    let (_, landscape) = Base::sample(seed, PROBE_CUBE_N).grown(None);
     landscape
         .heightmap
         .iter()
@@ -266,9 +323,24 @@ pub fn generate_macro_probe(seed: u32) -> Vec<f32> {
 }
 
 impl MacroMap {
-    /// The world for `seed`. Takes about half a minute.
+    /// The world for `seed`, grown from flat. Takes about half a minute.
     pub fn generate(seed: u32) -> Self {
-        let (mut base, landscape) = Base::sample(seed, MACRO_CUBE_N).grown();
+        Self::generate_with(seed, None)
+    }
+
+    /// The world for `seed`, grown from the flat map's land (spec 017).
+    pub fn generate_seeded(seed: u32, land: &SeedLand) -> Self {
+        Self::generate_with(seed, Some(land))
+    }
+
+    fn generate_with(seed: u32, land: Option<&SeedLand>) -> Self {
+        let (mut base, landscape) = match land {
+            None => Base::sample(seed, MACRO_CUBE_N).grown(None),
+            Some(land) => {
+                let (base, seeding) = Base::sample_seeded(seed, MACRO_CUBE_N, land);
+                base.grown(Some(&seeding))
+            }
+        };
         let grid = base.grid.clone();
         let total = grid.cell_count();
         let heightmap = landscape.heightmap;
@@ -535,4 +607,9 @@ impl MacroMap {
 /// and the runtime all use. Takes about half a minute.
 pub fn generate_macro_map(seed: u32) -> BiomeMap {
     MacroMap::generate(seed).to_biome_map()
+}
+
+/// As `generate_macro_map`, grown from the flat map's land (spec 017).
+pub fn generate_macro_map_seeded(seed: u32, land: &SeedLand) -> BiomeMap {
+    MacroMap::generate_seeded(seed, land).to_biome_map()
 }

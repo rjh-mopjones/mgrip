@@ -8,6 +8,7 @@ pub mod landscape;
 pub mod macro_map;
 pub mod rim_sea;
 pub mod rivers;
+pub mod seed_land;
 pub mod runtime_presentation;
 pub mod strategy;
 pub mod terrain_query;
@@ -19,7 +20,8 @@ pub use biome_map::{
     generate_map_tile, sample_field_bilinear, tile_has_fluid_surface, BiomeMap, MacroOceanMask,
     MACRO_MAP_HEIGHT, MACRO_MAP_WIDTH, SEA_LEVEL, WORLD_HEIGHT, WORLD_WIDTH,
 };
-pub use macro_map::{generate_macro_map, generate_macro_probe, MacroMap};
+pub use macro_map::{generate_macro_map, generate_macro_map_seeded, generate_macro_probe, MacroMap};
+pub use seed_land::SeedLand;
 pub use biome_splines::BiomeSplines;
 pub use derived::{
     derive_aridity, derive_heightmap, derive_micro_heightmap, derive_peaks_valleys,

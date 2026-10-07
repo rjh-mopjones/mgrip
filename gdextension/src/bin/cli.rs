@@ -139,6 +139,10 @@ enum GenerateKind {
         seed: u32,
         /// Artifact tag (alphanumeric, hyphens, underscores)
         tag: String,
+        /// Grow the world from the flat map's land in this seed file
+        /// (spec 017; written by `export seed-land`)
+        #[arg(long)]
+        seed_land: Option<std::path::PathBuf>,
     },
     /// Generate a micro level chunk artifact
     Level {
@@ -292,7 +296,11 @@ fn main() {
             } => run_export_civ_pack(Path::new(&output), layers_tag.as_deref(), civ_seed),
         },
         Commands::Generate { kind } => match kind {
-            GenerateKind::Layers { seed, tag } => run_generate_layers(seed, &tag),
+            GenerateKind::Layers {
+                seed,
+                tag,
+                seed_land,
+            } => run_generate_layers(seed, &tag, seed_land.as_deref()),
             GenerateKind::Level {
                 layers_tag,
                 x,
@@ -447,7 +455,7 @@ fn blit_rgba_tile(
     }
 }
 
-fn run_generate_layers(seed: u32, tag: &str) {
+fn run_generate_layers(seed: u32, tag: &str, seed_land: Option<&Path>) {
     let store = ArtifactStore::new().unwrap_or_else(|e| {
         eprintln!("error: failed to open artifact store: {e}");
         std::process::exit(1);
@@ -463,7 +471,17 @@ fn run_generate_layers(seed: u32, tag: &str) {
     // ── Step 1: Macro map for erosion + global river network ──────────────────
     // The first generate() call also initialises the GPU context if available.
     let pb = spinner("Macro pass (erosion + rivers)…");
-    let macro_map = mg_noise::generate_macro_map(seed);
+    let macro_map = match seed_land {
+        None => mg_noise::generate_macro_map(seed),
+        Some(path) => {
+            let land = mg_noise::SeedLand::load(path).unwrap_or_else(|e| {
+                eprintln!("error: seed land: {e}");
+                std::process::exit(1);
+            });
+            println!("  seeded from {} (seed {})", path.display(), land.seed);
+            mg_noise::generate_macro_map_seeded(seed, &land)
+        }
+    };
     pb.finish_and_clear();
     println!("  macro pass: {:.1}s", t0.elapsed().as_secs_f64());
 
