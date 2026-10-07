@@ -117,6 +117,14 @@ enum ExportKind {
         /// Output file (e.g. data/macro/seed_42.mgmacro)
         output: String,
     },
+    /// Write the flat map's land from a layers artifact as a seed file:
+    /// the layers a spherical world is seeded with (spec 017)
+    SeedLand {
+        /// Layers artifact tag
+        layers_tag: String,
+        /// Output file (e.g. ~/.margins_grip/seed_42.mgseed)
+        output: String,
+    },
     /// Run LifeGen on a layers artifact and write what it made (provinces,
     /// states, settlements, roads) as one file the game loads at startup
     CivPack {
@@ -288,6 +296,9 @@ fn main() {
             } => run_export_site_map(Path::new(&output_dir), layers_tag.as_deref(), civ_seed),
             ExportKind::MacroPack { seed, output } => {
                 run_export_macro_pack(seed, Path::new(&output))
+            }
+            ExportKind::SeedLand { layers_tag, output } => {
+                run_export_seed_land(&layers_tag, Path::new(&output))
             }
             ExportKind::CivPack {
                 output,
@@ -926,6 +937,64 @@ fn run_inspect_chunk_presentation(
 /// Discover the newest named layer image across all layers artifacts, mirroring the
 /// map_selector.gd macro-texture lookup. Returns (tag, image_path, world_width, world_height).
 // ─── export macro-pack ───────────────────────────────────────────────────────
+
+/// The seed file: magic, width and height as u32, then the layers below
+/// in order, each one f32 per cell, little-endian, row-major.
+const SEED_LAND_MAGIC: &[u8; 8] = b"MGSEED02";
+const SEED_LAND_LAYERS: [&str; 7] = [
+    "continentalness",
+    "tectonic",
+    "tectonic_plate_ids",
+    "rock_hardness",
+    "peaks_valleys",
+    "heightmap",
+    "light_level",
+];
+
+fn run_export_seed_land(layers_tag: &str, output: &Path) {
+    let fail = |message: String| -> ! {
+        eprintln!("error: {message}");
+        std::process::exit(1);
+    };
+    let store = ArtifactStore::new().unwrap_or_else(|e| fail(format!("artifact store: {e}")));
+    let manifest = store
+        .load_layer_manifest(layers_tag)
+        .unwrap_or_else(|e| fail(format!("layers artifact '{layers_tag}' not found: {e}")));
+    let (map, _) = store
+        .load_layers_data(layers_tag)
+        .unwrap_or_else(|e| fail(format!("could not load layers data for '{layers_tag}': {e}")));
+    let mut bytes = SEED_LAND_MAGIC.to_vec();
+    bytes.extend((map.width as u32).to_le_bytes());
+    bytes.extend((map.height as u32).to_le_bytes());
+    bytes.extend(manifest.seed.to_le_bytes());
+    let layers: [&[f64]; 7] = [
+        &map.continentalness,
+        &map.tectonic,
+        &map.tectonic_plate_ids,
+        &map.rock_hardness,
+        &map.peaks_valleys,
+        &map.heightmap,
+        &map.light_level,
+    ];
+    for layer in layers {
+        for &value in layer {
+            bytes.extend((value as f32).to_le_bytes());
+        }
+    }
+    if let Some(directory) = output.parent() {
+        fs::create_dir_all(directory)
+            .unwrap_or_else(|e| fail(format!("creating {}: {e}", directory.display())));
+    }
+    fs::write(output, &bytes).unwrap_or_else(|e| fail(format!("writing {}: {e}", output.display())));
+    println!(
+        "seed land of layers '{layers_tag}' (seed {}) written to {}: {}x{}, layers {}",
+        manifest.seed,
+        output.display(),
+        map.width,
+        map.height,
+        SEED_LAND_LAYERS.join(", ")
+    );
+}
 
 fn run_export_macro_pack(seed: u32, output: &Path) {
     let fail = |message: String| -> ! {
