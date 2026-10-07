@@ -490,8 +490,6 @@ function chunkAtPixel(pixelX, pixelY) {
 	const forward = depth * Math.cos(pitch) - v * Math.sin(pitch);
 	const latitude = Math.asin(Math.max(-1, Math.min(1, up)));
 	const turn = Math.atan2(u, forward);
-	// On a cap the pixel holds no chunk.
-	if (hasCaps() && Math.abs(latitude) >= capFromLatitude()) return null;
 	return {
 		x: view.x + (turn / (Math.PI * 2)) * wide,
 		y: Math.min(high - 0.001, rowAtLatitude(latitude)),
