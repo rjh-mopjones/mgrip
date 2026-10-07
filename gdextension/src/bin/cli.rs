@@ -1615,6 +1615,134 @@ fn run_lifegen(
     }
 }
 
+/// The macro cube as LifeGen sees it: the cube's layers, with a cell
+/// counted as sea where the fine land says most of it is under liquid
+/// water. The map draws its coast from the fine land, so a road routed over
+/// a cell the macro biome calls land but the coast draws as sea would run
+/// through the water.
+struct CubeTerrain<'a> {
+    cube: &'a mg_noise::MacroMap,
+    is_sea: Vec<bool>,
+}
+
+/// A macro cell is sea when at least this share of its fine cells is.
+const FINE_SEA_SHARE: f64 = 0.5;
+
+impl<'a> CubeTerrain<'a> {
+    fn new(cube: &'a mg_noise::MacroMap, fine: Option<&mg_noise::landscape::FineHeights>) -> Self {
+        let n = cube.grid.n;
+        let splines = mg_noise::BiomeSplines::new(mg_noise::SEA_LEVEL);
+        let is_sea = (0..cube.grid.cell_count())
+            .map(|cell| {
+                if mg_noise::tile_has_fluid_surface(cube.biomes[cell]) {
+                    return true;
+                }
+                let Some(fine) = fine else {
+                    return false;
+                };
+                let per_macro = fine.grid.n / n;
+                if per_macro < 2 {
+                    return false;
+                }
+                let (face, u, v) = cube.grid.cell(cell);
+                let (wx, wy) = cube.grid.world_position(cell);
+                let drift = mg_noise::biome_map::sea_margin_drift(wx, wy);
+                let mut wet = 0;
+                for dv in 0..per_macro {
+                    for du in 0..per_macro {
+                        let index = fine.grid.index(face, u * per_macro + du, v * per_macro + dv);
+                        let ground = fine.heights[index] as f64;
+                        let liquid = ground < mg_noise::SEA_LEVEL
+                            && splines.sea_is_liquid(
+                                ground,
+                                cube.temperature[cell],
+                                cube.tectonic[cell],
+                                cube.light_level[cell],
+                                drift,
+                            );
+                        let lake = fine.water_level[index] as f64 > ground
+                            && mg_noise::tile_has_fluid_surface(splines.lake_biome(
+                                fine.water_level[index] as f64 - ground,
+                                cube.temperature[cell],
+                                cube.light_level[cell],
+                                drift,
+                            ));
+                        if liquid || lake {
+                            wet += 1;
+                        }
+                    }
+                }
+                wet as f64 >= FINE_SEA_SHARE * (per_macro * per_macro) as f64
+            })
+            .collect();
+        Self { cube, is_sea }
+    }
+}
+
+impl mg_core::TerrainQuery for CubeTerrain<'_> {
+    fn width(&self) -> usize {
+        self.cube.width()
+    }
+    fn height(&self) -> usize {
+        self.cube.height()
+    }
+    fn heightmap_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.heightmap_at(x, y)
+    }
+    fn biome_at(&self, x: usize, y: usize) -> mg_core::TileType {
+        self.cube.biome_at(x, y)
+    }
+    fn temperature_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.temperature_at(x, y)
+    }
+    fn humidity_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.humidity_at(x, y)
+    }
+    fn continentalness_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.continentalness_at(x, y)
+    }
+    fn erosion_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.erosion_at(x, y)
+    }
+    fn light_level_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.light_level_at(x, y)
+    }
+    fn rock_hardness_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.rock_hardness_at(x, y)
+    }
+    fn river_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.river_at(x, y)
+    }
+    fn drainage_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.drainage_at(x, y)
+    }
+    fn tectonic_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.tectonic_at(x, y)
+    }
+    fn peaks_valleys_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.peaks_valleys_at(x, y)
+    }
+    fn aridity_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.aridity_at(x, y)
+    }
+    fn slope_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.slope_at(x, y)
+    }
+    fn sediment_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.sediment_at(x, y)
+    }
+    fn sand_at(&self, x: usize, y: usize) -> f64 {
+        self.cube.sand_at(x, y)
+    }
+    fn is_ocean(&self, x: usize, y: usize) -> bool {
+        let n = self.cube.grid.n;
+        x < n && y < 6 * n && self.is_sea[y * n + x]
+    }
+    fn is_river(&self, x: usize, y: usize) -> bool {
+        self.cube.is_river(x, y)
+    }
+}
+
 /// What LifeGen made on the cube that the site map wants besides the
 /// civilisation itself, already on the chunk raster.
 struct LifeGenOnRaster {
@@ -1636,8 +1764,9 @@ fn run_lifegen_on_cube(
 ) -> (Civilisation, LifeGenOnRaster) {
     let cube = std::sync::Arc::new(macro_cube.grid.clone());
     let grid = mg_life::Grid::cube(std::sync::Arc::clone(&cube));
-    let analysis = mg_life::compute_analysis_grids(macro_cube, &grid);
-    let civ = run_lifegen(macro_cube, &analysis, &grid, civ_seed);
+    let terrain = CubeTerrain::new(macro_cube, map.fine_heights.as_ref());
+    let analysis = mg_life::compute_analysis_grids(&terrain, &grid);
+    let civ = run_lifegen(&terrain, &analysis, &grid, civ_seed);
     let trade_flows =
         mg_life::build_trade_flows(&civ.settlements, &civ.roads, &civ.province_map, &grid);
 
