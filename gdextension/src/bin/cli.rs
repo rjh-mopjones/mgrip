@@ -2295,7 +2295,7 @@ const SITE_MAP_RELIEF_IMAGE: &str = "relief.png";
 /// faces instead from the second latitude on (the faces reach to 45° at
 /// their edges).
 const SITE_MAP_BAND_LATITUDE_DEGREES: f64 = 90.0;
-const SITE_MAP_CAP_FROM_LATITUDE_DEGREES: f64 = 50.0;
+const SITE_MAP_CAP_FROM_LATITUDE_DEGREES: f64 = 70.0;
 const SITE_MAP_SEA_IMAGE: &str = "sea.png";
 
 /// The map's land at its finest: `scale` pixels per chunk, each the height

@@ -23,7 +23,7 @@ const SEA_IMAGE = "sea.png";
 const CAP_IMAGES = { north: "cap-north.png", south: "cap-south.png" };
 const CUBE_PROVINCE_FILE = "cube-provinces.bin";
 // Over this many degrees of latitude the sheet fades into the cap.
-const CAP_BLEND_DEGREES = 6;
+const CAP_BLEND_DEGREES = 10;
 const MAX_ZOOM = 64;
 const ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_RATE = 0.0015;
@@ -931,13 +931,17 @@ const vec3 FACE_DOWN[6] = vec3[6](
 	vec3(0.0, 0.0, -1.0), vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0)
 );
 
-// Where a globe pixel falls on the cube: x the face, yz its position on
-// the face in cells (fractional). cubeCellAt in map.js does the same.
-vec3 cubeCell(vec2 pixel) {
+// The point on the sphere under a globe pixel.
+vec3 pointAtPixel(vec2 pixel) {
 	vec3 lonLat = lonLatAt(pixel);
 	float longitude = (uCentre.x / uWorld.x) * TAU + lonLat.x;
 	float latitude = lonLat.y;
-	vec3 point = vec3(cos(latitude) * cos(longitude), cos(latitude) * sin(longitude), sin(latitude));
+	return vec3(cos(latitude) * cos(longitude), cos(latitude) * sin(longitude), sin(latitude));
+}
+
+// Where a point falls on the cube: x the face, yz its position on the
+// face in cells (fractional). cubeCellAt in map.js does the same.
+vec3 cubeCellOf(vec3 point) {
 	int face = 0;
 	float nearest = -2.0;
 	for (int candidate = 0; candidate < 6; candidate++) {
@@ -952,26 +956,41 @@ vec3 cubeCell(vec2 pixel) {
 	return vec3(float(face), (angles.x / (PI / 4.0) + 1.0) * 0.5 * uCapSize, (1.0 - angles.y / (PI / 4.0)) * 0.5 * uCapSize);
 }
 
-int cubeProvinceOfCell(int face, ivec2 cell) {
-	int size = int(uCapSize);
-	cell = clamp(cell, ivec2(0), ivec2(size - 1));
-	return unpackId(texelFetch(uCubeIds, ivec2(cell.x, face * size + cell.y), 0));
+vec3 cubeCell(vec2 pixel) {
+	return cubeCellOf(pointAtPixel(pixel));
 }
 
-// Province at a point of the cube, by the same rules as provinceAt: a
-// cell's corner that pokes into a neighbouring province goes to it, so
-// borders run diagonally rather than in steps. Neighbours are read within
-// the face; a cell at a face's edge is clamped to it.
-// The coast is the sea image's, finer than a cell: sea by it is sea, and
-// land by it in a cell the cube calls sea belongs to a province next door.
+// The point at the middle of a cell of a face, stepped offset cells
+// along the face's columns and rows: past the face's edge it lands on the
+// face next door, so a neighbour across an edge is found like any other.
+vec3 cubePointStepped(vec3 at, vec2 offset) {
+	int face = int(at.x);
+	vec2 cell = floor(at.yz) + 0.5 + offset;
+	vec2 angles = vec2(cell.x / uCapSize * 2.0 - 1.0, 1.0 - cell.y / uCapSize * 2.0) * (PI / 4.0);
+	return normalize(FACE_CENTRE[face] + FACE_RIGHT[face] * tan(angles.x) - FACE_DOWN[face] * tan(angles.y));
+}
+
+int cubeProvinceOfCell(vec3 at) {
+	int size = int(uCapSize);
+	ivec2 cell = clamp(ivec2(floor(at.yz)), ivec2(0), ivec2(size - 1));
+	return unpackId(texelFetch(uCubeIds, ivec2(cell.x, int(at.x) * size + cell.y), 0));
+}
+
+int cubeProvinceBeside(vec3 at, vec2 offset) {
+	return cubeProvinceOfCell(cubeCellOf(cubePointStepped(at, offset)));
+}
+
+// Province at a point of the cube, by the same rules as provinceAt: the
+// coast is the sea image's; land in a cell the cube calls sea belongs to a
+// province next door; and a cell's corner that pokes into a neighbouring
+// province goes to it, so borders run diagonally rather than in steps.
+// Neighbours are found on the sphere, so the rules hold across face edges.
 int cubeProvinceAt(vec3 at, vec2 chunk) {
 	if (isSea(chunk)) return 0;
-	int face = int(at.x);
-	ivec2 cell = ivec2(floor(at.yz));
-	int own = cubeProvinceOfCell(face, cell);
+	int own = cubeProvinceOfCell(at);
 	if (own == 0) {
 		for (int direction = 0; direction < 8; direction++) {
-			int beside = cubeProvinceOfCell(face, cell + ivec2(round(RING[direction] * 1.3)));
+			int beside = cubeProvinceBeside(at, round(RING[direction] * 1.3));
 			if (beside != 0) return beside;
 		}
 		return 0;
@@ -979,9 +998,9 @@ int cubeProvinceAt(vec3 at, vec2 chunk) {
 	vec2 inCell = fract(at.yz);
 	vec2 toEdge = min(inCell, 1.0 - inCell);
 	if (toEdge.x + toEdge.y >= 0.5) return own;
-	ivec2 side = ivec2(inCell.x < 0.5 ? -1 : 1, inCell.y < 0.5 ? -1 : 1);
-	int across = cubeProvinceOfCell(face, cell + ivec2(side.x, 0));
-	int along = cubeProvinceOfCell(face, cell + ivec2(0, side.y));
+	vec2 side = vec2(inCell.x < 0.5 ? -1.0 : 1.0, inCell.y < 0.5 ? -1.0 : 1.0);
+	int across = cubeProvinceBeside(at, vec2(side.x, 0.0));
+	int along = cubeProvinceBeside(at, vec2(0.0, side.y));
 	return (across == along && across != 0) ? across : own;
 }
 
@@ -1025,7 +1044,10 @@ void main() {
 	}
 	vec3 shade;
 	int province = uGlobe > 0.5 && uCaps > 0.5 ? cubeProvinceAt(cubeCell(pixel), chunk) : provinceAt(chunk);
-	if (capPixel) {
+	// A tile covers its chunks wherever they are on the globe; the cap image
+	// (the sheet's own picture, resampled) only stands in for the base image
+	// beyond the cap latitude, where the sheet is stretched.
+	if (capPixel && uBaseShaded < 0.5) {
 		shade = capShade(cap);
 	} else {
 		// Where the pixel falls in the base image. The whole-world image
@@ -1038,14 +1060,8 @@ void main() {
 		bool wholeWorld = uBaseSize.x >= uWorld.x;
 		vec2 inBase = vec2(wholeWorld ? chunk.x - uBaseOrigin.x : across, chunk.y - uBaseOrigin.y);
 		shade = texture(uBase, inBase / uBaseSize).rgb;
-		// Towards the cap the sheet fades into the cap's own picture of the
-		// same ground, so the change of grain does not show as a line.
-		if (uGlobe > 0.5 && uCaps > 0.5 && cap.w > 0.5 && uBaseShaded > 0.5) {
-			float into = smoothstep(uCapFrom - uCapBlend, uCapFrom, abs(cap.z));
-			shade = mix(shade, capShade(cap), into);
-		}
 	}
-	if (province == 0 && uProvinceLayer > 0.0 && !capPixel) {
+	if (province == 0 && uProvinceLayer > 0.0) {
 		// A lighter shelf along the coast: the more land near a point of sea,
 		// the lighter it is.
 		float land = 0.0;
