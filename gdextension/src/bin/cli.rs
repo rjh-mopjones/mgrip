@@ -116,6 +116,10 @@ enum ExportKind {
         seed: u32,
         /// Output file (e.g. data/macro/seed_42.mgmacro)
         output: String,
+        /// Grow the world from the flat map's land in this seed file
+        /// (spec 017), as `generate layers` does
+        #[arg(long)]
+        seed_land: Option<std::path::PathBuf>,
     },
     /// Write the flat map's land from a layers artifact as a seed file:
     /// the layers a spherical world is seeded with (spec 017)
@@ -294,9 +298,11 @@ fn main() {
                 layers_tag,
                 civ_seed,
             } => run_export_site_map(Path::new(&output_dir), layers_tag.as_deref(), civ_seed),
-            ExportKind::MacroPack { seed, output } => {
-                run_export_macro_pack(seed, Path::new(&output))
-            }
+            ExportKind::MacroPack {
+                seed,
+                output,
+                seed_land,
+            } => run_export_macro_pack(seed, Path::new(&output), seed_land.as_deref()),
             ExportKind::SeedLand { layers_tag, output } => {
                 run_export_seed_land(&layers_tag, Path::new(&output))
             }
@@ -996,13 +1002,27 @@ fn run_export_seed_land(layers_tag: &str, output: &Path) {
     );
 }
 
-fn run_export_macro_pack(seed: u32, output: &Path) {
+/// The macro map for `seed`, grown from the seed file if one is given.
+fn macro_map_for(seed: u32, seed_land: Option<&Path>) -> BiomeMap {
+    match seed_land {
+        None => mg_noise::generate_macro_map(seed),
+        Some(path) => {
+            let land = mg_noise::SeedLand::load(path).unwrap_or_else(|e| {
+                eprintln!("error: seed land: {e}");
+                std::process::exit(1);
+            });
+            mg_noise::generate_macro_map_seeded(seed, &land)
+        }
+    }
+}
+
+fn run_export_macro_pack(seed: u32, output: &Path, seed_land: Option<&Path>) {
     let fail = |message: String| -> ! {
         eprintln!("error: {message}");
         std::process::exit(1);
     };
     let started = Instant::now();
-    let pack = mg_artifacts::MacroPack::from_macro_map(seed, &mg_noise::generate_macro_map(seed));
+    let pack = mg_artifacts::MacroPack::from_macro_map(seed, &macro_map_for(seed, seed_land));
     let bytes = pack.to_bytes().unwrap_or_else(|e| fail(e));
     if let Some(directory) = output.parent() {
         fs::create_dir_all(directory)

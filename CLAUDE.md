@@ -302,7 +302,7 @@ Macro pack (the macro map the game anchors chunks to; gitignored, both native
 and web builds load it from `res://data/macro/`):
 
 ```sh
-./gdextension/target/release/margins_grip export macro-pack 42 data/macro/seed_42.mgmacro
+./gdextension/target/release/margins_grip export macro-pack 42 data/macro/seed_42.mgmacro --seed-land ~/.margins_grip/seed_42_wind4.mgseed
 ```
 
 - Regenerate it after any change to terrain generation, and before a web
@@ -316,7 +316,7 @@ Layers artifact (full macro layers and images for the CLI and the site map,
 stored under `~/.margins_grip/layers/`):
 
 ```sh
-./gdextension/target/release/margins_grip generate layers 42 <tag>
+./gdextension/target/release/margins_grip generate layers 42 <tag> --seed-land ~/.margins_grip/seed_42_wind4.mgseed
 ```
 
 Takes about two minutes.
