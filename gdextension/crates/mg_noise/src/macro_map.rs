@@ -56,6 +56,10 @@ pub const SAND_SEA_FROM: f64 = 0.45;
 pub const SEED_HOLDS_TO_DEGREES: f64 = 70.0;
 pub const SEED_FADES_OUT_DEGREES: f64 = 85.0;
 
+/// Depths a strait's route may dredge sea to, tried shallowest first: just
+/// past the shallows a hot sea dries out from, and past a hot basin's.
+const STRAIT_SHALLOWS: [f64; 2] = [0.09, 0.17];
+
 /// The seed's heights and how far they hold, one each per cube cell.
 struct Seeding {
     heights: Vec<f64>,
@@ -183,6 +187,10 @@ impl Base {
             lay(&mut base.tectonic[cell], &land.tectonic);
             lay(&mut base.rock_hardness[cell], &land.rock_hardness);
             lay(&mut base.peaks_valleys[cell], &land.peaks_valleys);
+            // The flat map's light is what put its terminus where it is;
+            // the sphere's own sun takes over only towards the poles, where
+            // the flat map's light would meet itself.
+            lay(&mut base.light_level[cell], &land.light_level);
             if hold > 0.5 {
                 base.tectonic_plate_ids[cell] = land.nearest(&land.tectonic_plate_ids, wx, wy);
             }
@@ -222,30 +230,43 @@ impl Base {
             .map(|&point| grid.sample(&self.continentalness, point))
             .collect();
         let splines = BiomeSplines::new(SEA_LEVEL);
+        // Whether sea `depth` below sea level at a cell stays liquid. Judged
+        // as a strait would be, whatever is there now, in both the driest
+        // and the most humid air the climate pass may leave over it: humid
+        // air reads warmer, and a sea must neither freeze in the one nor
+        // dry in the other.
+        let liquid_at = |cell: usize, depth: f64| {
+            let (wx, wy) = position(cell);
+            let light = grid.sample(&self.light_level, points[cell]);
+            let tectonic = grid.sample(&self.tectonic, points[cell]);
+            let drift = sea_margin_drift(wx, wy);
+            [0.0, 1.0].into_iter().all(|humidity| {
+                let at_sea = derived::derive_temperature(light, SEA_LEVEL, humidity, SEA_LEVEL);
+                splines.sea_is_liquid(SEA_LEVEL - depth, at_sea, tectonic, light, drift)
+            })
+        };
         let stays_liquid: Vec<bool> = (0..width * height)
+            .map(|cell| liquid_at(cell, crate::rim_sea::STRAIT_DEPTH))
+            .collect();
+        // The least depth at which sea stays liquid at each cell: what the
+        // route must dredge shallows to, and no more.
+        let needed_depth: Vec<f64> = (0..width * height)
             .map(|cell| {
-                let (wx, wy) = position(cell);
-                let light = grid.sample(&self.light_level, points[cell]);
-                let tectonic = grid.sample(&self.tectonic, points[cell]);
-                // Judged as a strait would be, whatever is there now, in
-                // both the driest and the most humid air the climate pass
-                // may leave over it: humid air reads warmer, and a sea must
-                // neither freeze in the one nor dry in the other.
-                let drift = sea_margin_drift(wx, wy);
-                [0.0, 1.0].into_iter().all(|humidity| {
-                    let at_sea = derived::derive_temperature(light, SEA_LEVEL, humidity, SEA_LEVEL);
-                    splines.sea_is_liquid(
-                        SEA_LEVEL - crate::rim_sea::STRAIT_DEPTH,
-                        at_sea,
-                        tectonic,
-                        light,
-                        drift,
-                    )
-                })
+                STRAIT_SHALLOWS
+                    .into_iter()
+                    .find(|&depth| liquid_at(cell, depth))
+                    .unwrap_or(crate::rim_sea::STRAIT_DEPTH)
             })
             .collect();
         let mut after = before.clone();
-        crate::rim_sea::open_rim_sea(&mut after, &stays_liquid, width, height, SEA_LEVEL);
+        crate::rim_sea::open_rim_sea(
+            &mut after,
+            &stays_liquid,
+            &needed_depth,
+            width,
+            height,
+            SEA_LEVEL,
+        );
 
         // Every cell under a cut is lowered to the deepest cut over it. A
         // strait shallows to its shores, and a cell that took the cut over

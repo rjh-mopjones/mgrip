@@ -36,11 +36,15 @@ const LAND_COST_PER_HEIGHT: f64 = 400.0;
 const DEAD_SEA_COST: f64 = 4000.0;
 
 /// Open the rim sea in `continentalness`. `stays_liquid[cell]` says whether
-/// sea at that cell would be liquid (neither frozen nor dried out). Returns
-/// how many cells were turned from land to sea.
+/// sea at that cell would be liquid (neither frozen nor dried out) at a
+/// strait's full depth, and `needed_depth[cell]` how deep sea there must be
+/// to stay liquid: sea on the route that is already that deep is left as
+/// it is, shallower sea is deepened to it, and land is cut to a strait.
+/// Returns how many cells were turned from land to sea.
 pub fn open_rim_sea(
     continentalness: &mut [f64],
     stays_liquid: &[bool],
+    needed_depth: &[f64],
     width: usize,
     height: usize,
     sea_level: f64,
@@ -80,7 +84,12 @@ pub fn open_rim_sea(
                 // one cell wide would be rounded away where the fine land
                 // is interpolated from the macro cells, and bead into pools.
                 let shore = (1.0 - from_route / (reach as f64 + 1.0)) * 2.0;
-                let bed = sea_level - STRAIT_DEPTH * shore.min(1.0);
+                let depth = if continentalness[near] >= sea_level {
+                    STRAIT_DEPTH
+                } else {
+                    needed_depth[near].min(STRAIT_DEPTH)
+                };
+                let bed = sea_level - depth * shore.min(1.0);
                 if continentalness[near] > bed {
                     if continentalness[near] >= sea_level {
                         opened += 1;
@@ -273,7 +282,7 @@ mod tests {
     #[test]
     fn opening_the_rim_sea_cuts_through_the_land_in_its_way() {
         let mut continentalness = blocked_rim();
-        let opened = open_rim_sea(&mut continentalness, &[true; 24 * 9], 24, 9, 0.0);
+        let opened = open_rim_sea(&mut continentalness, &[true; 24 * 9], &[STRAIT_DEPTH; 24 * 9], 24, 9, 0.0);
 
         assert!(opened >= 4);
         assert!(sea_rings_the_world(&sea(&continentalness), 24, 9));
@@ -299,7 +308,7 @@ mod tests {
             .collect();
         let stays_liquid: Vec<bool> = (0..24 * 9).map(|cell| cell / 24 >= 4).collect();
 
-        open_rim_sea(&mut continentalness, &stays_liquid, 24, 9, 0.0);
+        open_rim_sea(&mut continentalness, &stays_liquid, &[STRAIT_DEPTH; 24 * 9], 24, 9, 0.0);
 
         // The strait is cut in the southern sea, though the northern is open.
         assert!(continentalness[6 * 24 + 11] < 0.0);

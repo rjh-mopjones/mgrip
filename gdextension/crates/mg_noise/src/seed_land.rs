@@ -8,15 +8,16 @@
 
 use crate::biome_map::{sample_field_bilinear, WORLD_HEIGHT, WORLD_WIDTH};
 
-const MAGIC: &[u8; 8] = b"MGSEED01";
+const MAGIC: &[u8; 8] = b"MGSEED02";
 /// The layers a seed file holds, in order.
-pub const LAYERS: [&str; 6] = [
+pub const LAYERS: [&str; 7] = [
     "continentalness",
     "tectonic",
     "tectonic_plate_ids",
     "rock_hardness",
     "peaks_valleys",
     "heightmap",
+    "light_level",
 ];
 
 pub struct SeedLand {
@@ -29,6 +30,9 @@ pub struct SeedLand {
     pub rock_hardness: Vec<f64>,
     pub peaks_valleys: Vec<f64>,
     pub heightmap: Vec<f64>,
+    /// The flat map's light: a flat distance from its bottom centre, which
+    /// is what put the terminus where it is.
+    pub light_level: Vec<f64>,
 }
 
 impl SeedLand {
@@ -66,6 +70,7 @@ impl SeedLand {
             rock_hardness: layer(3),
             peaks_valleys: layer(4),
             heightmap: layer(5),
+            light_level: layer(6),
         })
     }
 
@@ -119,6 +124,7 @@ mod tests {
         assert_eq!((seed.width, seed.height, seed.seed), (4, 2, 7));
         assert_eq!(seed.continentalness[3], 3.0);
         assert_eq!(seed.heightmap[5], 55.0);
+        assert_eq!(seed.light_level[0], 60.0);
         assert!(SeedLand::from_bytes(&bytes[..20]).is_err());
         assert!(SeedLand::from_bytes(b"junk").is_err());
     }
