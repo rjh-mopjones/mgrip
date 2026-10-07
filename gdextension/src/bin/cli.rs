@@ -1533,6 +1533,8 @@ struct LifeGenOnRaster {
     navigation_cost: Vec<f32>,
     resource_desirability: Vec<f32>,
     trade_flows: Vec<mg_life::TradeFlow>,
+    /// Province id per cube cell, as LifeGen made them.
+    cube_province_ids: Vec<u16>,
 }
 
 /// Run every LifeGen stage on the macro cube's cells and carry the result
@@ -1575,6 +1577,7 @@ fn run_lifegen_on_cube(
         roads,
         names,
     } = civ;
+    let cube_province_ids = province_map.province_ids.clone();
     let province_map = mg_life::ProvinceMap {
         width,
         height,
@@ -1620,8 +1623,53 @@ fn run_lifegen_on_cube(
             navigation_cost: onto_raster_f32(&analysis.navigation_cost),
             resource_desirability: onto_raster_f32(&analysis.resource_desirability),
             trade_flows,
+            cube_province_ids,
         },
     )
+}
+
+/// The polar faces of the macro cube (spec 017 stage 3): each face as the
+/// terrain image the flat map is drawn with, and its province ids two
+/// bytes a cell, for the globe to draw the poles from the cube itself.
+fn write_polar_faces(
+    macro_cube: &mg_noise::MacroMap,
+    map: &BiomeMap,
+    cube_province_ids: &[u16],
+    output_dir: &Path,
+) -> Result<(), String> {
+    let n = macro_cube.grid.n;
+    let hints = mg_noise::NormalizationHints::for_macro_map(map);
+    for (face, pole) in [(4usize, "north"), (5usize, "south")] {
+        let cells = face * n * n..(face + 1) * n * n;
+        let mut face_map = BiomeMap::empty(n, n, n as f64, n as f64);
+        let slice = |layer: &[f64]| layer[cells.clone()].to_vec();
+        face_map.heightmap = slice(&macro_cube.heightmap);
+        face_map.biomes = macro_cube.biomes[cells.clone()].to_vec();
+        face_map.temperature = slice(&macro_cube.temperature);
+        face_map.humidity = slice(&macro_cube.humidity);
+        face_map.light_level = slice(&macro_cube.light_level);
+        face_map.aridity = slice(&macro_cube.aridity);
+        face_map.rivers = slice(&macro_cube.rivers);
+        face_map.sand = slice(&macro_cube.sand);
+        face_map.erosion = slice(&macro_cube.erosion);
+        face_map.snowpack = slice(&macro_cube.snowpack);
+        face_map.vegetation_density = slice(&macro_cube.vegetation_density);
+        face_map.continentalness = slice(&macro_cube.continentalness);
+        let image = RgbaImage::from_raw(n as u32, n as u32, mg_noise::render_terrain(&face_map, Some(&hints)))
+            .expect("face render matches its size");
+        let file_name = format!("cap-{pole}.png");
+        image
+            .save(output_dir.join(&file_name))
+            .map_err(|e| format!("saving {file_name}: {e}"))?;
+        let bytes: Vec<u8> = cube_province_ids[cells]
+            .iter()
+            .flat_map(|id| id.to_le_bytes())
+            .collect();
+        let file_name = format!("cap-{pole}-provinces.bin");
+        fs::write(output_dir.join(&file_name), &bytes)
+            .map_err(|e| format!("writing {file_name}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Province ids as shades, seen from straight above each pole.
@@ -1911,6 +1959,9 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     province_poles_image(&province_map.province_ids, map.width, map.height)
         .save(output_dir.join("provinces-poles.png"))
         .unwrap_or_else(|e| fail(format!("saving provinces-poles.png: {e}")));
+    // The poles themselves, from the cube's polar faces.
+    write_polar_faces(&macro_cube, &map, &lifegen.cube_province_ids, output_dir)
+        .unwrap_or_else(|e| fail(e));
 
     relief_image(&map, &province_map.province_ids)
         .save(output_dir.join(SITE_MAP_RELIEF_IMAGE))
@@ -2040,6 +2091,13 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         "seed": manifest.seed,
         "chunks_wide": map.width,
         "chunks_high": map.height,
+        // The globe draws the sheet between these latitudes and the cube's
+        // polar faces (cap-north.png, cap-south.png, cap_size cells square,
+        // with cap-<pole>-provinces.bin) beyond cap_from_latitude. The
+        // flat map shows rows within band_latitude.
+        "band_latitude": SITE_MAP_BAND_LATITUDE_DEGREES,
+        "cap_from_latitude": SITE_MAP_CAP_FROM_LATITUDE_DEGREES,
+        "cap_size": macro_cube.grid.n,
         "chunk_fields": SITE_MAP_CHUNK_FIELDS,
         "layer_groups": site_map_layer_groups(&layer_files),
         "zones": PlanetZone::ALL.iter().map(|zone| format!("{zone:?}")).collect::<Vec<_>>(),
@@ -2203,6 +2261,12 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
 }
 
 const SITE_MAP_RELIEF_IMAGE: &str = "relief.png";
+/// The flat map shows rows between these latitudes north and south; the
+/// rows beyond are the poles, stretched across the sheet, and the globe
+/// draws them from the cube's polar faces instead, from this latitude on
+/// (the faces reach to 45° at their edges).
+const SITE_MAP_BAND_LATITUDE_DEGREES: f64 = 75.0;
+const SITE_MAP_CAP_FROM_LATITUDE_DEGREES: f64 = 50.0;
 const SITE_MAP_SEA_IMAGE: &str = "sea.png";
 
 /// The map's land at its finest: `scale` pixels per chunk, each the height

@@ -17,6 +17,15 @@ const DEFAULT_SPAWN_CHUNK = { x: 440, y: 220 };
 const TERRAIN_IMAGE = "macromap.png";
 const RELIEF_IMAGE = "relief.png";
 const SEA_IMAGE = "sea.png";
+// The globe beyond the sheet's band, one square image per pole, with the
+// province of each of its cells (spec 016).
+const CAP_IMAGES = { north: "cap-north.png", south: "cap-south.png" };
+const CAP_PROVINCE_FILES = {
+	north: "cap-north-provinces.bin",
+	south: "cap-south-provinces.bin",
+};
+// Over this many degrees of latitude the sheet fades into the cap.
+const CAP_BLEND_DEGREES = 6;
 const MAX_ZOOM = 64;
 const ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_RATE = 0.0015;
@@ -408,10 +417,30 @@ function renderLegend() {
 //
 // The view is the chunk at the middle of the canvas and a zoom. Flat, the map
 // is laid out as a sheet that repeats east to west. As a globe, the sheet is
-// wrapped round a sphere, x round it and y from the night pole to the day
-// pole, seen face-on from the chunk at the middle. The world is generated
-// on that sphere (spec 014), so the sheet is its equirectangular map and
-// the poles are poles.
+// wrapped round a sphere as a band of latitudes, x round it and y from the
+// band's northern edge to its southern, seen face-on from the chunk at the
+// middle. Beyond the band each pole is covered by a cap image (spec 016).
+// A map without caps is wrapped pole to pole as a whole.
+
+// The sheet is the world's equirectangular map, pole to pole.
+const bandLatitude = () => Math.PI / 2;
+// The flat map shows rows within this latitude of the equator; the rows
+// beyond are the poles stretched across the sheet, which the globe draws
+// from the cube's polar faces instead.
+const flatBandLatitude = () =>
+	((worldMap.meta.band_latitude ?? 90) * Math.PI) / 180;
+const hasCaps = () => worldMap.meta.cap_size !== undefined;
+// The latitude from which the globe shows the cap rather than the sheet.
+const capFromLatitude = () =>
+	((worldMap.meta.cap_from_latitude ?? worldMap.meta.band_latitude ?? 90) *
+		Math.PI) /
+	180;
+
+// Latitude of a chunk row, and the row at a latitude.
+const latitudeOfRow = (chunkY) =>
+	(0.5 - chunkY / worldMap.meta.chunks_high) * 2 * bandLatitude();
+const rowAtLatitude = (latitude) =>
+	(0.5 - latitude / (2 * bandLatitude())) * worldMap.meta.chunks_high;
 
 // Canvas pixels per chunk at the current zoom; on the globe, at its middle.
 function pixelsPerChunk() {
@@ -423,14 +452,20 @@ function pixelsPerChunk() {
 const globeRadius = () => canvas.height * GLOBE_RADIUS_AT_ZOOM_1 * view.zoom;
 
 // Latitude of the chunk at the middle of the globe, in radians.
-const globePitch = () => (0.5 - view.y / worldMap.meta.chunks_high) * Math.PI;
+const globePitch = () => latitudeOfRow(view.y);
 
 // Keep the view inside the map north to south, and wrap it east to west.
 function constrainView() {
 	const { chunks_wide: wide, chunks_high: high } = worldMap.meta;
 	view.zoom = Math.max(1, Math.min(MAX_ZOOM, view.zoom));
 	const halfHeight = view.globe ? 0 : canvas.height / pixelsPerChunk() / 2;
-	view.y = Math.max(halfHeight, Math.min(high - halfHeight, view.y));
+	// Flat, the view stays within the band the flat map shows.
+	const top = view.globe ? 0 : rowAtLatitude(flatBandLatitude());
+	const bottom = view.globe ? high : rowAtLatitude(-flatBandLatitude());
+	view.y = Math.max(
+		Math.min(top + halfHeight, (top + bottom) / 2),
+		Math.min(Math.max(bottom - halfHeight, (top + bottom) / 2), view.y),
+	);
 	view.x = ((view.x % wide) + wide) % wide;
 }
 
@@ -457,10 +492,59 @@ function chunkAtPixel(pixelX, pixelY) {
 	const forward = depth * Math.cos(pitch) - v * Math.sin(pitch);
 	const latitude = Math.asin(Math.max(-1, Math.min(1, up)));
 	const turn = Math.atan2(u, forward);
+	// On a cap the pixel holds no chunk.
+	if (hasCaps() && Math.abs(latitude) >= capFromLatitude()) return null;
 	return {
 		x: view.x + (turn / (Math.PI * 2)) * wide,
-		y: Math.min(high - 0.001, (0.5 - latitude / Math.PI) * high),
+		y: Math.min(high - 0.001, rowAtLatitude(latitude)),
 	};
+}
+
+// Longitude (radians east) and latitude under a globe pixel, or null off it.
+function lonLatAtPixel(pixelX, pixelY) {
+	const { chunks_wide: wide } = worldMap.meta;
+	const radius = globeRadius();
+	const u = (pixelX - canvas.width / 2) / radius;
+	const v = -(pixelY - canvas.height / 2) / radius;
+	const depthSquared = 1 - u * u - v * v;
+	if (depthSquared < 0) return null;
+	const depth = Math.sqrt(depthSquared);
+	const pitch = globePitch();
+	const up = v * Math.cos(pitch) + depth * Math.sin(pitch);
+	const forward = depth * Math.cos(pitch) - v * Math.sin(pitch);
+	const latitude = Math.asin(Math.max(-1, Math.min(1, up)));
+	const turn = Math.atan2(u, forward);
+	return { longitude: (view.x / wide) * Math.PI * 2 + turn, latitude };
+}
+
+// The cap cell under a longitude and latitude, as [pole, column, row], or
+// null inside the sheet's part of the globe. The shader's capPoint does
+// the same.
+function capCellAt(longitude, latitude) {
+	if (!hasCaps() || Math.abs(latitude) < capFromLatitude()) return null;
+	const size = worldMap.meta.cap_size;
+	const x = Math.cos(latitude) * Math.cos(longitude);
+	const y = Math.cos(latitude) * Math.sin(longitude);
+	const axis = Math.abs(Math.sin(latitude));
+	const along = (coordinate) =>
+		Math.min(
+			size - 1,
+			Math.floor(
+				((Math.atan(coordinate / axis) / (Math.PI / 4) + 1) / 2) * size,
+			),
+		);
+	// The face's column runs along +y; its row runs along +x looking down
+	// on the north pole and along -x looking up at the south.
+	const north = latitude > 0;
+	return [north ? "north" : "south", along(y), along(north ? -x : x)];
+}
+
+// The province of a cap cell, from the cap's province table.
+function capProvinceAt(pole, column, row) {
+	const ids = worldMap.capProvinces?.[pole];
+	if (!ids) return 0;
+	const cell = (row * worldMap.meta.cap_size + column) * 2;
+	return ids[cell] + ids[cell + 1] * 256;
 }
 
 // Where a chunk point lands on the canvas, as [x, y, visible]. On the globe
@@ -474,9 +558,9 @@ function toScreen(chunkX, chunkY) {
 			true,
 		];
 	}
-	const { chunks_wide: wide, chunks_high: high } = worldMap.meta;
+	const { chunks_wide: wide } = worldMap.meta;
 	const turn = ((chunkX - view.x) / wide) * Math.PI * 2;
-	const latitude = (0.5 - chunkY / high) * Math.PI;
+	const latitude = latitudeOfRow(chunkY);
 	const across = Math.cos(latitude) * Math.sin(turn);
 	const up = Math.sin(latitude);
 	const forward = Math.cos(latitude) * Math.cos(turn);
@@ -501,6 +585,12 @@ function chunkUnder(cssX, cssY) {
 // Province under a point of the canvas (CSS pixels); 0 for sea or off the map.
 function provinceUnder(cssX, cssY) {
 	const chunk = chunkUnder(cssX, cssY);
+	if (!chunk && view.globe) {
+		const scale = canvas.width / canvas.clientWidth;
+		const lonLat = lonLatAtPixel(cssX * scale, cssY * scale);
+		const cell = lonLat && capCellAt(lonLat.longitude, lonLat.latitude);
+		return cell ? capProvinceAt(...cell) : 0;
+	}
 	if (!chunk || chunk.y < 0 || chunk.y >= worldMap.meta.chunks_high) return 0;
 	return provinceAtPoint(chunk.x, chunk.y);
 }
@@ -655,6 +745,16 @@ uniform sampler2D uProvinceIds; // one texel per chunk: province id, low byte in
 uniform sampler2D uProvinces;   // row 0: colour per province; row 1: owning faction
 uniform sampler2D uRelief;      // hillshade: 0.5 is flat ground
 uniform sampler2D uSea;         // liquid sea, finer than one cell per chunk
+uniform sampler2D uCapNorth;    // the globe beyond the sheet's band, per pole
+uniform sampler2D uCapSouth;
+uniform sampler2D uCapNorthIds; // province id per cap cell, two bytes
+uniform sampler2D uCapSouthIds;
+uniform float uCaps;         // 1 if the cap images exist
+uniform float uBand;         // latitude the sheet reaches, radians
+uniform float uCapFrom;      // latitude from which the cap is drawn, radians
+uniform float uCapBlend;     // over which the sheet fades into it, radians
+uniform float uCapSize;      // cells a side of a cap
+uniform vec2 uFlatRows;      // first and last-plus-one row the flat map shows
 uniform vec2 uBaseOrigin;    // chunk at the base image's top-left corner
 uniform vec2 uBaseSize;      // chunks the base image covers
 uniform float uBaseShaded;   // 1 if the base image already has relief shading
@@ -736,56 +836,136 @@ int ownerOf(int province) {
 	return unpackId(texelFetch(uProvinces, ivec2(province, 1), 0));
 }
 
-// Chunk under a canvas pixel, with z = 0 where the pixel is off the globe.
-// Flat, the map is a sheet; as a globe it is wrapped round a sphere, x round
-// it and y pole to pole, tilted so the middle chunk faces the viewer. The
-// chunk's x is unwrapped round the middle, so it runs continuously across
-// the face. chunkAtPixel in map.js does the same.
-vec3 chunkAtPixel(vec2 pixel) {
+// Latitude of a chunk row: the sheet covers the globe between -uBand and
+// uBand, its top row at uBand.
+float latitudeOfRow(float chunkY) {
+	return (0.5 - chunkY / uWorld.y) * 2.0 * uBand;
+}
+
+// Longitude (a turn east of the middle chunk) and latitude under a globe
+// pixel, radians, with z = 0 off the globe. The globe is tilted so the
+// middle chunk faces the viewer.
+vec3 lonLatAt(vec2 pixel) {
 	vec2 fromMiddle = pixel - uCanvas * 0.5;
-	if (uGlobe < 0.5) return vec3(uCentre + fromMiddle / uPixelsPerChunk, 1.0);
 	vec2 onDisc = vec2(fromMiddle.x, -fromMiddle.y) / uRadius;
 	float depthSquared = 1.0 - dot(onDisc, onDisc);
 	if (depthSquared < 0.0) return vec3(0.0);
 	float depth = sqrt(depthSquared);
-	float pitch = (0.5 - uCentre.y / uWorld.y) * PI;
+	float pitch = latitudeOfRow(uCentre.y);
 	float up = onDisc.y * cos(pitch) + depth * sin(pitch);
 	float forward = depth * cos(pitch) - onDisc.y * sin(pitch);
 	float latitude = asin(clamp(up, -1.0, 1.0));
 	float turn = atan(onDisc.x, forward);
-	return vec3(
-		uCentre.x + turn / TAU * uWorld.x,
-		min(uWorld.y - 0.001, (0.5 - latitude / PI) * uWorld.y),
-		1.0
-	);
+	return vec3(turn, latitude, 1.0);
 }
 
-// Province under another pixel, or the fallback where that pixel is off the globe.
+// Chunk under a canvas pixel, with z = 0 where the pixel is off the globe.
+// Flat, the map is a sheet; as a globe it is wrapped round a sphere, x round
+// it and y across the band. The chunk's x is unwrapped round the middle, so
+// it runs continuously across the face; its y runs past the sheet's edges
+// where a cap is. chunkAtPixel in map.js does the same.
+vec3 chunkAtPixel(vec2 pixel) {
+	vec2 fromMiddle = pixel - uCanvas * 0.5;
+	if (uGlobe < 0.5) return vec3(uCentre + fromMiddle / uPixelsPerChunk, 1.0);
+	vec3 lonLat = lonLatAt(pixel);
+	if (lonLat.z < 0.5) return vec3(0.0);
+	float row = (0.5 - lonLat.y / (2.0 * uBand)) * uWorld.y;
+	if (uCaps < 0.5) row = min(uWorld.y - 0.001, row);
+	return vec3(uCentre.x + lonLat.x / TAU * uWorld.x, row, 1.0);
+}
+
+// Where a globe pixel falls on a cap: xy its place on the cap image (0 to
+// 1 along the polar face's angles), z its latitude, w = 1 if the pixel is
+// on the globe at all. capCellAt in map.js does the same.
+vec4 capPoint(vec2 pixel) {
+	vec3 lonLat = lonLatAt(pixel);
+	if (lonLat.z < 0.5) return vec4(0.0);
+	float longitude = (uCentre.x / uWorld.x) * TAU + lonLat.x;
+	float latitude = lonLat.y;
+	vec3 point = vec3(cos(latitude) * cos(longitude), cos(latitude) * sin(longitude), sin(latitude));
+	float axis = max(abs(point.z), 1e-6);
+	// The cube's polar faces: the column runs along +y, the row along +x
+	// looking down on the north pole and along -x looking up at the south.
+	float row = latitude > 0.0 ? -point.x : point.x;
+	vec2 angles = vec2(atan(point.y / axis), atan(row / axis));
+	return vec4((angles / (PI / 4.0) + 1.0) * 0.5, latitude, 1.0);
+}
+
+vec3 capShade(vec4 cap) {
+	return cap.z > 0.0 ? texture(uCapNorth, cap.xy).rgb : texture(uCapSouth, cap.xy).rgb;
+}
+
+int capProvince(vec4 cap) {
+	ivec2 cell = ivec2(clamp(cap.xy * uCapSize, 0.0, uCapSize - 1.0));
+	vec4 texel = cap.z > 0.0 ? texelFetch(uCapNorthIds, cell, 0) : texelFetch(uCapSouthIds, cell, 0);
+	return unpackId(texel);
+}
+
+// Whether a globe pixel is drawn from a cap.
+bool onCap(vec4 cap) {
+	return uGlobe > 0.5 && uCaps > 0.5 && cap.w > 0.5 && abs(cap.z) >= uCapFrom;
+}
+
+// Province under a pixel, on the sheet or a cap, or the fallback where the
+// pixel is off the globe.
+int provinceAtPixel(vec2 pixel, int fallback) {
+	vec3 hit = chunkAtPixel(pixel);
+	if (hit.z < 0.5) return fallback;
+	if (uGlobe > 0.5 && uCaps > 0.5) {
+		vec4 cap = capPoint(pixel);
+		if (onCap(cap)) return capProvince(cap);
+	}
+	if (hit.y < 0.0 || hit.y >= uWorld.y) return fallback;
+	return provinceAt(hit.xy);
+}
+
 int provinceNear(vec2 pixel, vec2 offset, int fallback) {
-	vec3 hit = chunkAtPixel(pixel + offset);
-	return hit.z > 0.5 ? provinceAt(hit.xy) : fallback;
+	return provinceAtPixel(pixel + offset, fallback);
 }
 
 void main() {
 	vec2 pixel = vec2(gl_FragCoord.x, uCanvas.y - gl_FragCoord.y);
 	vec3 hit = chunkAtPixel(pixel);
 	vec2 chunk = hit.xy;
-	if (hit.z < 0.5 || chunk.y < 0.0 || chunk.y >= uWorld.y) {
+	if (hit.z < 0.5) {
 		colour = vec4(uBackground, 1.0);
 		return;
 	}
-	// Where the pixel falls in the base image. The whole-world image repeats
-	// east to west; a tile covers a patch and leaves the pixels outside it.
-	float across = mod(chunk.x - uBaseOrigin.x, uWorld.x);
-	if (across >= uBaseSize.x || chunk.y < uBaseOrigin.y || chunk.y >= uBaseOrigin.y + uBaseSize.y) {
-		discard;
+	vec4 cap = uGlobe > 0.5 && uCaps > 0.5 ? capPoint(pixel) : vec4(0.0);
+	bool capPixel = onCap(cap);
+	if (!capPixel && (chunk.y < 0.0 || chunk.y >= uWorld.y)) {
+		colour = vec4(uBackground, 1.0);
+		return;
 	}
-	bool wholeWorld = uBaseSize.x >= uWorld.x;
-	vec2 inBase = vec2(wholeWorld ? chunk.x - uBaseOrigin.x : across, chunk.y - uBaseOrigin.y);
-	vec3 shade = texture(uBase, inBase / uBaseSize).rgb;
-
-	int province = provinceAt(chunk);
-	if (province == 0 && uProvinceLayer > 0.0) {
+	if (uGlobe < 0.5 && (chunk.y < uFlatRows.x || chunk.y >= uFlatRows.y)) {
+		colour = vec4(uBackground, 1.0);
+		return;
+	}
+	vec3 shade;
+	int province;
+	if (capPixel) {
+		shade = capShade(cap);
+		province = capProvince(cap);
+	} else {
+		// Where the pixel falls in the base image. The whole-world image
+		// repeats east to west; a tile covers a patch and leaves the pixels
+		// outside it.
+		float across = mod(chunk.x - uBaseOrigin.x, uWorld.x);
+		if (across >= uBaseSize.x || chunk.y < uBaseOrigin.y || chunk.y >= uBaseOrigin.y + uBaseSize.y) {
+			discard;
+		}
+		bool wholeWorld = uBaseSize.x >= uWorld.x;
+		vec2 inBase = vec2(wholeWorld ? chunk.x - uBaseOrigin.x : across, chunk.y - uBaseOrigin.y);
+		shade = texture(uBase, inBase / uBaseSize).rgb;
+		province = provinceAt(chunk);
+		// Towards the cap the sheet fades into the cap's own picture of the
+		// same ground, so the change of grain does not show as a line.
+		if (uGlobe > 0.5 && uCaps > 0.5 && cap.w > 0.5 && uBaseShaded > 0.5) {
+			float into = smoothstep(uCapFrom - uCapBlend, uCapFrom, abs(cap.z));
+			shade = mix(shade, capShade(cap), into);
+		}
+	}
+	if (province == 0 && uProvinceLayer > 0.0 && !capPixel) {
 		// A lighter shelf along the coast: the more land near a point of sea,
 		// the lighter it is.
 		float land = 0.0;
@@ -801,8 +981,8 @@ void main() {
 		vec4 tint = texelFetch(uProvinces, ivec2(province, 0), 0);
 		float brightness = dot(shade, vec3(0.299, 0.587, 0.114));
 		shade = mix(shade, tint.rgb * mix(0.45, 1.35, brightness), tint.a);
-		// Hillshade over terrain and tint alike.
-		if (uBaseShaded < 0.5) {
+		// Hillshade over terrain and tint alike. A cap's image is shaded.
+		if (uBaseShaded < 0.5 && !capPixel) {
 			float relief = texture(uRelief, chunk / uWorld).r - 0.5;
 			shade *= 1.0 + relief * RELIEF_STRENGTH;
 		}
@@ -886,12 +1066,20 @@ function createRenderer() {
 	const provinceCount = meta.provinces.length;
 
 	// Texture units: 0 base image, 1 province ids, 2 province table, 3 relief,
-	// 4 sea.
-	["uBase", "uProvinceIds", "uProvinces", "uRelief", "uSea"].forEach(
-		(name, unit) => {
-			gl.uniform1i(uniform(name), unit);
-		},
-	);
+	// 4 sea, 5 and 6 the polar caps, 7 and 8 their province ids.
+	[
+		"uBase",
+		"uProvinceIds",
+		"uProvinces",
+		"uRelief",
+		"uSea",
+		"uCapNorth",
+		"uCapSouth",
+		"uCapNorthIds",
+		"uCapSouthIds",
+	].forEach((name, unit) => {
+		gl.uniform1i(uniform(name), unit);
+	});
 
 	const dataTexture = (unit) => {
 		gl.activeTexture(gl.TEXTURE0 + unit);
@@ -924,6 +1112,26 @@ function createRenderer() {
 		gl.UNSIGNED_BYTE,
 		ids,
 	);
+	// Province id per cap cell, the same way.
+	if (worldMap.capProvinces) {
+		const size = meta.cap_size;
+		[worldMap.capProvinces.north, worldMap.capProvinces.south].forEach(
+			(capIds, which) => {
+				dataTexture(7 + which);
+				gl.texImage2D(
+					gl.TEXTURE_2D,
+					0,
+					gl.RG8,
+					size,
+					size,
+					0,
+					gl.RG,
+					gl.UNSIGNED_BYTE,
+					capIds,
+				);
+			},
+		);
+	}
 
 	// Province table. Index 0 is "no province".
 	const table = new Uint8Array((provinceCount + 1) * 2 * 4);
@@ -1032,6 +1240,24 @@ function createRenderer() {
 			// Look the texture up first: creating one changes the active unit.
 			const relief = imageTexture(RELIEF_IMAGE);
 			const sea = imageTexture(SEA_IMAGE);
+			if (hasCaps()) {
+				const north = imageTexture(CAP_IMAGES.north);
+				const south = imageTexture(CAP_IMAGES.south);
+				gl.activeTexture(gl.TEXTURE6);
+				gl.bindTexture(gl.TEXTURE_2D, south);
+				gl.activeTexture(gl.TEXTURE5);
+				gl.bindTexture(gl.TEXTURE_2D, north);
+			}
+			gl.uniform1f(uniform("uCaps"), hasCaps() ? 1 : 0);
+			gl.uniform1f(uniform("uBand"), bandLatitude());
+			gl.uniform1f(uniform("uCapFrom"), capFromLatitude());
+			gl.uniform1f(uniform("uCapBlend"), (CAP_BLEND_DEGREES * Math.PI) / 180);
+			gl.uniform1f(uniform("uCapSize"), worldMap.meta.cap_size ?? 1);
+			gl.uniform2f(
+				uniform("uFlatRows"),
+				rowAtLatitude(flatBandLatitude()),
+				rowAtLatitude(-flatBandLatitude()),
+			);
 			gl.activeTexture(gl.TEXTURE4);
 			gl.bindTexture(gl.TEXTURE_2D, sea);
 			gl.activeTexture(gl.TEXTURE3);
@@ -1872,8 +2098,8 @@ function showGlobe(globe) {
 	draw();
 }
 viewToggle.addEventListener("click", () => showGlobe(!view.globe));
-// ?view=globe opens the page on the globe.
-showGlobe(new URLSearchParams(location.search).get("view") === "globe");
+// The globe is the view; ?view=flat opens the page on the flat map.
+showGlobe(new URLSearchParams(location.search).get("view") !== "flat");
 // The canvas beyond the map takes the page's colour, so it follows the theme.
 document.getElementById("themeToggle")?.addEventListener("click", draw);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
@@ -1925,6 +2151,17 @@ async function loadWorldMap() {
 		worldMap = { meta, chunks: new Uint8Array(chunks) };
 		worldMap.network = prepareNetwork(network);
 		worldMap.sea = await imagePixels(SEA_IMAGE);
+		if (meta.cap_size) {
+			const [north, south] = await Promise.all(
+				[CAP_PROVINCE_FILES.north, CAP_PROVINCE_FILES.south].map((file) =>
+					fetch(file).then((response) => response.arrayBuffer()),
+				),
+			);
+			worldMap.capProvinces = {
+				north: new Uint8Array(north),
+				south: new Uint8Array(south),
+			};
+		}
 		worldMap.roadKinds = network.road_kinds;
 	} catch {
 		status.textContent =

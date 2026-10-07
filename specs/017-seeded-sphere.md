@@ -1,6 +1,6 @@
 # Spec 017 - The Seeded Sphere
 
-**Status:** Proposed (2026-10-07); stage 1 in progress
+**Status:** Implemented, stages 1 to 3 (2026-10-07). Open: polar insets on the flat map, the knit
 **Priority:** High
 **Depends On:** Spec 015 (generation on the cubed sphere), spec 013 (the grown landscape), spec 011 (LifeGen)
 **Supersedes:** spec 016 (polar caps on the flat sheet; not merged), and the part of spec 015 that grew the world from flat
@@ -86,9 +86,13 @@ band on the flat map.
 
 ## Stage 3: the flat map as a band
 
-The flat map shows rows between 75° north and south, with the poles as two
-round insets, and the game's chunk grid is that band. Chunk coordinates in
-the band are what they are now.
+The flat map shows rows between 75° north and south; the rows beyond are
+the poles stretched across the sheet and are not shown. The globe draws the
+sheet to 50° and the cube's own polar faces beyond, as `cap-north.png` and
+`cap-south.png` with their province ids, so the poles are the cube's ground
+with the cube's provinces. Chunk coordinates in the band are what they are
+now; the game never streams past 75°. Polar insets on the flat map are not
+drawn yet.
 
 ## Open questions
 

@@ -145,6 +145,18 @@ Build on these seams. Do not create parallel ownership paths.
   everything downstream reads that map. Solvers on macro data take a
   `&CubeGrid` and never index `y * width + x`. A step at a face edge is a
   bug: check with `margins_grip inspect cube-seam <seed>`
+- The land is seeded, not regenerated (`specs/017`): the flat map's
+  continents the author chose are the `wind-4` layers artifact, exported
+  once as `~/.margins_grip/seed_42_wind4.mgseed` (`export seed-land`), and
+  `generate layers 42 <tag> --seed-land <file>` grows the cube from it.
+  Generating without the seed makes a different world. The seed carries the
+  flat map's light too, which is what put the terminus where it is
+- LifeGen runs on the cube's cells (`mg_life::Grid::cube`, the faces
+  stacked into one raster) from the macro cube stored beside a layers
+  artifact (`macro_cube.bin`); `export site-map` and `export civ-pack`
+  carry its provinces, settlements and roads onto the chunk raster. A
+  province radiating from a pole is a bug: check `provinces-poles.png` in
+  the site map export
 - Neighbouring chunks share their border samples: a chunk's last column and
   its neighbour's first column are the same world positions and must have the
   same heights. Check with `margins_grip inspect chunk-seam <seed> <x> <y>`
@@ -338,11 +350,14 @@ entry to `MAP_MODES`; do not bake a new image for it. Rivers, roads, trade
 and settlements are drawn as vectors from `network.json`, with what shows
 depending on zoom (`MAP_FEATURES`, `SETTLEMENT_STYLES`, `ROAD_STYLES`).
 
-The map can also be shown as a globe (`view.globe`, `?view=globe`): the same
+The map opens as a globe (`view.globe`; `?view=flat` opens the sheet): the same
 shader with a sphere in `chunkAtPixel`, and every overlay placed through
 `toScreen`, which says when a point is round the back. Keep both projections
-in that one place. The world is generated on the sphere (`specs/014`), so
-the globe is the planet and the poles are poles.
+in that one place. The world is generated on the cube (`specs/015`, `017`),
+so the globe is the planet. The sheet is drawn to 50° of latitude and the
+cube's polar faces beyond (`cap-north.png`, `cap-south.png`, with
+`cap-<pole>-provinces.bin`), so the poles are never the sheet's stretched
+rows; flat, the map shows rows within 75° (`band_latitude` in `map.json`).
 
 Zoomed in, the map lays sharper terrain tiles over the whole-world image.
 They are rendered in the browser, on demand, by `gdextension/crates/mg_web`
