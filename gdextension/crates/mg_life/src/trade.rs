@@ -60,7 +60,7 @@ pub fn build_trade_flows(
     settlements: &[Settlement],
     roads: &[Road],
     province_map: &ProvinceMap,
-    grid: Grid,
+    grid: &Grid,
 ) -> Vec<TradeFlow> {
     let networks = road_networks(settlements, roads);
     let distance_squared = |a: &Settlement, b: &Settlement| {
@@ -157,7 +157,7 @@ mod tests {
         ];
         let roads = [road(1, 2), road(2, 3)];
 
-        let flows = build_trade_flows(&settlements, &roads, &one_province(0.6), Grid::flat(1.0));
+        let flows = build_trade_flows(&settlements, &roads, &one_province(0.6), &Grid::flat(1.0));
 
         assert_eq!(
             flows,
@@ -183,7 +183,7 @@ mod tests {
             settlement(2, 10, SizeClass::Metropolis),
         ];
 
-        assert!(build_trade_flows(&settlements, &[road(1, 2)], &one_province(0.6), Grid::flat(1.0)).is_empty());
+        assert!(build_trade_flows(&settlements, &[road(1, 2)], &one_province(0.6), &Grid::flat(1.0)).is_empty());
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
             settlement(3, 20, SizeClass::Town),
         ];
 
-        let flows = build_trade_flows(&settlements, &[road(1, 3)], &one_province(0.6), Grid::flat(1.0));
+        let flows = build_trade_flows(&settlements, &[road(1, 3)], &one_province(0.6), &Grid::flat(1.0));
 
         assert_eq!(flows.len(), 1);
         assert_eq!(flows[0].to_settlement, 3);

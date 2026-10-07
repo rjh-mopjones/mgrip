@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mg_noise::{BiomeMap, RiverNetwork};
+use mg_noise::{BiomeMap, MacroMap, RiverNetwork};
 
 use crate::error::ArtifactError;
 use crate::manifest::{LayerManifest, LevelManifest};
@@ -10,6 +10,8 @@ use crate::manifest::{LayerManifest, LevelManifest};
 const MANIFEST_FILE: &str = "manifest.ron";
 const MACRO_BIOME_FILE: &str = "macro_biome.bin";
 const RIVER_NETWORK_FILE: &str = "river_network.bin";
+/// The world on the cube, for LifeGen (spec 017).
+const MACRO_CUBE_FILE: &str = "macro_cube.bin";
 const MICRO_BIOME_FILE: &str = "micro_biome.bin";
 const IMAGES_DIR: &str = "images";
 
@@ -100,6 +102,24 @@ impl ArtifactStore {
             read_bincode(&dir.join(RIVER_NETWORK_FILE), "RiverNetwork")?;
         river_network.rebuild_spatial_index();
         Ok((biome_map, river_network))
+    }
+
+    /// Keep the macro cube beside a layers artifact's flat map.
+    pub fn save_macro_cube(&self, tag: &str, macro_cube: &MacroMap) -> Result<(), ArtifactError> {
+        validate_tag(tag)?;
+        let dir = self.artifact_dir(ArtifactKind::Layers, tag);
+        write_bincode(&dir.join(MACRO_CUBE_FILE), macro_cube, "macro cube")
+    }
+
+    /// The macro cube of a layers artifact, if it was made on the cube.
+    pub fn load_macro_cube(&self, tag: &str) -> Result<MacroMap, ArtifactError> {
+        validate_tag(tag)?;
+        let dir = self.artifact_dir(ArtifactKind::Layers, tag);
+        let path = dir.join(MACRO_CUBE_FILE);
+        if !path.exists() {
+            return Err(ArtifactError::NotFound { kind: "macro cube".into(), tag: tag.into() });
+        }
+        read_bincode(&path, "macro cube")
     }
 
     pub fn load_layer_manifest(&self, tag: &str) -> Result<LayerManifest, ArtifactError> {

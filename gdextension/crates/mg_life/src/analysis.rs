@@ -41,7 +41,7 @@ pub struct AnalysisGrids {
 
 /// Compute all stage 1 grids. `grid` describes the resolution and shape of the
 /// grid behind `terrain` (1.0 for the macro map: one cell per chunk).
-pub fn compute_analysis_grids(terrain: &dyn TerrainQuery, grid: Grid) -> AnalysisGrids {
+pub fn compute_analysis_grids(terrain: &dyn TerrainQuery, grid: &Grid) -> AnalysisGrids {
     let river_distance = compute_river_distance_field(terrain, grid);
     let habitability = compute_habitability(terrain, &river_distance, grid);
     AnalysisGrids {
@@ -58,7 +58,7 @@ pub fn compute_analysis_grids(terrain: &dyn TerrainQuery, grid: Grid) -> Analysi
 
 /// Slope as Randlebrot's formulas expect it: height change per reference cell.
 /// A coarser grid spans more ground per cell, so its raw slope is larger.
-fn reference_slope(terrain: &dyn TerrainQuery, x: usize, y: usize, grid: Grid) -> f64 {
+fn reference_slope(terrain: &dyn TerrainQuery, x: usize, y: usize, grid: &Grid) -> f64 {
     terrain.slope_at(x, y) * grid.cells_per_world_unit / REFERENCE_CELLS_PER_WORLD_UNIT
 }
 
@@ -66,7 +66,7 @@ fn reference_slope(terrain: &dyn TerrainQuery, x: usize, y: usize, grid: Grid) -
 ///
 /// Goes the short way round on a ring. 4-connected BFS from all river cells, then one pass that tightens the
 /// estimate using diagonal steps. River cells are 0.0.
-pub fn compute_river_distance_field(terrain: &dyn TerrainQuery, grid: Grid) -> Vec<f32> {
+pub fn compute_river_distance_field(terrain: &dyn TerrainQuery, grid: &Grid) -> Vec<f32> {
     let w = terrain.width();
     let h = terrain.height();
     let mut dist = vec![f32::MAX; w * h];
@@ -135,7 +135,7 @@ pub fn compute_river_distance_field(terrain: &dyn TerrainQuery, grid: Grid) -> V
 pub fn compute_habitability(
     terrain: &dyn TerrainQuery,
     river_distance: &[f32],
-    grid: Grid,
+    grid: &Grid,
 ) -> Vec<f32> {
     let w = terrain.width();
     let mut scores = vec![0.0f32; w * terrain.height()];
@@ -205,7 +205,7 @@ pub fn compute_habitability(
 pub fn compute_navigation_cost(
     terrain: &dyn TerrainQuery,
     river_distance: &[f32],
-    grid: Grid,
+    grid: &Grid,
 ) -> Vec<f32> {
     let w = terrain.width();
     let mut scores = vec![0.0f32; w * terrain.height()];
@@ -255,7 +255,7 @@ const RIVERSIDE_APPEAL: f32 = 0.1;
 pub fn compute_site_appeal(
     terrain: &dyn TerrainQuery,
     habitability: &[f32],
-    grid: Grid,
+    grid: &Grid,
 ) -> Vec<f32> {
     let (width, height) = (terrain.width(), terrain.height());
     let is_water = |x: usize, y: usize, dx: i32, dy: i32| -> bool {
@@ -307,7 +307,7 @@ pub fn compute_site_appeal(
 /// The drainage basin of every land cell: follow the steepest descent over
 /// the heightmap until it reaches the sea or a cell with nowhere lower to
 /// go, and label the cell with where it ended. Ocean is `u32::MAX`.
-pub fn compute_basins(terrain: &dyn TerrainQuery, grid: Grid) -> Vec<u32> {
+pub fn compute_basins(terrain: &dyn TerrainQuery, grid: &Grid) -> Vec<u32> {
     let (width, height) = (terrain.width(), terrain.height());
     let total = width * height;
     // Where each cell's water goes next, or itself if nowhere.
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn river_distance_grows_away_from_the_river() {
         let terrain = MockTerrain::with_river_along_row(100, 100, 50);
-        let dist = compute_river_distance_field(&terrain, Grid::flat(1.0));
+        let dist = compute_river_distance_field(&terrain, &Grid::flat(1.0));
 
         for x in 0..100 {
             assert_eq!(dist[50 * 100 + x], 0.0);
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn habitability_is_higher_beside_a_river_than_far_from_it() {
         let terrain = MockTerrain::with_river_along_row(40, 40, 20);
-        let grids = compute_analysis_grids(&terrain, Grid::flat(1.0));
+        let grids = compute_analysis_grids(&terrain, &Grid::flat(1.0));
 
         let beside_river = grids.habitability[19 * 40 + 20];
         let far_from_river = grids.habitability[2 * 40 + 20];
@@ -506,11 +506,11 @@ mod tests {
         // at 1 cell per world unit, 11 cells away is inside it at 8.
         let coarse = compute_analysis_grids(
             &MockTerrain::with_river_along_row(40, 40, 20),
-            Grid::flat(1.0),
+            &Grid::flat(1.0),
         );
         let fine = compute_analysis_grids(
             &MockTerrain::with_river_along_row(40, 40, 20),
-            Grid::flat(8.0),
+            &Grid::flat(8.0),
         );
         let baseline = coarse.habitability[2 * 40 + 20];
 
@@ -522,7 +522,7 @@ mod tests {
     #[test]
     fn crossing_a_river_is_harder_than_walking_beside_it() {
         let terrain = MockTerrain::with_river_along_row(40, 40, 20);
-        let grids = compute_analysis_grids(&terrain, Grid::flat(1.0));
+        let grids = compute_analysis_grids(&terrain, &Grid::flat(1.0));
 
         assert!(grids.navigation_cost[20 * 40 + 20] < grids.navigation_cost[19 * 40 + 20]);
     }

@@ -471,17 +471,18 @@ fn run_generate_layers(seed: u32, tag: &str, seed_land: Option<&Path>) {
     // ── Step 1: Macro map for erosion + global river network ──────────────────
     // The first generate() call also initialises the GPU context if available.
     let pb = spinner("Macro pass (erosion + rivers)…");
-    let macro_map = match seed_land {
-        None => mg_noise::generate_macro_map(seed),
+    let macro_cube = match seed_land {
+        None => mg_noise::MacroMap::generate(seed),
         Some(path) => {
             let land = mg_noise::SeedLand::load(path).unwrap_or_else(|e| {
                 eprintln!("error: seed land: {e}");
                 std::process::exit(1);
             });
             println!("  seeded from {} (seed {})", path.display(), land.seed);
-            mg_noise::generate_macro_map_seeded(seed, &land)
+            mg_noise::MacroMap::generate_seeded(seed, &land)
         }
     };
+    let macro_map = macro_cube.to_biome_map();
     pb.finish_and_clear();
     println!("  macro pass: {:.1}s", t0.elapsed().as_secs_f64());
 
@@ -597,6 +598,7 @@ fn run_generate_layers(seed: u32, tag: &str, seed_land: Option<&Path>) {
 
     store
         .save_layers(tag, &macro_map, &river_network, &images, &manifest)
+        .and_then(|()| store.save_macro_cube(tag, &macro_cube))
         .unwrap_or_else(|e| {
             eprintln!("error: failed to save layers: {e}");
             std::process::exit(1);
@@ -1264,7 +1266,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
     }
 
     let grid = macro_grid(&map);
-    let analysis = mg_life::compute_analysis_grids(&map, grid);
+    let analysis = mg_life::compute_analysis_grids(&map, &grid);
     let lifegen_grids = [
         ("habitability", &analysis.habitability),
         ("navigation_cost", &analysis.navigation_cost),
@@ -1285,7 +1287,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         println!("{:<18}{}", format!("lifegen {name}"), row.join(""));
     }
 
-    let province_map = mg_life::generate_provinces(&map, &analysis, grid, 1);
+    let province_map = mg_life::generate_provinces(&map, &analysis, &grid, 1);
     let mut areas: Vec<u32> = province_map
         .provinces
         .iter()
@@ -1339,7 +1341,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         habitability_at(100),
     );
 
-    let faction_map = mg_life::generate_factions(&province_map, &authored_states(), grid, 1);
+    let faction_map = mg_life::generate_factions(&province_map, &authored_states(), &grid, 1);
     let count_state = |wanted: fn(&mg_life::PoliticalState) -> bool| {
         let provinces: Vec<&mg_life::Province> = province_map
             .provinces
@@ -1406,7 +1408,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         );
     }
 
-    let settlements = mg_life::place_settlements(&province_map, &faction_map, &analysis, grid);
+    let settlements = mg_life::place_settlements(&province_map, &faction_map, &analysis, &grid);
     let by_size: Vec<String> = mg_life::SizeClass::ALL
         .iter()
         .map(|size| {
@@ -1426,7 +1428,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         &analysis.river_distance,
         map.width,
         map.height,
-        grid,
+        &grid,
     );
     let by_kind: Vec<String> = mg_life::RoadKind::ALL
         .iter()
@@ -1451,7 +1453,7 @@ fn run_inspect_layer_stats(layers_tag: &str) {
         by_kind.join(", "),
         settlements.len() - on_a_road.len()
     );
-    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
+    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, &grid);
     println!(
         "trade: {} flows; {} settlements send none",
         trade_flows.len(),
@@ -1492,9 +1494,9 @@ struct Civilisation {
 }
 
 fn run_lifegen(
-    map: &BiomeMap,
+    map: &dyn mg_core::TerrainQuery,
     analysis: &mg_life::AnalysisGrids,
-    grid: mg_life::Grid,
+    grid: &mg_life::Grid,
     civ_seed: u32,
 ) -> Civilisation {
     let province_map = mg_life::generate_provinces(map, analysis, grid, civ_seed);
@@ -1522,6 +1524,121 @@ fn run_lifegen(
         roads,
         names,
     }
+}
+
+/// What LifeGen made on the cube that the site map wants besides the
+/// civilisation itself, already on the chunk raster.
+struct LifeGenOnRaster {
+    habitability: Vec<f32>,
+    navigation_cost: Vec<f32>,
+    resource_desirability: Vec<f32>,
+    trade_flows: Vec<mg_life::TradeFlow>,
+}
+
+/// Run every LifeGen stage on the macro cube's cells and carry the result
+/// onto the chunk raster of `map`: each chunk takes the cube cell under its
+/// centre, and every cell position becomes the chunk under it.
+fn run_lifegen_on_cube(
+    macro_cube: &mg_noise::MacroMap,
+    map: &BiomeMap,
+    civ_seed: u32,
+) -> (Civilisation, LifeGenOnRaster) {
+    let cube = std::sync::Arc::new(macro_cube.grid.clone());
+    let grid = mg_life::Grid::cube(std::sync::Arc::clone(&cube));
+    let analysis = mg_life::compute_analysis_grids(macro_cube, &grid);
+    let civ = run_lifegen(macro_cube, &analysis, &grid, civ_seed);
+    let trade_flows =
+        mg_life::build_trade_flows(&civ.settlements, &civ.roads, &civ.province_map, &grid);
+
+    let (width, height) = (map.width, map.height);
+    let n = cube.n;
+    // The cube cell under each chunk's centre.
+    let cell_under: Vec<usize> = (0..width * height)
+        .map(|chunk| {
+            let (x, y) = ((chunk % width) as f64 + 0.5, (chunk / width) as f64 + 0.5);
+            cube.cell_of(cube.sphere.point_at(x, y))
+        })
+        .collect();
+    let onto_raster_f32 = |field: &[f32]| -> Vec<f32> { cell_under.iter().map(|&cell| field[cell]).collect() };
+    let chunk_of = |(x, y): (usize, usize)| -> (usize, usize) {
+        let (wx, wy) = cube.world_position(y * n + x);
+        (
+            (wx.floor() as i64).rem_euclid(width as i64) as usize,
+            (wy.floor().max(0.0) as usize).min(height - 1),
+        )
+    };
+
+    let Civilisation {
+        province_map,
+        faction_map,
+        settlements,
+        roads,
+        names,
+    } = civ;
+    let province_map = mg_life::ProvinceMap {
+        width,
+        height,
+        province_ids: cell_under
+            .iter()
+            .map(|&cell| province_map.province_ids[cell])
+            .collect(),
+        provinces: province_map
+            .provinces
+            .into_iter()
+            .map(|province| mg_life::Province {
+                site: chunk_of(province.site),
+                ..province
+            })
+            .collect(),
+        adjacency: province_map.adjacency,
+    };
+    let settlements = settlements
+        .into_iter()
+        .map(|settlement| mg_life::Settlement {
+            position: chunk_of(settlement.position),
+            ..settlement
+        })
+        .collect();
+    let roads = roads
+        .into_iter()
+        .map(|road| mg_life::Road {
+            path: road.path.iter().map(|&cell| chunk_of(cell)).collect(),
+            crossings: road.crossings.iter().map(|&cell| chunk_of(cell)).collect(),
+            ..road
+        })
+        .collect();
+    (
+        Civilisation {
+            province_map,
+            faction_map,
+            settlements,
+            roads,
+            names,
+        },
+        LifeGenOnRaster {
+            habitability: onto_raster_f32(&analysis.habitability),
+            navigation_cost: onto_raster_f32(&analysis.navigation_cost),
+            resource_desirability: onto_raster_f32(&analysis.resource_desirability),
+            trade_flows,
+        },
+    )
+}
+
+/// Province ids as shades, seen from straight above each pole.
+fn province_poles_image(province_ids: &[u16], width: usize, height: usize) -> image::GrayImage {
+    let shades: Vec<u8> = province_ids
+        .iter()
+        .map(|&id| {
+            if id == 0 {
+                0
+            } else {
+                40 + (id.wrapping_mul(2654435761u32 as u16 | 1) % 200) as u8
+            }
+        })
+        .collect();
+    let flat = image::GrayImage::from_raw(width as u32, height as u32, shades)
+        .expect("province shades match the map size");
+    polar_views(&flat, POLAR_VIEW_DIAMETER)
 }
 
 fn civ_pack(seed: u32, civ_seed: u32, civ: &Civilisation) -> mg_artifacts::CivPack {
@@ -1610,9 +1727,10 @@ fn run_export_civ_pack(output: &Path, layers_tag: Option<&str>, civ_seed: u32) {
     let (map, _) = store
         .load_layers_data(&tag)
         .unwrap_or_else(|e| fail(format!("could not load layers data for '{tag}': {e}")));
-    let grid = macro_grid(&map);
-    let analysis = mg_life::compute_analysis_grids(&map, grid);
-    let civ = run_lifegen(&map, &analysis, grid, civ_seed);
+    let macro_cube = store
+        .load_macro_cube(&tag)
+        .unwrap_or_else(|e| fail(format!("could not load the macro cube for '{tag}': {e}")));
+    let (civ, _) = run_lifegen_on_cube(&macro_cube, &map, civ_seed);
     let pack = civ_pack(manifest.seed, civ_seed, &civ);
     let bytes = pack.to_bytes().unwrap_or_else(|e| fail(e));
     if let Some(directory) = output.parent() {
@@ -1749,14 +1867,18 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
     let (image_w, image_h) = layer_sizes.first().copied().unwrap_or((0, 0));
 
     // LifeGen stage 1 (spec 011): analysis grids, computed from the macro map.
-    let grid = macro_grid(&map);
-    let analysis = mg_life::compute_analysis_grids(&map, grid);
+    // LifeGen (spec 011) runs on the macro cube (spec 017); everything it
+    // made is carried onto the chunk raster here.
+    let macro_cube = store
+        .load_macro_cube(&tag)
+        .unwrap_or_else(|e| fail(format!("could not load the macro cube for '{tag}': {e}")));
+    let (civ, lifegen) = run_lifegen_on_cube(&macro_cube, &map, civ_seed);
     let lifegen_layers = [
-        ("lifegen_habitability.png", &analysis.habitability),
-        ("lifegen_navigation_cost.png", &analysis.navigation_cost),
+        ("lifegen_habitability.png", &lifegen.habitability),
+        ("lifegen_navigation_cost.png", &lifegen.navigation_cost),
         (
             "lifegen_resource_desirability.png",
-            &analysis.resource_desirability,
+            &lifegen.resource_desirability,
         ),
     ];
     let mut layer_files = manifest.layer_images.clone();
@@ -1765,24 +1887,30 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
             .iter()
             .flat_map(|&score| score_to_rgba(score))
             .collect();
-        RgbaImage::from_raw(analysis.width as u32, analysis.height as u32, pixels)
+        RgbaImage::from_raw(map.width as u32, map.height as u32, pixels)
             .expect("score grid matches its dimensions")
             .save(output_dir.join(file_name))
             .unwrap_or_else(|e| fail(format!("saving {file_name}: {e}")));
         layer_files.push(file_name.to_string());
     }
 
-    // LifeGen stages 2 to 6 (spec 011). Provinces and factions go out as data
-    // (the map page colours them itself), and so do settlements, roads and
-    // trade (it draws them as lines and markers).
+    // Provinces and factions go out as data (the map page colours them
+    // itself), and so do settlements, roads and trade (it draws them as
+    // lines and markers).
     let Civilisation {
         province_map,
         faction_map,
         settlements,
         roads,
         names,
-    } = run_lifegen(&map, &analysis, grid, civ_seed);
-    let trade_flows = mg_life::build_trade_flows(&settlements, &roads, &province_map, grid);
+    } = civ;
+    let trade_flows = lifegen.trade_flows;
+
+    // The provinces seen from above each pole, for checking that none
+    // radiates from it.
+    province_poles_image(&province_map.province_ids, map.width, map.height)
+        .save(output_dir.join("provinces-poles.png"))
+        .unwrap_or_else(|e| fail(format!("saving provinces-poles.png: {e}")));
 
     relief_image(&map, &province_map.province_ids)
         .save(output_dir.join(SITE_MAP_RELIEF_IMAGE))
@@ -1918,7 +2046,7 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         "biomes": biome_names,
         "civ_seed": civ_seed,
         // East and west edges are neighbours.
-        "wraps_x": grid.is_sphere(),
+        "wraps_x": true,
         "projection": "equirectangular",
         "sun": "south pole",
         // Indexed by province id - 1.

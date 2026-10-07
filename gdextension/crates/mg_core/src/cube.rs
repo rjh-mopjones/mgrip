@@ -390,6 +390,12 @@ impl CubeGrid {
     }
 }
 
+impl std::fmt::Debug for CubeGrid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CubeGrid").field("n", &self.n).finish()
+    }
+}
+
 /// A tangent vector at a point on the sphere, in world units.
 pub type Tangent = Point;
 

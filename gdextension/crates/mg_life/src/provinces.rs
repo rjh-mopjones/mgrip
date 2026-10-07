@@ -85,7 +85,7 @@ pub struct ProvinceMap {
 pub fn generate_provinces(
     terrain: &dyn TerrainQuery,
     analysis: &AnalysisGrids,
-    grid: Grid,
+    grid: &Grid,
     civ_seed: u32,
 ) -> ProvinceMap {
     let seeds = seed_provinces(
@@ -114,7 +114,7 @@ pub fn generate_provinces(
 
 /// Minimum distance, in cells, between a seed on land of this habitability and
 /// any other seed.
-fn seed_radius_cells(habitability: f32, grid: Grid) -> f64 {
+fn seed_radius_cells(habitability: f32, grid: &Grid) -> f64 {
     let habitability = (habitability as f64).max(SEEDING_HABITABILITY_FLOOR);
     let radius_wu =
         MAX_SEED_RADIUS_WU + (MIN_SEED_RADIUS_WU - MAX_SEED_RADIUS_WU) * habitability.powf(0.7);
@@ -126,18 +126,18 @@ fn seed_radius_cells(habitability: f32, grid: Grid) -> f64 {
 fn seed_provinces(
     terrain: &dyn TerrainQuery,
     habitability: &[f32],
-    grid: Grid,
+    grid: &Grid,
     seed: u32,
 ) -> Vec<(usize, usize)> {
     let (width, height) = (terrain.width(), terrain.height());
 
-    // Spatial grid with at most one seed per bucket, so nearby seeds are found
-    // without scanning them all.
+    // Buckets over the grid with at most one seed each, so nearby seeds are
+    // found without scanning them all. A bucket is small enough that two
+    // seeds the minimum distance apart cannot share one.
     let bucket_size =
         (MIN_SEED_RADIUS_WU * grid.cells_per_world_unit / std::f64::consts::SQRT_2).max(1.0);
-    let buckets_wide = (width as f64 / bucket_size).ceil() as usize;
-    let buckets_high = (height as f64 / bucket_size).ceil() as usize;
-    let mut buckets = vec![usize::MAX; buckets_wide * buckets_high];
+    let buckets = grid.buckets(bucket_size, width, height);
+    let mut seed_in_bucket = vec![usize::MAX; buckets.len()];
     let search_buckets =
         (MAX_SEED_RADIUS_WU * grid.cells_per_world_unit / bucket_size).ceil() as usize + 1;
 
@@ -153,30 +153,21 @@ fn seed_provinces(
         let y = rng.gen_range(0..height);
         // Darts land evenly over the ground, so a row's chance is its cells'
         // share of an equatorial cell's area: the poles are not over-seeded.
-        if rng.gen::<f64>() > grid.area_share(y) || terrain.is_ocean(x, y) {
+        if rng.gen::<f64>() > grid.area_share(x, y) || terrain.is_ocean(x, y) {
             continue;
         }
         let radius = seed_radius_cells(habitability[y * width + x], grid);
 
-        let bucket_x = (x as f64 / bucket_size) as usize;
-        let bucket_y = (y as f64 / bucket_size) as usize;
-        let x_buckets: Vec<usize> = (-(search_buckets as i32)..=search_buckets as i32)
-            .filter_map(|offset| grid.step_x(bucket_x, offset, buckets_wide))
-            .collect();
-        let y_range = bucket_y.saturating_sub(search_buckets)
-            ..=(bucket_y + search_buckets).min(buckets_high - 1);
-
-        let too_close = y_range.into_iter().any(|by| {
-            x_buckets.iter().any(|&bx| {
-                let existing = buckets[by * buckets_wide + bx];
-                if existing == usize::MAX {
-                    return false;
-                }
-                let (sx, sy) = seeds[existing];
-                let existing_radius = seed_radius_cells(habitability[sy * width + sx], grid);
-                let min_distance = radius.max(existing_radius);
-                grid.distance((sx, sy), (x, y)) < min_distance
-            })
+        let bucket = buckets.of(x, y);
+        let too_close = buckets.nearby(bucket, search_buckets).into_iter().any(|near| {
+            let existing = seed_in_bucket[near];
+            if existing == usize::MAX {
+                return false;
+            }
+            let (sx, sy) = seeds[existing];
+            let existing_radius = seed_radius_cells(habitability[sy * width + sx], grid);
+            let min_distance = radius.max(existing_radius);
+            grid.distance((sx, sy), (x, y)) < min_distance
         });
         if too_close {
             rejections_in_a_row += 1;
@@ -184,7 +175,7 @@ fn seed_provinces(
         }
         rejections_in_a_row = 0;
 
-        buckets[bucket_y * buckets_wide + bucket_x] = seeds.len();
+        seed_in_bucket[bucket] = seeds.len();
         seeds.push((x, y));
     }
 
@@ -202,7 +193,7 @@ fn tessellate_provinces(
     seeds: &[(usize, usize)],
     navigation_cost: &[f32],
     basins: &[u32],
-    grid: Grid,
+    grid: &Grid,
 ) -> (Vec<u16>, Vec<Vec<u16>>) {
     let (width, height) = (terrain.width(), terrain.height());
     let mut province_ids = vec![0u16; width * height];
@@ -264,7 +255,7 @@ fn tessellate_provinces(
 /// Give land that no seed could reach (islets too small to be hit by seeding)
 /// to the nearest province across the water. Breadth-first from all province
 /// cells at once, through ocean as well as land.
-fn attach_unreached_land(terrain: &dyn TerrainQuery, province_ids: &mut [u16], grid: Grid) {
+fn attach_unreached_land(terrain: &dyn TerrainQuery, province_ids: &mut [u16], grid: &Grid) {
     let (width, height) = (terrain.width(), terrain.height());
     let mut nearest: Vec<u16> = province_ids.to_vec();
     let mut frontier: VecDeque<usize> = (0..province_ids.len())
@@ -298,7 +289,7 @@ fn bake_province_attributes(
     analysis: &AnalysisGrids,
     province_ids: &[u16],
     seeds: &[(usize, usize)],
-    grid: Grid,
+    grid: &Grid,
 ) -> Vec<Province> {
     #[derive(Default, Clone)]
     struct Totals {
@@ -326,7 +317,7 @@ fn bake_province_attributes(
         let province = &mut totals[(province_id - 1) as usize];
         let (x, y) = (cell % width, cell / width);
 
-        province.area += grid.area_share(y);
+        province.area += grid.area_share(x, y);
         province.habitability += analysis.habitability[cell] as f64;
         province.elevation += terrain.heightmap_at(x, y);
         province.terrain_cost += (1.0 - analysis.navigation_cost[cell]) as f64;
@@ -406,8 +397,8 @@ mod tests {
     use crate::test_support::MockTerrain;
 
     fn provinces_for(terrain: &MockTerrain, civ_seed: u32) -> ProvinceMap {
-        let analysis = compute_analysis_grids(terrain, Grid::flat(1.0));
-        generate_provinces(terrain, &analysis, Grid::flat(1.0), civ_seed)
+        let analysis = compute_analysis_grids(terrain, &Grid::flat(1.0));
+        generate_provinces(terrain, &analysis, &Grid::flat(1.0), civ_seed)
     }
 
     #[test]
@@ -486,7 +477,7 @@ mod tests {
         let terrain = MockTerrain::with_ocean_column(3, 1, 1);
         let mut province_ids = vec![1, 0, 0];
 
-        attach_unreached_land(&terrain, &mut province_ids, Grid::flat(1.0));
+        attach_unreached_land(&terrain, &mut province_ids, &Grid::flat(1.0));
 
         assert_eq!(province_ids, vec![1, 0, 1]);
     }

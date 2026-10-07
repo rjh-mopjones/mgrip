@@ -552,6 +552,12 @@ impl Clone for RiverNetwork {
     }
 }
 
+impl Default for RiverNetwork {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl RiverNetwork {
     pub fn empty() -> Self {
         Self {

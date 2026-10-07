@@ -160,7 +160,7 @@ struct Founding<'a> {
 pub fn generate_factions(
     province_map: &ProvinceMap,
     authored_states: &[AuthoredState],
-    grid: Grid,
+    grid: &Grid,
     civ_seed: u32,
 ) -> FactionMap {
     let provinces = &province_map.provinces;
@@ -238,7 +238,7 @@ pub fn generate_factions(
     }
 }
 
-fn site_distance_wu(a: &Province, b: &Province, grid: Grid) -> f64 {
+fn site_distance_wu(a: &Province, b: &Province, grid: &Grid) -> f64 {
     grid.distance(a.site, b.site) / grid.cells_per_world_unit
 }
 
@@ -253,7 +253,7 @@ fn keeps_spacing(
     candidate: &Province,
     taken: &[u16],
     min_spacing_wu: f64,
-    grid: Grid,
+    grid: &Grid,
 ) -> bool {
     taken.iter().all(|&capital| {
         let capital = &provinces[(capital - 1) as usize];
@@ -287,7 +287,7 @@ fn authored_capital(
     adjacency: &[Vec<u16>],
     state: &AuthoredState,
     taken: &[u16],
-    grid: Grid,
+    grid: &Grid,
 ) -> Option<u16> {
     let mut candidates: Vec<&Province> = provinces
         .iter()
@@ -340,7 +340,7 @@ fn authored_capital(
 fn generated_capitals(
     provinces: &[Province],
     taken: &[u16],
-    grid: Grid,
+    grid: &Grid,
 ) -> Vec<u16> {
     let habitable_count = provinces
         .iter()
@@ -427,7 +427,7 @@ fn grow_factions(
     provinces: &[Province],
     adjacency: &[Vec<u16>],
     foundings: &[Founding],
-    grid: Grid,
+    grid: &Grid,
 ) -> Vec<u16> {
     let mut owner = vec![0u16; provinces.len() + 1];
     let mut held = vec![0usize; foundings.len() + 1];
@@ -605,7 +605,7 @@ mod tests {
         // Provinces 5 world units apart: capitals must be 18.75 apart, so at
         // most every fourth province can be one.
         let map = chain(&[0.9; 40], 5);
-        let capitals = generated_capitals(&map.provinces, &[], Grid::flat(1.0));
+        let capitals = generated_capitals(&map.provinces, &[], &Grid::flat(1.0));
 
         assert!(capitals.len() > 1);
         for (index, &a) in capitals.iter().enumerate() {
@@ -613,7 +613,7 @@ mod tests {
                 let distance = site_distance_wu(
                     &map.provinces[(a - 1) as usize],
                     &map.provinces[(b - 1) as usize],
-                    Grid::flat(1.0),
+                    &Grid::flat(1.0),
                 );
                 // The fallback pass may halve the spacing, never less.
                 assert!(distance >= CAPITAL_MIN_SPACING_WU / 2.0);
@@ -625,7 +625,7 @@ mod tests {
     fn barren_provinces_get_no_generated_capital() {
         let map = chain(&[0.2, 0.3], 100);
 
-        assert!(generated_capitals(&map.provinces, &[], Grid::flat(1.0)).is_empty());
+        assert!(generated_capitals(&map.provinces, &[], &Grid::flat(1.0)).is_empty());
     }
 
     #[test]
@@ -633,7 +633,7 @@ mod tests {
         // capital - habitable - barren - habitable, 5 world units apart: too
         // close for a second capital.
         let map = chain(&[0.8, 0.6, 0.05, 0.3], 5);
-        let factions = generate_factions(&map, &[], Grid::flat(1.0), 7);
+        let factions = generate_factions(&map, &[], &Grid::flat(1.0), 7);
 
         assert_eq!(factions.factions.len(), 1);
         assert_eq!(factions.factions[0].name, None);
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn no_faction_exceeds_the_province_limit() {
         let map = chain(&[0.9; 200], 5);
-        let factions = generate_factions(&map, &[], Grid::flat(1.0), 7);
+        let factions = generate_factions(&map, &[], &Grid::flat(1.0), 7);
 
         for faction in &factions.factions {
             assert!(faction.province_count >= 1);
@@ -667,15 +667,15 @@ mod tests {
         let states = [state("Corazon", (0.3, 0.5), StateSize::Large, &[])];
 
         assert_eq!(
-            generate_factions(&map, &states, Grid::flat(1.0), 7),
-            generate_factions(&map, &states, Grid::flat(1.0), 7)
+            generate_factions(&map, &states, &Grid::flat(1.0), 7),
+            generate_factions(&map, &states, &Grid::flat(1.0), 7)
         );
     }
 
     #[test]
     fn faction_of_province_is_zero_for_unheld_and_unknown_provinces() {
         let map = chain(&[0.8, 0.05], 5);
-        let factions = generate_factions(&map, &[], Grid::flat(1.0), 7);
+        let factions = generate_factions(&map, &[], &Grid::flat(1.0), 7);
 
         assert_eq!(factions.faction_of_province(1), 1);
         assert_eq!(factions.faction_of_province(2), 0);
@@ -697,7 +697,7 @@ mod tests {
             &[],
         )];
 
-        let factions = generate_factions(&map, &states, Grid::flat(1.0), 7);
+        let factions = generate_factions(&map, &states, &Grid::flat(1.0), 7);
 
         assert_eq!(
             factions.factions[0].name.as_deref(),
@@ -723,7 +723,7 @@ mod tests {
         );
 
         assert_eq!(
-            authored_capital(&map.provinces, &map.adjacency, &harbour, &[], Grid::flat(1.0)),
+            authored_capital(&map.provinces, &map.adjacency, &harbour, &[], &Grid::flat(1.0)),
             Some(3)
         );
     }
@@ -736,7 +736,7 @@ mod tests {
             state("Furrow", (0.3, 0.5), StateSize::Medium, &[]),
         ];
 
-        let factions = generate_factions(&map, &states, Grid::flat(1.0), 7);
+        let factions = generate_factions(&map, &states, &Grid::flat(1.0), 7);
 
         assert_eq!(factions.factions[0].name.as_deref(), Some("Corazon"));
         assert_eq!(factions.factions[1].name.as_deref(), Some("Furrow"));
@@ -757,7 +757,7 @@ mod tests {
         let map = chain(&[0.9; 12], 2);
         let states = [state("Vestara", (0.3, 0.5), StateSize::CityState, &[])];
 
-        let factions = generate_factions(&map, &states, Grid::flat(1.0), 7);
+        let factions = generate_factions(&map, &states, &Grid::flat(1.0), 7);
 
         assert!(factions.factions[0].province_count <= 3);
     }
@@ -788,7 +788,7 @@ mod tests {
             limit: 3,
         }];
 
-        let owner = grow_factions(&map.provinces, &map.adjacency, &foundings, Grid::flat(1.0));
+        let owner = grow_factions(&map.provinces, &map.adjacency, &foundings, &Grid::flat(1.0));
 
         assert_eq!(&owner[3..=5], &[1, 1, 1]);
         assert_eq!(&owner[6..=9], &[0, 0, 0, 0]);
@@ -802,7 +802,7 @@ mod tests {
         map.adjacency[3] = vec![2, 4, 5];
         let medium = state("Breakwater", (0.3, 0.5), StateSize::Medium, &[]);
         let city_state = state("Tidewall", (0.3, 0.5), StateSize::CityState, &[]);
-        let capital = |state| authored_capital(&map.provinces, &map.adjacency, state, &[], Grid::flat(1.0));
+        let capital = |state| authored_capital(&map.provinces, &map.adjacency, state, &[], &Grid::flat(1.0));
 
         assert_eq!(capital(&medium), Some(3));
         assert_eq!(capital(&city_state), Some(1));
@@ -819,7 +819,7 @@ mod tests {
             Founding { capital_province: 8, authored: None, budget: 6, limit: 6 },
         ];
 
-        let owner = grow_factions(&map.provinces, &map.adjacency, &foundings, Grid::flat(1.0));
+        let owner = grow_factions(&map.provinces, &map.adjacency, &foundings, &Grid::flat(1.0));
 
         assert_eq!(&owner[1..=8], &[1, 1, 1, 1, 1, 1, 2, 2]);
     }
@@ -834,7 +834,7 @@ mod tests {
             &[],
         )];
 
-        let factions = generate_factions(&map, &states, Grid::flat(1.0), 7);
+        let factions = generate_factions(&map, &states, &Grid::flat(1.0), 7);
 
         assert_eq!(
             factions.unplaced_states,

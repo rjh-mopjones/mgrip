@@ -494,6 +494,16 @@ pub struct FineHeights {
 }
 
 impl FineHeights {
+    /// No land at all: what a map read back without its fine heights has.
+    pub fn empty() -> Self {
+        let grid = CubeGrid::margin(1);
+        Self {
+            heights: vec![0.0; grid.cell_count()],
+            water_level: vec![f32::NEG_INFINITY; grid.cell_count()],
+            grid,
+        }
+    }
+
     /// Cells a side of the fine cube.
     pub fn n(&self) -> usize {
         self.grid.n
@@ -535,7 +545,7 @@ impl FineHeights {
 
 /// A `CubeGrid` on Margin is fixed by its size alone, so that is all that
 /// is written out.
-mod cube_grid_by_size {
+pub(crate) mod cube_grid_by_size {
     use mg_core::CubeGrid;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

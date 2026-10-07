@@ -67,7 +67,12 @@ struct Seeding {
 }
 
 /// The world on the cube, every layer one value per cell.
+///
+/// Stored in a layers artifact without its river network and fine heights,
+/// which the flat map beside it carries.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct MacroMap {
+    #[serde(with = "crate::landscape::cube_grid_by_size")]
     pub grid: CubeGrid,
 
     // Base layers
@@ -102,9 +107,11 @@ pub struct MacroMap {
     pub vegetation_density: Vec<f64>,
     pub soil_type: Vec<f64>,
 
+    #[serde(skip)]
     pub river_network: Arc<RiverNetwork>,
     /// The land on a cube four times finer, which tiles and chunks take
     /// their ground from.
+    #[serde(skip, default = "FineHeights::empty")]
     pub fine_heights: FineHeights,
 }
 
