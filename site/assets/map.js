@@ -1077,8 +1077,8 @@ void main() {
 		vec4 tint = texelFetch(uProvinces, ivec2(province, 0), 0);
 		float brightness = dot(shade, vec3(0.299, 0.587, 0.114));
 		shade = mix(shade, tint.rgb * mix(0.45, 1.35, brightness), tint.a);
-		// Hillshade over terrain and tint alike. A cap's image is shaded.
-		if (uBaseShaded < 0.5 && !capPixel) {
+		// Hillshade over terrain and tint alike.
+		if (uBaseShaded < 0.5) {
 			float relief = texture(uRelief, chunk / uWorld).r - 0.5;
 			shade *= 1.0 + relief * RELIEF_STRENGTH;
 		}
