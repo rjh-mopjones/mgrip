@@ -1682,15 +1682,16 @@ fn write_polar_faces(
             .expect("face image matches its size")
             .save(output_dir.join(&file_name))
             .map_err(|e| format!("saving {file_name}: {e}"))?;
-        let cells = face * n * n..(face + 1) * n * n;
-        let bytes: Vec<u8> = cube_province_ids[cells]
-            .iter()
-            .flat_map(|id| id.to_le_bytes())
-            .collect();
-        let file_name = format!("cap-{pole}-provinces.bin");
-        fs::write(output_dir.join(&file_name), &bytes)
-            .map_err(|e| format!("writing {file_name}: {e}"))?;
     }
+    // Every cube cell's province, face by face, two bytes a cell: on the
+    // globe the provinces are read from this everywhere, so the sheet and
+    // the poles agree.
+    let bytes: Vec<u8> = cube_province_ids
+        .iter()
+        .flat_map(|id| id.to_le_bytes())
+        .collect();
+    fs::write(output_dir.join("cube-provinces.bin"), &bytes)
+        .map_err(|e| format!("writing cube-provinces.bin: {e}"))?;
     Ok(())
 }
 
@@ -2117,9 +2118,10 @@ fn run_export_site_map(output_dir: &Path, layers_tag: Option<&str>, civ_seed: u3
         "chunks_wide": map.width,
         "chunks_high": map.height,
         // The globe draws the sheet between these latitudes and the cube's
-        // polar faces (cap-north.png, cap-south.png, cap_size cells square,
-        // with cap-<pole>-provinces.bin) beyond cap_from_latitude. The
-        // flat map shows rows within band_latitude.
+        // polar faces (cap-north.png, cap-south.png) beyond
+        // cap_from_latitude, and its provinces from the cube's cells
+        // (cube-provinces.bin: cap_size cells a side, six faces). The flat
+        // map shows rows within band_latitude.
         "band_latitude": SITE_MAP_BAND_LATITUDE_DEGREES,
         "cap_from_latitude": SITE_MAP_CAP_FROM_LATITUDE_DEGREES,
         "cap_size": macro_cube.grid.n,

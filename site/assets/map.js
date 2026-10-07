@@ -17,13 +17,11 @@ const DEFAULT_SPAWN_CHUNK = { x: 440, y: 220 };
 const TERRAIN_IMAGE = "macromap.png";
 const RELIEF_IMAGE = "relief.png";
 const SEA_IMAGE = "sea.png";
-// The globe beyond the sheet's band, one square image per pole, with the
-// province of each of its cells (spec 016).
+// The globe beyond the sheet's band, one square image per pole, and the
+// province of every cell of the cube the world is generated on, which the
+// globe reads its provinces from everywhere (spec 017).
 const CAP_IMAGES = { north: "cap-north.png", south: "cap-south.png" };
-const CAP_PROVINCE_FILES = {
-	north: "cap-north-provinces.bin",
-	south: "cap-south-provinces.bin",
-};
+const CUBE_PROVINCE_FILE = "cube-provinces.bin";
 // Over this many degrees of latitude the sheet fades into the cap.
 const CAP_BLEND_DEGREES = 6;
 const MAX_ZOOM = 64;
@@ -517,33 +515,58 @@ function lonLatAtPixel(pixelX, pixelY) {
 	return { longitude: (view.x / wide) * Math.PI * 2 + turn, latitude };
 }
 
-// The cap cell under a longitude and latitude, as [pole, column, row], or
-// null inside the sheet's part of the globe. The shader's capPoint does
-// the same.
-function capCellAt(longitude, latitude) {
-	if (!hasCaps() || Math.abs(latitude) < capFromLatitude()) return null;
+// The cube's faces: each a centre on the sphere, with the directions its
+// columns and rows run in. The same frames as mg_core::cube.
+const CUBE_FACES = [
+	{ centre: [1, 0, 0], right: [0, 1, 0], down: [0, 0, -1] },
+	{ centre: [0, 1, 0], right: [-1, 0, 0], down: [0, 0, -1] },
+	{ centre: [-1, 0, 0], right: [0, -1, 0], down: [0, 0, -1] },
+	{ centre: [0, -1, 0], right: [1, 0, 0], down: [0, 0, -1] },
+	{ centre: [0, 0, 1], right: [0, 1, 0], down: [1, 0, 0] },
+	{ centre: [0, 0, -1], right: [0, 1, 0], down: [-1, 0, 0] },
+];
+
+// The cube cell under a longitude and latitude, as [face, column, row].
+// The shader's cubeCell does the same.
+function cubeCellAt(longitude, latitude) {
 	const size = worldMap.meta.cap_size;
-	const x = Math.cos(latitude) * Math.cos(longitude);
-	const y = Math.cos(latitude) * Math.sin(longitude);
-	const axis = Math.abs(Math.sin(latitude));
-	const along = (coordinate) =>
+	const point = [
+		Math.cos(latitude) * Math.cos(longitude),
+		Math.cos(latitude) * Math.sin(longitude),
+		Math.sin(latitude),
+	];
+	const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+	let face = 0;
+	let nearest = -2;
+	CUBE_FACES.forEach((frame, index) => {
+		const facing = dot(point, frame.centre);
+		if (facing > nearest) {
+			nearest = facing;
+			face = index;
+		}
+	});
+	const frame = CUBE_FACES[face];
+	const along = (tangent) =>
 		Math.min(
 			size - 1,
-			Math.floor(
-				((Math.atan(coordinate / axis) / (Math.PI / 4) + 1) / 2) * size,
+			Math.max(
+				0,
+				Math.floor(((Math.atan(tangent) / (Math.PI / 4) + 1) / 2) * size),
 			),
 		);
-	// The face's column runs along +y; its row runs along +x looking down
-	// on the north pole and along -x looking up at the south.
-	const north = latitude > 0;
-	return [north ? "north" : "south", along(y), along(north ? -x : x)];
+	return [
+		face,
+		along(dot(point, frame.right) / nearest),
+		along(-dot(point, frame.down) / nearest),
+	];
 }
 
-// The province of a cap cell, from the cap's province table.
-function capProvinceAt(pole, column, row) {
-	const ids = worldMap.capProvinces?.[pole];
+// The province of a cube cell.
+function cubeProvinceAt(face, column, row) {
+	const ids = worldMap.cubeProvinces;
 	if (!ids) return 0;
-	const cell = (row * worldMap.meta.cap_size + column) * 2;
+	const size = worldMap.meta.cap_size;
+	const cell = ((face * size + row) * size + column) * 2;
 	return ids[cell] + ids[cell + 1] * 256;
 }
 
@@ -584,13 +607,14 @@ function chunkUnder(cssX, cssY) {
 
 // Province under a point of the canvas (CSS pixels); 0 for sea or off the map.
 function provinceUnder(cssX, cssY) {
-	const chunk = chunkUnder(cssX, cssY);
-	if (!chunk && view.globe) {
+	// On the globe the provinces are the cube's, everywhere.
+	if (view.globe && worldMap.cubeProvinces) {
 		const scale = canvas.width / canvas.clientWidth;
 		const lonLat = lonLatAtPixel(cssX * scale, cssY * scale);
-		const cell = lonLat && capCellAt(lonLat.longitude, lonLat.latitude);
-		return cell ? capProvinceAt(...cell) : 0;
+		if (!lonLat) return 0;
+		return cubeProvinceAt(...cubeCellAt(lonLat.longitude, lonLat.latitude));
 	}
+	const chunk = chunkUnder(cssX, cssY);
 	if (!chunk || chunk.y < 0 || chunk.y >= worldMap.meta.chunks_high) return 0;
 	return provinceAtPoint(chunk.x, chunk.y);
 }
@@ -747,8 +771,7 @@ uniform sampler2D uRelief;      // hillshade: 0.5 is flat ground
 uniform sampler2D uSea;         // liquid sea, finer than one cell per chunk
 uniform sampler2D uCapNorth;    // the globe beyond the sheet's band, per pole
 uniform sampler2D uCapSouth;
-uniform sampler2D uCapNorthIds; // province id per cap cell, two bytes
-uniform sampler2D uCapSouthIds;
+uniform sampler2D uCubeIds;     // province id per cube cell, two bytes; faces stacked
 uniform float uCaps;         // 1 if the cap images exist
 uniform float uBand;         // latitude the sheet reaches, radians
 uniform float uCapFrom;      // latitude from which the cap is drawn, radians
@@ -895,10 +918,63 @@ vec3 capShade(vec4 cap) {
 	return cap.z > 0.0 ? texture(uCapNorth, cap.xy).rgb : texture(uCapSouth, cap.xy).rgb;
 }
 
-int capProvince(vec4 cap) {
-	ivec2 cell = ivec2(clamp(cap.xy * uCapSize, 0.0, uCapSize - 1.0));
-	vec4 texel = cap.z > 0.0 ? texelFetch(uCapNorthIds, cell, 0) : texelFetch(uCapSouthIds, cell, 0);
-	return unpackId(texel);
+// The cube's faces: each a centre on the sphere, with the directions its
+// columns and rows run in. The same frames as mg_core::cube.
+const vec3 FACE_CENTRE[6] = vec3[6](
+	vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(-1.0, 0.0, 0.0),
+	vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0)
+);
+const vec3 FACE_RIGHT[6] = vec3[6](
+	vec3(0.0, 1.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, -1.0, 0.0),
+	vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0)
+);
+const vec3 FACE_DOWN[6] = vec3[6](
+	vec3(0.0, 0.0, -1.0), vec3(0.0, 0.0, -1.0), vec3(0.0, 0.0, -1.0),
+	vec3(0.0, 0.0, -1.0), vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0)
+);
+
+// Where a globe pixel falls on the cube: x the face, yz its position on
+// the face in cells (fractional). cubeCellAt in map.js does the same.
+vec3 cubeCell(vec2 pixel) {
+	vec3 lonLat = lonLatAt(pixel);
+	float longitude = (uCentre.x / uWorld.x) * TAU + lonLat.x;
+	float latitude = lonLat.y;
+	vec3 point = vec3(cos(latitude) * cos(longitude), cos(latitude) * sin(longitude), sin(latitude));
+	int face = 0;
+	float nearest = -2.0;
+	for (int candidate = 0; candidate < 6; candidate++) {
+		float facing = dot(point, FACE_CENTRE[candidate]);
+		if (facing > nearest) {
+			nearest = facing;
+			face = candidate;
+		}
+	}
+	vec2 angles = vec2(atan(dot(point, FACE_RIGHT[face]) / nearest), atan(-dot(point, FACE_DOWN[face]) / nearest));
+	return vec3(float(face), (angles / (PI / 4.0) + 1.0) * 0.5 * uCapSize);
+}
+
+int cubeProvinceOfCell(int face, ivec2 cell) {
+	int size = int(uCapSize);
+	cell = clamp(cell, ivec2(0), ivec2(size - 1));
+	return unpackId(texelFetch(uCubeIds, ivec2(cell.x, face * size + cell.y), 0));
+}
+
+// Province at a point of the cube, by the same rules as provinceAt: a
+// cell's corner that pokes into a neighbouring province goes to it, so
+// borders run diagonally rather than in steps. Neighbours are read within
+// the face; a cell at a face's edge is clamped to it.
+int cubeProvinceAt(vec3 at) {
+	int face = int(at.x);
+	ivec2 cell = ivec2(floor(at.yz));
+	int own = cubeProvinceOfCell(face, cell);
+	if (own == 0) return 0;
+	vec2 inCell = fract(at.yz);
+	vec2 toEdge = min(inCell, 1.0 - inCell);
+	if (toEdge.x + toEdge.y >= 0.5) return own;
+	ivec2 side = ivec2(inCell.x < 0.5 ? -1 : 1, inCell.y < 0.5 ? -1 : 1);
+	int across = cubeProvinceOfCell(face, cell + ivec2(side.x, 0));
+	int along = cubeProvinceOfCell(face, cell + ivec2(0, side.y));
+	return (across == along && across != 0) ? across : own;
 }
 
 // Whether a globe pixel is drawn from a cap.
@@ -906,15 +982,13 @@ bool onCap(vec4 cap) {
 	return uGlobe > 0.5 && uCaps > 0.5 && cap.w > 0.5 && abs(cap.z) >= uCapFrom;
 }
 
-// Province under a pixel, on the sheet or a cap, or the fallback where the
-// pixel is off the globe.
+// Province under a pixel, or the fallback where the pixel is off the
+// globe. On the globe the provinces are the cube's everywhere, so the
+// sheet and the poles agree; flat, they are the chunk raster's.
 int provinceAtPixel(vec2 pixel, int fallback) {
 	vec3 hit = chunkAtPixel(pixel);
 	if (hit.z < 0.5) return fallback;
-	if (uGlobe > 0.5 && uCaps > 0.5) {
-		vec4 cap = capPoint(pixel);
-		if (onCap(cap)) return capProvince(cap);
-	}
+	if (uGlobe > 0.5 && uCaps > 0.5) return cubeProvinceAt(cubeCell(pixel));
 	if (hit.y < 0.0 || hit.y >= uWorld.y) return fallback;
 	return provinceAt(hit.xy);
 }
@@ -942,10 +1016,9 @@ void main() {
 		return;
 	}
 	vec3 shade;
-	int province;
+	int province = uGlobe > 0.5 && uCaps > 0.5 ? cubeProvinceAt(cubeCell(pixel)) : provinceAt(chunk);
 	if (capPixel) {
 		shade = capShade(cap);
-		province = capProvince(cap);
 	} else {
 		// Where the pixel falls in the base image. The whole-world image
 		// repeats east to west; a tile covers a patch and leaves the pixels
@@ -957,7 +1030,6 @@ void main() {
 		bool wholeWorld = uBaseSize.x >= uWorld.x;
 		vec2 inBase = vec2(wholeWorld ? chunk.x - uBaseOrigin.x : across, chunk.y - uBaseOrigin.y);
 		shade = texture(uBase, inBase / uBaseSize).rgb;
-		province = provinceAt(chunk);
 		// Towards the cap the sheet fades into the cap's own picture of the
 		// same ground, so the change of grain does not show as a line.
 		if (uGlobe > 0.5 && uCaps > 0.5 && cap.w > 0.5 && uBaseShaded > 0.5) {
@@ -1066,7 +1138,7 @@ function createRenderer() {
 	const provinceCount = meta.provinces.length;
 
 	// Texture units: 0 base image, 1 province ids, 2 province table, 3 relief,
-	// 4 sea, 5 and 6 the polar caps, 7 and 8 their province ids.
+	// 4 sea, 5 and 6 the polar caps, 7 the cube's province ids.
 	[
 		"uBase",
 		"uProvinceIds",
@@ -1075,8 +1147,7 @@ function createRenderer() {
 		"uSea",
 		"uCapNorth",
 		"uCapSouth",
-		"uCapNorthIds",
-		"uCapSouthIds",
+		"uCubeIds",
 	].forEach((name, unit) => {
 		gl.uniform1i(uniform(name), unit);
 	});
@@ -1112,24 +1183,20 @@ function createRenderer() {
 		gl.UNSIGNED_BYTE,
 		ids,
 	);
-	// Province id per cap cell, the same way.
-	if (worldMap.capProvinces) {
+	// Province id per cube cell, the same way: the faces stacked.
+	if (worldMap.cubeProvinces) {
 		const size = meta.cap_size;
-		[worldMap.capProvinces.north, worldMap.capProvinces.south].forEach(
-			(capIds, which) => {
-				dataTexture(7 + which);
-				gl.texImage2D(
-					gl.TEXTURE_2D,
-					0,
-					gl.RG8,
-					size,
-					size,
-					0,
-					gl.RG,
-					gl.UNSIGNED_BYTE,
-					capIds,
-				);
-			},
+		dataTexture(7);
+		gl.texImage2D(
+			gl.TEXTURE_2D,
+			0,
+			gl.RG8,
+			size,
+			size * 6,
+			0,
+			gl.RG,
+			gl.UNSIGNED_BYTE,
+			worldMap.cubeProvinces,
 		);
 	}
 
@@ -2152,15 +2219,10 @@ async function loadWorldMap() {
 		worldMap.network = prepareNetwork(network);
 		worldMap.sea = await imagePixels(SEA_IMAGE);
 		if (meta.cap_size) {
-			const [north, south] = await Promise.all(
-				[CAP_PROVINCE_FILES.north, CAP_PROVINCE_FILES.south].map((file) =>
-					fetch(file).then((response) => response.arrayBuffer()),
-				),
+			const cube = await fetch(CUBE_PROVINCE_FILE).then((response) =>
+				response.arrayBuffer(),
 			);
-			worldMap.capProvinces = {
-				north: new Uint8Array(north),
-				south: new Uint8Array(south),
-			};
+			worldMap.cubeProvinces = new Uint8Array(cube);
 		}
 		worldMap.roadKinds = network.road_kinds;
 	} catch {
