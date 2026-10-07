@@ -357,7 +357,7 @@ in that one place. The world is generated on the cube (`specs/015`, `017`),
 so the globe is the planet. The sheet is drawn to 50° of latitude and the
 cube's polar faces beyond (`cap-north.png`, `cap-south.png`, with
 `cap-<pole>-provinces.bin`), so the poles are never the sheet's stretched
-rows; flat, the map shows rows within 75° (`band_latitude` in `map.json`).
+rows; flat, the map is the whole sheet (`band_latitude` in `map.json`).
 
 Zoomed in, the map lays sharper terrain tiles over the whole-world image.
 They are rendered in the browser, on demand, by `gdextension/crates/mg_web`

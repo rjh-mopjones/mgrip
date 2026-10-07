@@ -2286,11 +2286,12 @@ fn score_to_rgba(score: f32) -> [u8; 4] {
 }
 
 const SITE_MAP_RELIEF_IMAGE: &str = "relief.png";
-/// The flat map shows rows between these latitudes north and south; the
-/// rows beyond are the poles, stretched across the sheet, and the globe
-/// draws them from the cube's polar faces instead, from this latitude on
-/// (the faces reach to 45° at their edges).
-const SITE_MAP_BAND_LATITUDE_DEGREES: f64 = 75.0;
+/// The flat map shows rows between these latitudes north and south: the
+/// whole sheet, pole to pole, its polar rows stretched across the width as
+/// an equirectangular map stretches them. The globe draws the cube's polar
+/// faces instead from the second latitude on (the faces reach to 45° at
+/// their edges).
+const SITE_MAP_BAND_LATITUDE_DEGREES: f64 = 90.0;
 const SITE_MAP_CAP_FROM_LATITUDE_DEGREES: f64 = 50.0;
 const SITE_MAP_SEA_IMAGE: &str = "sea.png";
 
