@@ -723,6 +723,10 @@ impl BiomeMap {
                     macro_map.sample_field_at(&macro_map.rock_hardness, wx, wy);
                 self.peaks_valleys[idx] =
                     macro_map.sample_field_at(&macro_map.peaks_valleys, wx, wy);
+                // Light too: on a seeded world (spec 017) the macro map's
+                // light is the flat map's, not what this tile's own sun
+                // would give, and the biomes must follow the macro map.
+                self.light_level[idx] = macro_map.sample_field_at(&macro_map.light_level, wx, wy);
 
                 // Sample the macro heightmap. This is the value the macro pass
                 // used for ALL its derivations and biome classification. Runtime
