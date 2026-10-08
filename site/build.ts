@@ -40,6 +40,7 @@ const LORE_GROUPS = ["World", "Quests"];
 /** Primer groups written for the earlier Bevy prototype. */
 const PROTOTYPE_ERA_GROUPS = ["Technical"];
 const SUMMARY_MAX_LENGTH = 160;
+const CONTENTS_MAX_ENTRIES = 18;
 
 const NAV = [
 	{ label: "Overview", url: "/" },
@@ -57,6 +58,19 @@ interface Note {
 	section: Section;
 	url: string;
 	markdown: string;
+	/** Titles of published notes this one links to. */
+	linksTo: Set<string>;
+	/** Titles this one links to that have no note yet: stubs. */
+	stubs: Set<string>;
+}
+
+/** Everything the wiki sidebar and search need, built once. */
+interface Wiki {
+	notes: Note[];
+	notesByTitle: Map<string, Note>;
+	specs: Spec[];
+	/** Note title -> titles of the notes that link to it. */
+	backlinks: Map<string, string[]>;
 }
 
 interface Spec {
@@ -128,25 +142,47 @@ markdownRenderer.renderer.rules.heading_open = (
 	return self.renderToken(tokens, index, options);
 };
 
+const WIKILINK = /!?\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]/g;
+
 /**
- * Turn Obsidian wikilinks into markdown links. Links to notes that are not
- * published (journal entries, categories) become plain text.
+ * Whether a wikilink target is a note of this world rather than something
+ * else in the vault (a journal day, a category).
+ */
+const isWorldNote = (target: string): boolean =>
+	target.startsWith(NOTE_PREFIX) || !target.includes("/");
+
+/**
+ * Turn Obsidian wikilinks into markdown links. A link to a world note that
+ * is not written yet becomes a stub, shown as such and openable in the
+ * editor; links elsewhere in the vault (journal entries, categories) become
+ * plain text.
  */
 function resolveWikilinks(
 	markdown: string,
 	notesByTitle: Map<string, Note>,
 ): string {
 	return markdown.replace(
-		/!?\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]/g,
+		WIKILINK,
 		(_match, target: string, heading?: string, alias?: string) => {
 			const title = target.trim().replace(NOTE_PREFIX, "");
 			const label = alias ?? heading ?? title;
 			const note = notesByTitle.get(title);
-			if (!note) return label;
-			const anchor = heading ? `#${slugify(heading)}` : "";
-			return `[${label}](${note.url}${anchor})`;
+			if (note) {
+				const anchor = heading ? `#${slugify(heading)}` : "";
+				return `[${label}](${note.url}${anchor})`;
+			}
+			if (!isWorldNote(target.trim())) return label;
+			return `<a class="stub" data-title="${escapeHtml(title)}" href="#" title="Not written yet">${escapeHtml(label)}</a>`;
 		},
 	);
+}
+
+/** The world notes a note links to, resolved and not. */
+function linkTargets(markdown: string): string[] {
+	return [...markdown.matchAll(WIKILINK)]
+		.map((match) => match[1].trim())
+		.filter(isWorldNote)
+		.map((target) => target.replace(NOTE_PREFIX, ""));
 }
 
 // ─── Sources ─────────────────────────────────────────────────────────────────
@@ -186,10 +222,40 @@ function loadNotes(): Note[] {
 			const markdown = stripLeadingTitle(
 				stripFrontmatter(readFileSync(path, "utf8")),
 			);
-			notes.push({ title, group, section, url, markdown });
+			notes.push({
+				title,
+				group,
+				section,
+				url,
+				markdown,
+				linksTo: new Set(),
+				stubs: new Set(),
+			});
+		}
+	}
+	const titles = new Set(notes.map((note) => note.title));
+	for (const note of notes) {
+		for (const target of linkTargets(note.markdown)) {
+			if (target === note.title) continue;
+			(titles.has(target) ? note.linksTo : note.stubs).add(target);
 		}
 	}
 	return notes;
+}
+
+function buildWiki(notes: Note[], specs: Spec[]): Wiki {
+	const backlinks = new Map<string, string[]>();
+	for (const note of notes) {
+		for (const target of note.linksTo) {
+			backlinks.set(target, [...(backlinks.get(target) ?? []), note.title]);
+		}
+	}
+	return {
+		notes,
+		notesByTitle: new Map(notes.map((note) => [note.title, note])),
+		specs,
+		backlinks,
+	};
 }
 
 /**
@@ -267,6 +333,8 @@ function renderPage(page: {
 	scripts?: string[];
 	/** Use the full window width instead of the reading column. */
 	wide?: boolean;
+	/** A sidebar beside the main column: the wiki's tree and search. */
+	aside?: string;
 }): string {
 	const navLinks = NAV.map(({ label, url }) => {
 		const current = url === page.activeNav ? ' aria-current="page"' : "";
@@ -300,9 +368,7 @@ ${scripts}
     ${navLinks}
     <button type="button" class="plain theme-toggle" id="themeToggle">Dark</button>
   </nav>
-  <main>
-${page.body}
-  </main>
+${page.aside ? `  <div class="wiki">\n${page.aside}\n  <main>\n${page.body}\n  </main>\n  </div>` : `  <main>\n${page.body}\n  </main>`}
 </div>
 </body>
 </html>
@@ -342,32 +408,154 @@ function groupedNoteTables(
 		.join("\n");
 }
 
-function renderNotePage(note: Note, notesByTitle: Map<string, Note>): string {
+/**
+ * The wiki's sidebar: a search box and every page in the tree, lore then
+ * design then specs, with the current page marked.
+ */
+function renderWikiSidebar(wiki: Wiki, currentUrl: string): string {
+	const link = (url: string, label: string) =>
+		`<li><a href="${url}"${url === currentUrl ? ' aria-current="page"' : ""}>${escapeHtml(label)}</a></li>`;
+	const section = (label: string, url: string, notes: Note[]) => {
+		const groups = [...new Set(notes.map((note) => note.group))];
+		const lists = groups
+			.map((group) => {
+				const items = notes
+					.filter((note) => note.group === group)
+					.map((note) => link(note.url, note.title))
+					.join("\n");
+				return `<li class="wiki-group">${escapeHtml(group)}<ul>\n${items}\n</ul></li>`;
+			})
+			.join("\n");
+		return `<li class="wiki-section"><a href="${url}"${url === currentUrl ? ' aria-current="page"' : ""}>${label}</a><ul>\n${lists}\n</ul></li>`;
+	};
+	const specItems = wiki.specs
+		.map((spec) => link(spec.url, `${spec.id} ${spec.title}`))
+		.join("\n");
+	return `  <aside class="wiki-nav" aria-label="Wiki">
+<input type="search" id="wikiSearch" placeholder="Search" aria-label="Search the wiki" autocomplete="off">
+<ol id="wikiResults" class="wiki-results" hidden></ol>
+<ul class="wiki-tree">
+${section(
+	"Lore",
+	"/lore/",
+	wiki.notes.filter((note) => note.section === "lore"),
+)}
+${section(
+	"Design",
+	"/design/",
+	wiki.notes.filter((note) => note.section === "design"),
+)}
+<li class="wiki-section"><a href="/design/#specs">Specs</a><ul>\n${specItems}\n</ul></li>
+</ul>
+  </aside>`;
+}
+
+/** A contents list from the page's second- and third-level headings. */
+function renderContents(markdown: string): string {
+	const headings = [...markdown.matchAll(/^(##|###) (.+)$/gm)].map(
+		([, level, text]) => ({
+			level: level.length,
+			text: text.replace(WIKILINK, (_m, target, heading, alias) =>
+				(alias ?? heading ?? target.replace(NOTE_PREFIX, "")).trim(),
+			),
+		}),
+	);
+	if (headings.length < 3) return "";
+	// A long contents list is worse than none: past this many entries, only
+	// the second-level headings are listed.
+	const shown =
+		headings.length > CONTENTS_MAX_ENTRIES
+			? headings.filter((heading) => heading.level === 2)
+			: headings;
+	const items = shown
+		.map(
+			({ level, text }) =>
+				`<li class="toc-${level}"><a href="#${slugify(text)}">${escapeHtml(text)}</a></li>`,
+		)
+		.join("\n");
+	return `<nav class="toc" aria-label="Contents"><strong>Contents</strong><ol>\n${items}\n</ol></nav>`;
+}
+
+function renderBacklinks(wiki: Wiki, title: string): string {
+	const from = wiki.backlinks.get(title) ?? [];
+	if (from.length === 0) return "";
+	const items = from
+		.map((other) => wiki.notesByTitle.get(other))
+		.filter((note): note is Note => note !== undefined)
+		.map(
+			(note) => `<li><a href="${note.url}">${escapeHtml(note.title)}</a></li>`,
+		)
+		.join("\n");
+	return `<section class="backlinks"><h2>Linked from</h2><ul>\n${items}\n</ul></section>`;
+}
+
+function renderNotePage(note: Note, wiki: Wiki): string {
 	const sectionUrl = note.section === "lore" ? "/lore/" : "/design/";
 	const sectionLabel = note.section === "lore" ? "Lore" : "Design";
 	const prototypeNotice = PROTOTYPE_ERA_GROUPS.includes(note.group)
 		? '<p class="notice">Written for the earlier Bevy prototype. Kept for reference; the repository is the current source.</p>'
 		: "";
 	const body = `<p class="crumb"><a href="${sectionUrl}">${sectionLabel}</a> / ${escapeHtml(note.group)}</p>
-<article class="prose">
+<article class="prose" data-note="${escapeHtml(note.title)}">
 <h1>${escapeHtml(note.title)}</h1>
 ${prototypeNotice}
-${markdownRenderer.render(resolveWikilinks(note.markdown, notesByTitle))}
-</article>`;
-	return renderPage({ title: note.title, activeNav: sectionUrl, body });
+${renderContents(note.markdown)}
+${markdownRenderer.render(resolveWikilinks(note.markdown, wiki.notesByTitle))}
+</article>
+${renderBacklinks(wiki, note.title)}`;
+	return renderPage({
+		title: note.title,
+		activeNav: sectionUrl,
+		body,
+		aside: renderWikiSidebar(wiki, note.url),
+		scripts: ["/assets/wiki.js"],
+	});
 }
 
-function renderSpecPage(spec: Spec): string {
+function renderSpecPage(spec: Spec, wiki: Wiki): string {
 	const body = `<p class="crumb"><a href="/design/">Design</a> / Specs</p>
 <article class="prose">
 <h1>${escapeHtml(spec.title)}</h1>
+${renderContents(spec.markdown)}
 ${markdownRenderer.render(spec.markdown)}
 </article>`;
 	return renderPage({
 		title: `Spec ${spec.id}: ${spec.title}`,
 		activeNav: "/design/",
 		body,
+		aside: renderWikiSidebar(wiki, spec.url),
+		scripts: ["/assets/wiki.js"],
 	});
+}
+
+/** Plain text of a note, for the search index. */
+function plainText(markdown: string): string {
+	return markdown
+		.replace(WIKILINK, (_m, target, heading, alias) =>
+			(alias ?? heading ?? target.replace(NOTE_PREFIX, "")).trim(),
+		)
+		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+		.replace(/[#*_`>|-]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function writeSearchIndex(wiki: Wiki): void {
+	const entries = [
+		...wiki.notes.map((note) => ({
+			title: note.title,
+			url: note.url,
+			where: `${note.section === "lore" ? "Lore" : "Design"} / ${note.group}`,
+			text: plainText(note.markdown),
+		})),
+		...wiki.specs.map((spec) => ({
+			title: `${spec.id} ${spec.title}`,
+			url: spec.url,
+			where: "Specs",
+			text: plainText(spec.markdown),
+		})),
+	];
+	writeFileSync(join(OUT_DIR, "wiki-index.json"), JSON.stringify(entries));
 }
 
 function renderDevlog(entries: DevlogEntry[]): string {
@@ -397,10 +585,11 @@ function build(): void {
 	}
 
 	const notes = loadNotes();
-	const notesByTitle = new Map(notes.map((note) => [note.title, note]));
+	const specs = loadSpecs();
+	const wiki = buildWiki(notes, specs);
+	const { notesByTitle } = wiki;
 	const loreNotes = notes.filter((note) => note.section === "lore");
 	const designNotes = notes.filter((note) => note.section === "design");
-	const specs = loadSpecs();
 
 	writePage(
 		"/",
@@ -439,6 +628,8 @@ function build(): void {
 			title: "Lore",
 			activeNav: "/lore/",
 			body: `<h1>Lore</h1>\n${groupedNoteTables(loreNotes, notesByTitle)}`,
+			aside: renderWikiSidebar(wiki, "/lore/"),
+			scripts: ["/assets/wiki.js"],
 		}),
 	);
 
@@ -455,17 +646,20 @@ function build(): void {
 			activeNav: "/design/",
 			body: `${renderContentFile("design.md")}
 ${groupedNoteTables(designNotes, notesByTitle)}
-<h2>Specs</h2>
+<h2 id="specs">Specs</h2>
 <table>\n${specRows}\n</table>`,
+			aside: renderWikiSidebar(wiki, "/design/"),
+			scripts: ["/assets/wiki.js"],
 		}),
 	);
 
 	for (const note of notes) {
-		writePage(note.url, renderNotePage(note, notesByTitle));
+		writePage(note.url, renderNotePage(note, wiki));
 	}
 	for (const spec of specs) {
-		writePage(spec.url, renderSpecPage(spec));
+		writePage(spec.url, renderSpecPage(spec, wiki));
 	}
+	writeSearchIndex(wiki);
 
 	const entries = groupCommitsIntoEntries(readCommits());
 	writePage(

@@ -83,7 +83,7 @@ a {
 }
 
 .page {
-	max-width: 980px;
+	max-width: 1180px;
 	margin: 0 auto;
 	background: var(--bg);
 	border: 1px solid var(--text);
@@ -518,4 +518,139 @@ dialog::backdrop {
 .sandbox-stats dd {
 	margin: 0;
 	font-family: var(--mono);
+}
+
+/* Wiki: lore and design pages share a sidebar tree and search */
+.wiki {
+	display: grid;
+	grid-template-columns: 240px minmax(0, 1fr);
+}
+.wiki-nav {
+	padding: 20px 16px 48px;
+	border-right: 1px solid var(--line);
+	font-size: 0.875rem;
+}
+.wiki-nav input[type="search"] {
+	width: 100%;
+	box-sizing: border-box;
+	padding: 6px 8px;
+	margin-bottom: 14px;
+	border: 1px solid var(--line);
+	background: var(--bg);
+	color: var(--text);
+	font: inherit;
+}
+.wiki-nav ul,
+.wiki-nav ol {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.wiki-section + .wiki-section {
+	margin-top: 14px;
+}
+.wiki-section > a {
+	font-weight: 700;
+	color: var(--text);
+	text-decoration: none;
+}
+.wiki-group {
+	margin: 8px 0 0;
+	color: var(--muted);
+	font-size: 0.8125rem;
+}
+.wiki-group ul {
+	margin: 2px 0 0 10px;
+	font-size: 0.875rem;
+}
+.wiki-tree a {
+	display: block;
+	padding: 1px 0;
+	color: var(--text);
+	text-decoration: none;
+}
+.wiki-tree a:hover {
+	text-decoration: underline;
+}
+.wiki-tree a[aria-current="page"] {
+	color: var(--accent);
+	font-weight: 600;
+}
+.wiki-results li {
+	margin-bottom: 10px;
+}
+.wiki-results small {
+	display: block;
+	color: var(--muted);
+	font-size: 0.75rem;
+}
+.wiki-results p {
+	margin: 2px 0 0;
+	color: var(--muted);
+	font-size: 0.8125rem;
+	line-height: 1.4;
+}
+.toc {
+	float: right;
+	max-width: 240px;
+	margin: 0 0 16px 24px;
+	padding: 10px 14px;
+	border: 1px solid var(--line);
+	font-size: 0.8125rem;
+}
+.toc strong {
+	display: block;
+	margin-bottom: 4px;
+}
+.toc ol {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.toc li {
+	margin: 2px 0;
+}
+.toc .toc-3 {
+	padding-left: 12px;
+}
+.toc a {
+	color: var(--muted);
+	text-decoration: none;
+}
+.toc a:hover {
+	color: var(--accent);
+}
+a.stub {
+	color: var(--muted);
+	text-decoration: underline dotted;
+}
+.backlinks {
+	margin-top: 40px;
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+	font-size: 0.875rem;
+}
+.backlinks h2 {
+	font-size: 0.875rem;
+	color: var(--muted);
+	margin: 0 0 6px;
+}
+.backlinks ul {
+	margin: 0;
+	padding-left: 18px;
+}
+@media (max-width: 760px) {
+	.wiki {
+		grid-template-columns: 1fr;
+	}
+	.wiki-nav {
+		border-right: 0;
+		border-bottom: 1px solid var(--line);
+		padding-bottom: 16px;
+	}
+	.toc {
+		float: none;
+		max-width: none;
+		margin: 0 0 16px;
+	}
 }
