@@ -220,7 +220,9 @@ bun run typecheck && bun run lint         # after editing build.ts or assets
   and, under `/api/notes`, reads and writes the vault's notes, so Edit and
   New page on the site change the Obsidian files directly (frontmatter
   kept, the Primer gets the new link) and rebuild. It binds to localhost;
-  a public deploy has no API and shows no editing controls
+  a public deploy has no API and shows no editing controls. The editor is
+  CodeMirror in vim mode (`assets/editor.ts`, bundled by the build into
+  `dist/assets/editor.js`): jk leaves insert mode, :w saves, :q closes
 - `site/assets/` — `site.css`, `map.js`
 - `site/dist/` — all output, gitignored. Also holds the web build
   (`dist/play/`) and map data (`dist/map/`), which have their own commands

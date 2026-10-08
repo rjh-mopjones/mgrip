@@ -578,11 +578,30 @@ function renderDevlog(entries: DevlogEntry[]): string {
 
 // ─── Build ───────────────────────────────────────────────────────────────────
 
-export function build(): void {
+/** Bundle the wiki editor (CodeMirror with vim) into one browser script. */
+async function bundleEditor(): Promise<void> {
+	const result = await Bun.build({
+		entrypoints: [join(SITE_DIR, "assets", "editor.ts")],
+		outdir: join(OUT_DIR, "assets"),
+		minify: true,
+		format: "esm",
+	});
+	if (!result.success) {
+		for (const log of result.logs) console.error(log);
+		throw new Error("bundling the editor failed");
+	}
+}
+
+export async function build(): Promise<void> {
 	mkdirSync(OUT_DIR, { recursive: true });
 	cpSync(join(SITE_DIR, "assets"), join(OUT_DIR, "assets"), {
 		recursive: true,
+		// Bun's cpSync stops overwriting once a filter is given unless told to.
+		force: true,
+		// Sources of the bundle stay out of the output; the bundle is written next.
+		filter: (source) => !source.endsWith(".ts"),
 	});
+	await bundleEditor();
 	// The terrain generator for the map's zoomed-in tiles, if it has been built.
 	if (existsSync(TERRAIN_WASM)) {
 		cpSync(TERRAIN_WASM, join(OUT_DIR, "assets", "terrain.wasm"));
@@ -684,4 +703,4 @@ ${groupedNoteTables(designNotes, notesByTitle)}
 	);
 }
 
-if (import.meta.main) build();
+if (import.meta.main) await build();

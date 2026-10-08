@@ -60,7 +60,7 @@ async function writeNote(slug: string, request: Request): Promise<Response> {
 	const path = notePath(note.title);
 	const source = readFileSync(path, "utf8");
 	writeFileSync(path, frontmatterOf(source) + markdown);
-	build();
+	await build();
 	return json({ ok: true, url: note.url });
 }
 
@@ -97,7 +97,7 @@ async function createNote(request: Request): Promise<Response> {
 		lines.splice(end, 0, link);
 		writeFileSync(primerPath, lines.join("\n"));
 	}
-	build();
+	await build();
 	const note = noteBySlug(slugify(cleanTitle));
 	return json({ ok: true, url: note?.url ?? "/" });
 }

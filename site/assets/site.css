@@ -661,16 +661,49 @@ a.stub {
 	gap: 8px;
 	margin: 0 0 14px;
 }
-.editor textarea {
-	width: 100%;
-	box-sizing: border-box;
-	min-height: 70vh;
-	padding: 12px;
+.editor-pane {
 	border: 1px solid var(--line);
+}
+.editor-pane .cm-editor {
+	min-height: 70vh;
 	background: var(--bg);
 	color: var(--text);
 	font: 400 0.875rem / 1.55 var(--mono);
-	resize: vertical;
+}
+.editor-pane .cm-editor.cm-focused {
+	outline: 2px solid var(--accent);
+}
+.editor-pane .cm-scroller {
+	font-family: inherit;
+}
+.editor-pane .cm-gutters {
+	background: var(--bg);
+	border-right: 1px solid var(--line);
+	color: var(--muted);
+}
+.editor-pane .cm-activeLine,
+.editor-pane .cm-activeLineGutter {
+	background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.editor-pane .cm-cursor {
+	border-left-color: var(--text);
+}
+.editor-pane .cm-fat-cursor {
+	background: var(--accent);
+	color: var(--bg);
+}
+.editor-pane .cm-vim-panel {
+	padding: 4px 8px;
+	background: var(--bg);
+	color: var(--text);
+	border-top: 1px solid var(--line);
+	font: 400 0.8125rem var(--mono);
+}
+.editor-pane .cm-vim-panel input {
+	background: transparent;
+	color: var(--text);
+	border: 0;
+	font: inherit;
 }
 .editor-controls {
 	display: flex;

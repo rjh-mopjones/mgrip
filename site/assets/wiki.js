@@ -107,44 +107,51 @@ function button(label, onClick) {
 	return element;
 }
 
-/** Swap the page's text for an editor; Save writes the vault note. */
+/**
+ * Swap the page's text for the editor (CodeMirror with vim keys; jk leaves
+ * insert mode, :w saves, :q closes). Save writes the vault note.
+ */
 async function openEditor() {
-	const note = await api(`/api/notes/${slug}`);
+	const [note, { openEditor: open }] = await Promise.all([
+		api(`/api/notes/${slug}`),
+		import("/assets/editor.js"),
+	]);
 	const editor = document.createElement("div");
 	editor.className = "editor";
-	const text = document.createElement("textarea");
-	text.value = note.markdown;
-	text.spellcheck = true;
 	const controls = document.createElement("p");
 	controls.className = "editor-controls";
 	const status = document.createElement("span");
 	status.className = "muted";
-	controls.append(
-		button("Save", async () => {
-			status.textContent = "Saving…";
-			try {
-				await api(`/api/notes/${slug}`, {
-					method: "PUT",
-					body: JSON.stringify({ markdown: text.value }),
-				});
-				location.reload();
-			} catch (error) {
-				status.textContent = `Not saved: ${error.message}`;
-			}
-		}),
-		button("Cancel", () => location.reload()),
-		status,
-	);
-	editor.append(controls, text);
+	const pane = document.createElement("div");
+	pane.className = "editor-pane";
+	editor.append(controls, pane);
 	article.replaceWith(editor);
-	text.focus();
-	const save = (event) => {
-		if ((event.metaKey || event.ctrlKey) && event.key === "s") {
-			event.preventDefault();
-			controls.querySelector("button").click();
+	let text = () => note.markdown;
+	const save = async () => {
+		status.textContent = "Saving…";
+		try {
+			await api(`/api/notes/${slug}`, {
+				method: "PUT",
+				body: JSON.stringify({ markdown: text() }),
+			});
+			location.reload();
+		} catch (error) {
+			status.textContent = `Not saved: ${error.message}`;
 		}
 	};
-	text.addEventListener("keydown", save);
+	const close = () => location.reload();
+	const hint = document.createElement("span");
+	hint.className = "muted";
+	hint.textContent = "vim keys: jk to leave insert, :w saves, :q closes";
+	controls.append(button("Save", save), button("Cancel", close), hint, status);
+	const opened = open(pane, note.markdown, { save, close });
+	text = opened.text;
+	editor.addEventListener("keydown", (event) => {
+		if ((event.metaKey || event.ctrlKey) && event.key === "s") {
+			event.preventDefault();
+			save();
+		}
+	});
 }
 
 /** Ask for a group and make the page, then open it. */
