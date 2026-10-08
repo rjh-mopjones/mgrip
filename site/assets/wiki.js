@@ -78,3 +78,113 @@ document.addEventListener("keydown", (event) => {
 		input.focus();
 	}
 });
+
+// ── Editing ──────────────────────────────────────────────────────────────────
+// Only the local server has the API; anywhere else these controls never
+// appear and the wiki is read-only.
+
+const article = document.querySelector("article[data-note]");
+const slug = location.pathname.split("/").filter(Boolean).at(-1);
+
+async function api(path, options) {
+	const response = await fetch(path, {
+		headers: { "Content-Type": "application/json" },
+		...options,
+	});
+	if (!response.ok) {
+		const body = await response.json().catch(() => ({}));
+		throw new Error(body.error ?? response.statusText);
+	}
+	return response.json();
+}
+
+function button(label, onClick) {
+	const element = document.createElement("button");
+	element.type = "button";
+	element.className = "plain small";
+	element.textContent = label;
+	element.addEventListener("click", onClick);
+	return element;
+}
+
+/** Swap the page's text for an editor; Save writes the vault note. */
+async function openEditor() {
+	const note = await api(`/api/notes/${slug}`);
+	const editor = document.createElement("div");
+	editor.className = "editor";
+	const text = document.createElement("textarea");
+	text.value = note.markdown;
+	text.spellcheck = true;
+	const controls = document.createElement("p");
+	controls.className = "editor-controls";
+	const status = document.createElement("span");
+	status.className = "muted";
+	controls.append(
+		button("Save", async () => {
+			status.textContent = "Saving…";
+			try {
+				await api(`/api/notes/${slug}`, {
+					method: "PUT",
+					body: JSON.stringify({ markdown: text.value }),
+				});
+				location.reload();
+			} catch (error) {
+				status.textContent = `Not saved: ${error.message}`;
+			}
+		}),
+		button("Cancel", () => location.reload()),
+		status,
+	);
+	editor.append(controls, text);
+	article.replaceWith(editor);
+	text.focus();
+	const save = (event) => {
+		if ((event.metaKey || event.ctrlKey) && event.key === "s") {
+			event.preventDefault();
+			controls.querySelector("button").click();
+		}
+	};
+	text.addEventListener("keydown", save);
+}
+
+/** Ask for a group and make the page, then open it. */
+async function createPage(title) {
+	const { groups } = await api("/api/notes");
+	const name = title ?? prompt("Title of the new page");
+	if (!name) return;
+	const group = prompt(`Which group? One of:\n${groups.join(", ")}`, groups[0]);
+	if (!group) return;
+	try {
+		const { url } = await api("/api/notes", {
+			method: "POST",
+			body: JSON.stringify({ title: name, group }),
+		});
+		location.href = `${url}#edit`;
+	} catch (error) {
+		alert(`Not created: ${error.message}`);
+	}
+}
+
+async function enableEditing() {
+	try {
+		await api("/api/notes");
+	} catch {
+		return;
+	}
+	const tools = document.createElement("p");
+	tools.className = "wiki-tools";
+	tools.append(button("New page", () => createPage()));
+	if (article) {
+		tools.append(button("Edit", openEditor));
+	}
+	tree.before(tools);
+	for (const stub of document.querySelectorAll("a.stub")) {
+		stub.title = "Not written yet: click to create";
+		stub.addEventListener("click", (event) => {
+			event.preventDefault();
+			createPage(stub.dataset.title);
+		});
+	}
+	if (article && location.hash === "#edit") openEditor();
+}
+enableEditing();

@@ -4,6 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"build": "bun run build.ts",
+		"serve": "bun run serve.ts",
 		"typecheck": "tsc --noEmit",
 		"lint": "biome check ."
 	},

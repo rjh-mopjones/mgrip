@@ -206,12 +206,21 @@ design notes and specs, devlog. Built locally; not deployed yet.
 
 ```sh
 cd site && bun install && bun run build   # pages -> site/dist
+bun run serve                             # http://localhost:8060/, with editing
 bun run typecheck && bun run lint         # after editing build.ts or assets
 ```
 
 - `site/build.ts` — the whole generator. Sources: `site/content/` (overview,
   design approach, map page), the Obsidian vault (lore + design notes),
   `specs/` (spec pages), `git log` (devlog)
+- The lore and design pages are a wiki: a sidebar tree with search
+  (`assets/wiki.js`, index in `dist/wiki-index.json`), contents, backlinks,
+  and stubs for `[[links]]` to notes not written yet. `site/serve.ts` is
+  the local server: it serves `dist` with the COOP/COEP headers play needs
+  and, under `/api/notes`, reads and writes the vault's notes, so Edit and
+  New page on the site change the Obsidian files directly (frontmatter
+  kept, the Primer gets the new link) and rebuild. It binds to localhost;
+  a public deploy has no API and shows no editing controls
 - `site/assets/` — `site.css`, `map.js`
 - `site/dist/` — all output, gitignored. Also holds the web build
   (`dist/play/`) and map data (`dist/map/`), which have their own commands
@@ -285,7 +294,7 @@ renders in Chrome):
 source ~/emsdk/emsdk_env.sh
 (cd gdextension && cargo +nightly build --release --lib -Zbuild-std --target wasm32-unknown-emscripten)
 /Applications/Godot.app/Contents/MacOS/Godot --headless --path . --export-debug "Web" site/dist/play/index.html
-python3 tools/serve_web.py   # serves site/dist at http://localhost:8060/
+(cd site && bun run serve)   # serves site/dist at http://localhost:8060/
 ```
 
 - wasm rustflags live in `gdextension/.cargo/config.toml`

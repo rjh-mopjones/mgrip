@@ -29,12 +29,12 @@ const TERRAIN_WASM = join(
 	REPO_DIR,
 	"gdextension/target/wasm32-unknown-unknown/release/mg_web.wasm",
 );
-const VAULT_DIR =
+export const VAULT_DIR =
 	process.env.MG_VAULT_DIR ??
 	join(homedir(), "Documents/mop-jones-brain/Notes");
 
-const NOTE_PREFIX = "Margin's Grip - ";
-const PRIMER_NOTE = "Margin's Grip Game World Primer.md";
+export const NOTE_PREFIX = "Margin's Grip - ";
+export const PRIMER_NOTE = "Margin's Grip Game World Primer.md";
 /** Primer groups shown under Lore. Every other group goes under Design. */
 const LORE_GROUPS = ["World", "Quests"];
 /** Primer groups written for the earlier Bevy prototype. */
@@ -52,7 +52,7 @@ const NAV = [
 
 type Section = "lore" | "design";
 
-interface Note {
+export interface Note {
 	title: string;
 	group: string;
 	section: Section;
@@ -92,7 +92,7 @@ interface DevlogEntry {
 
 // ─── Text helpers ────────────────────────────────────────────────────────────
 
-const slugify = (text: string): string =>
+export const slugify = (text: string): string =>
 	text
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
@@ -105,8 +105,12 @@ const escapeHtml = (text: string): string =>
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;");
 
+const FRONTMATTER = /^---\n[\s\S]*?\n---\n/;
 const stripFrontmatter = (markdown: string): string =>
-	markdown.replace(/^---\n[\s\S]*?\n---\n/, "");
+	markdown.replace(FRONTMATTER, "");
+/** The frontmatter block at the top of a note, or "" if it has none. */
+export const frontmatterOf = (markdown: string): string =>
+	markdown.match(FRONTMATTER)?.[0] ?? "";
 
 const stripLeadingTitle = (markdown: string): string =>
 	markdown.replace(/^\s*# .*\n/, "");
@@ -188,7 +192,7 @@ function linkTargets(markdown: string): string[] {
 // ─── Sources ─────────────────────────────────────────────────────────────────
 
 /** Read the Primer note: each `## Group` heading followed by wikilinks. */
-function readPrimerGroups(): { group: string; titles: string[] }[] {
+export function readPrimerGroups(): { group: string; titles: string[] }[] {
 	const primer = readFileSync(join(VAULT_DIR, PRIMER_NOTE), "utf8");
 	const groups: { group: string; titles: string[] }[] = [];
 	for (const line of primer.split("\n")) {
@@ -206,12 +210,16 @@ function readPrimerGroups(): { group: string; titles: string[] }[] {
 	return groups;
 }
 
-function loadNotes(): Note[] {
+/** The vault file a note of this title lives in. */
+export const notePath = (title: string): string =>
+	join(VAULT_DIR, `${NOTE_PREFIX}${title}.md`);
+
+export function loadNotes(): Note[] {
 	const notes: Note[] = [];
 	for (const { group, titles } of readPrimerGroups()) {
 		const section: Section = LORE_GROUPS.includes(group) ? "lore" : "design";
 		for (const title of titles) {
-			const path = join(VAULT_DIR, `${NOTE_PREFIX}${title}.md`);
+			const path = notePath(title);
 			if (!existsSync(path)) {
 				console.warn(`skipped: no vault note for "${title}"`);
 				continue;
@@ -570,7 +578,7 @@ function renderDevlog(entries: DevlogEntry[]): string {
 
 // ─── Build ───────────────────────────────────────────────────────────────────
 
-function build(): void {
+export function build(): void {
 	mkdirSync(OUT_DIR, { recursive: true });
 	cpSync(join(SITE_DIR, "assets"), join(OUT_DIR, "assets"), {
 		recursive: true,
@@ -676,4 +684,4 @@ ${groupedNoteTables(designNotes, notesByTitle)}
 	);
 }
 
-build();
+if (import.meta.main) build();

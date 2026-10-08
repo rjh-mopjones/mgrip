@@ -113,14 +113,16 @@ a {
 	color: var(--accent);
 	font-weight: 600;
 }
-.theme-toggle {
+.theme-toggle,
+.small {
 	padding: 2px 8px;
 	border-color: var(--line);
 	color: var(--muted);
 	font-size: 0.8125rem;
 	font-weight: 400;
 }
-.theme-toggle:hover {
+.theme-toggle:hover,
+.small:hover {
 	border-color: var(--text);
 	color: var(--text);
 }
@@ -653,4 +655,26 @@ a.stub {
 		max-width: none;
 		margin: 0 0 16px;
 	}
+}
+.wiki-tools {
+	display: flex;
+	gap: 8px;
+	margin: 0 0 14px;
+}
+.editor textarea {
+	width: 100%;
+	box-sizing: border-box;
+	min-height: 70vh;
+	padding: 12px;
+	border: 1px solid var(--line);
+	background: var(--bg);
+	color: var(--text);
+	font: 400 0.875rem / 1.55 var(--mono);
+	resize: vertical;
+}
+.editor-controls {
+	display: flex;
+	gap: 8px;
+	align-items: baseline;
+	margin: 0 0 10px;
 }
